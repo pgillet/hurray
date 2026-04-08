@@ -1,0 +1,22 @@
+{
+  "enabledPlugins": {
+    "rust-analyzer-lsp@claude-plugins-official": true,
+    "commit-commands@claude-plugins-official": true,
+    "context7@claude-plugins-official": true,
+    "github@claude-plugins-official": true,
+    "telegram@claude-plugins-official": true
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "file=$(jq -r '.tool_input.file_path // empty'); case \"$file\" in *.rs) cd /home/ubuntu/workbench/projects/hurray && cargo fmt -- \"$file\" 2>&1 && cargo check 2>&1 && cargo clippy -- -D warnings 2>&1 ;; *.md) cd /home/ubuntu/workbench/projects/hurray && markdownlint-cli2 \"$file\" 2>&1 ;; esac"
+          }
+        ]
+      }
+    ]
+  }
+}
