@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "hurray-core",
+    "hurray-io",
+    "hurray-ffi",
+    "hurray-python",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/pgillet/hurray"
+authors = ["Hurray Contributors"]
+
+[workspace.dependencies]
+hurray-core = { path = "hurray-core" }
+hurray-ffi = { path = "hurray-ffi" }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+half = "2"
+rayon = "1"
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+pyo3 = { version = "0.22", features = ["extension-module"] }

@@ -1,0 +1,17 @@
+[package]
+name = "hurray-io"
+description = "Async streaming and file format read/write for the hurray tensor interchange format."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hurray-core = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true, optional = true }
+bytes = { workspace = true }
+
+[features]
+default = []
+tokio = ["dep:tokio"]

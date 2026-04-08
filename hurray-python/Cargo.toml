@@ -1,0 +1,15 @@
+[package]
+name = "hurray-python"
+description = "Python bindings for hurray with NumPy/PyTorch zero-copy interop via __dlpack__."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+hurray-core = { workspace = true }
+pyo3 = { workspace = true }
+
+[lib]
+name = "hurray"
+crate-type = ["cdylib"]

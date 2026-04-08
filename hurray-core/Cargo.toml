@@ -1,0 +1,17 @@
+[package]
+name = "hurray-core"
+description = "Core types, tensor descriptor, buffer handle, and quantization descriptors for the hurray format. No I/O, no async."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+half = { workspace = true }
+rayon = { workspace = true }
+serde = { workspace = true, optional = true }
+
+[features]
+default = []
+serde = ["dep:serde"]

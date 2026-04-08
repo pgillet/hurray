@@ -17,6 +17,16 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /home/ubuntu/workbench/projects/hurray && cargo fmt --all 2>&1 && cargo check 2>&1"
+          }
+        ]
+      }
     ]
   }
 }
