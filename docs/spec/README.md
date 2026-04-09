@@ -28,6 +28,7 @@ descriptor whose major version field exceeds the reader's supported major versio
 
 | Section | Description |
 |---------|-------------|
+| [element-types.md](element-types.md) | Numeric element type system: type tags, bit widths, encoding, sub-byte packing |
 | [data-model.md](data-model.md) | Element type system, shape and dimension model |
 | [quantization.md](quantization.md) | Per-tensor, per-channel, and per-block quantization |
 | [memory-layout.md](memory-layout.md) | Strides, contiguous, tiled, and packed (sub-byte) layouts |
