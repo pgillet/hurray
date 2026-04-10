@@ -34,6 +34,7 @@ hurray/
 
 - **Spec is the source of truth.** The Rust implementation follows the spec. When they conflict, fix the implementation, not the spec.
 - **Zero-copy first.** Data must be shareable across runtimes without copying whenever possible.
+- **Stream-readable.** A reader must be able to start processing tensor data without reading the entire input. Tensor descriptors always precede their data buffers; the format is self-delimiting; back-references and end-of-file indexes are forbidden.
 - **Language-agnostic.** No Rust-isms leak into the format design or the C FFI boundary.
 - **Correctness before performance.** This is a reference implementation. Optimize only when explicitly asked.
 - **Inference-optimized.** Layout diversity, quantization, and device memory are first-class concerns.

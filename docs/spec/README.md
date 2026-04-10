@@ -11,6 +11,7 @@ quantization schemes, and access patterns of modern AI/ML inference pipelines.
 - Define a binary tensor descriptor encoding that is language- and runtime-agnostic.
 - Enable zero-copy buffer sharing across runtimes, processes, and devices.
 - Support the full range of quantization schemes used in modern inference.
+- Be stream-readable: a reader MUST be able to start processing tensor data without buffering the entire input. Tensor descriptors always precede their data buffers; the format is self-delimiting; back-references and end-of-file indexes are not permitted.
 - Be extensible without breaking existing readers.
 
 ## RFC 2119 Notice
