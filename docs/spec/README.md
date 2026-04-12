@@ -32,7 +32,7 @@ descriptor whose major version field exceeds the reader's supported major versio
 | [element-types.md](element-types.md) | Numeric element type system: type tags, bit widths, encoding, sub-byte packing |
 | [data-model.md](data-model.md) | Element type system, shape and dimension model |
 | [quantization.md](quantization.md) | Per-tensor, per-channel, and per-block quantization |
-| [memory-layout.md](memory-layout.md) | Strides, contiguous, tiled, and packed (sub-byte) layouts |
+| [memory-layout.md](memory-layout.md) | Memory layouts: strided, tiled, Morton, general subpaving; sub-byte stride semantics; sharding |
 | [buffer-protocol.md](buffer-protocol.md) | Zero-copy semantics, alignment, device memory |
 | [metadata.md](metadata.md) | Tensor descriptor binary encoding |
 | [interchange.md](interchange.md) | Runtime interchange: in-process, IPC, cross-machine |
