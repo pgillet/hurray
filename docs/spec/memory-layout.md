@@ -340,14 +340,15 @@ The element at Morton code `m` is stored at linear offset `m` in the buffer.
 MUST satisfy `shape[k] <= 2^morton_bits[k]`. The value `morton_bits[k]` MUST be
 greater than 0 for each dimension.
 
-> **[OQ-4]:** Morton curve for non-power-of-two dimensions: should the spec mandate
-> zero-padding to the next power of two, or define a different addressing scheme?
-> Currently, `morton_bits[k]` defines the bit width and implicitly pads to
-> `2^morton_bits[k]`. Elements with Morton codes that correspond to indices outside
-> the tensor's shape are padding; the data buffer MUST contain storage for the full
-> `2^(sum(morton_bits))` elements, but the values of padding elements are undefined
-> and readers MUST NOT access them as tensor data. This padding approach is simple
-> but potentially wasteful for dimensions far from a power of two.
+> **Note (non-normative):** For non-power-of-two dimension sizes, `morton_bits[k]`
+> SHOULD be set to `ceil(log2(shape[k]))` — the smallest value satisfying the
+> constraint — to minimise padding waste. The worst-case padding factor per dimension
+> is strictly less than 2×. A "compact Morton" scheme that eliminates padding entirely
+> was considered and rejected: it requires non-trivial per-access index computation
+> (lookup tables or specialised bit manipulation), breaks branchless bit-interleaving,
+> and defeats the spatial-locality advantage of Morton layouts. Writers for whom
+> padding waste is unacceptable SHOULD prefer a tiled or row-major layout instead.
+> See ADR-005.
 
 **Buffer size:** the buffer MUST hold `2^(sum(morton_bits[k] for all k))` elements.
 
@@ -447,32 +448,132 @@ layout MUST reject (or, in permissive mode, skip) descriptors using that layout 
 
 **Layout tag:** `0x40`
 
-> **[OQ-5]:** Should the Hilbert curve be a named Tier 2 layout (with a normative
-> index mapping) or remain purely in the extension range with no normative definition?
-> The current placement as Tier 2 is provisional. If this layout remains normative,
-> a complete bit-level index mapping algorithm MUST be specified below.
-
 The Hilbert curve layout stores elements according to a Hilbert space-filling curve,
-which provides better locality than the Morton curve (fewer large jumps in physical
-address when traversing spatially adjacent elements) at the cost of a more expensive
-index computation.
+which provides better locality than the Morton curve: consecutive Hilbert indices
+always correspond to physically adjacent elements (L∞ distance = 1 in index space),
+with no large jumps. This property benefits access patterns that traverse
+multi-dimensional regions with spatial coherence (e.g. image convolution, volumetric
+sampling, point-cloud processing), at the cost of a more expensive index computation
+than Morton.
 
-> **Note (non-normative):** The Hilbert curve is included as a demonstration of the
-> extension mechanism and for applications where 2D spatial locality is critical
-> (e.g., image tensor processing). The normative index mapping will be defined in a
-> future revision of this specification if this layout is promoted from provisional
-> status.
+> **Note (non-normative):** The Hilbert curve is particularly effective for 2D and 3D
+> spatial tensors (image processing, volumetric inference) where Morton's large jumps
+> at quadrant boundaries cause cache misses. For 1D access patterns or cases where
+> index-computation cost dominates, row-major or Morton layouts are preferable.
 
 **Additional descriptor fields:**
 
 - **`hilbert_order`** (`uint32`): the order of the Hilbert curve. The tensor's
-  dimensions MUST each be equal to `2^hilbert_order`. This field MUST be present when
-  the layout tag is `0x40`.
-- **`hilbert_rank`** (`uint32`): the number of dimensions for the Hilbert curve.
-  MUST equal the tensor's `rank`. Hilbert curves are defined for any number of
-  dimensions >= 2.
+  dimensions MUST each be equal to `2^hilbert_order`. MUST be greater than 0. This
+  field MUST be present when the layout tag is `0x40`.
+- **`hilbert_rank`** (`uint32`): the number of dimensions of the Hilbert curve.
+  MUST equal the tensor's `rank`. MUST be greater than or equal to 2.
 
-The normative index mapping algorithm is deferred pending resolution of **[OQ-5]**.
+**Buffer size:** the buffer MUST hold exactly `2^(hilbert_rank * hilbert_order)`
+elements.
+
+#### Normative Index Mapping
+
+The normative index mapping is the algorithm defined by Skilling (2004) (see
+`references.md`). Conforming implementations MUST use this algorithm to map between
+Hilbert indices and element coordinates. The algorithm is reproduced below as
+normative pseudocode.
+
+Let `r = hilbert_rank` and `p = hilbert_order`. Coordinates are `X[0..r-1]`, each in
+`[0, 2^p)`. The Hilbert index `h` is a non-negative integer in `[0, 2^(r*p))`.
+
+**Bit packing convention:** the Hilbert index `h` is packed from the coordinates as
+follows. Bit `(b * r + (r - 1 - d))` of `h` (counting from bit 0 at the LSB) holds
+bit `b` of coordinate `X[d]`, for `b = 0, ..., p-1` and `d = 0, ..., r-1`.
+
+**Algorithm `CoordsToHilbert(X[0..r-1], r, p)` → `h`:**
+
+```
+// Step 1: excess-work transform (modifies X in-place)
+M = 1 << (p - 1)
+Q = M
+while Q > 1:
+    P = Q - 1
+    for i = 0 to r-1:
+        if X[i] & Q:
+            X[0] ^= P
+        else:
+            t = (X[0] ^ X[i]) & P
+            X[0] ^= t
+            X[i] ^= t
+    Q >>= 1
+
+// Step 2: Gray encode with rotation
+for i = 1 to r-1:
+    X[i] ^= X[i-1]
+t = 0
+Q = M
+while Q > 1:
+    if X[r-1] & Q:
+        t ^= Q - 1
+    Q >>= 1
+for i = 0 to r-1:
+    X[i] ^= t
+
+// Step 3: pack bits into Hilbert index
+h = 0
+for b = 0 to p-1:
+    for d = 0 to r-1:
+        h |= ((X[d] >> b) & 1) << (b * r + (r - 1 - d))
+return h
+```
+
+**Algorithm `HilbertToCoords(h, r, p)` → `X[0..r-1]`:**
+
+```
+// Step 1: unpack Hilbert index into coordinate array
+X = [0] * r
+for b = 0 to p-1:
+    for d = 0 to r-1:
+        X[d] |= ((h >> (b * r + (r - 1 - d))) & 1) << b
+
+// Step 2: inverse Gray decode with rotation
+t = X[r-1] >> 1
+for i = r-1 downto 1:
+    X[i] ^= X[i-1]
+X[0] ^= t
+
+// Step 3: inverse excess-work transform
+Q = 2
+while Q != (1 << p):
+    P = Q - 1
+    for i = r-1 downto 0:
+        if X[i] & Q:
+            X[0] ^= P
+        else:
+            t = (X[0] ^ X[i]) & P
+            X[0] ^= t
+            X[i] ^= t
+    Q <<= 1
+return X
+```
+
+All arithmetic in the algorithms above is integer arithmetic. The `^` operator denotes
+bitwise XOR. Array indexing is zero-based. The algorithms MUST produce identical
+results on all conforming implementations for identical inputs.
+
+**Example:** rank-2 tensor with shape `[4, 4]` (`r = 2`, `p = 2`,
+`hilbert_order = 2`, `hilbert_rank = 2`). Selected index mappings:
+
+| `h` | `X[0]` | `X[1]` | | `h` | `X[0]` | `X[1]` |
+|-----|--------|--------|-|-----|--------|--------|
+| 0 | 0 | 0 | | 8 | 2 | 2 |
+| 1 | 1 | 0 | | 9 | 2 | 3 |
+| 2 | 1 | 1 | | 10 | 3 | 3 |
+| 3 | 0 | 1 | | 11 | 3 | 2 |
+| 4 | 0 | 2 | | 12 | 3 | 1 |
+| 5 | 0 | 3 | | 13 | 3 | 0 |
+| 6 | 1 | 3 | | 14 | 2 | 0 |
+| 7 | 1 | 2 | | 15 | 2 | 1 |
+
+Consecutive entries differ by exactly 1 in exactly one coordinate (the Hamiltonian
+path property of Hilbert curves). Implementations SHOULD validate this property
+against the table above as a conformance check.
 
 ---
 
@@ -491,15 +592,17 @@ An extension layout descriptor MUST include at minimum:
   MUST be encoded as a `uint32` preceding the byte sequence.
 
 > **Note (non-normative):** Candidate extension layouts include:
-> - **Panel/Pack format** -- ephemeral BLAS/BLIS computational formats used between
->   pipeline stages. See **[OQ-2]** below.
+> - **Panel/Pack format** -- hardware-specific BLAS/BLIS computational formats used
+>   between pipeline stages. These are not named layouts because their parameters
+>   (panel width, register block dimensions, cache line size, SIMD width) are
+>   implementation- and hardware-specific, and no portable normative definition is
+>   possible. They are explicitly supported via the extension layout mechanism combined
+>   with content negotiation in the network transport protocol (see `interchange.md`):
+>   a client advertises an extension layout tag with opaque hardware metadata, and
+>   the server transcodes and packs accordingly. The packed buffer is consumed directly
+>   by the BLAS kernel on the client side and is never forwarded or stored.
 > - **NVIDIA Tensor Core fragment layouts** -- hardware-internal layouts that are
 >   out of scope for a portable interchange format.
-
-> **[OQ-2]:** Panel/Pack format: should it be a named layout (for describing
-> computation-ready buffers passed between pipeline stages) or explicitly out of scope
-> as an ephemeral computational format? If named, it would require normative definitions
-> for panel width, packing order, and padding conventions.
 
 ---
 
@@ -593,11 +696,15 @@ shard_offset[k] + shape[k] <= parent_shape[k]
 
 A shard descriptor is OPTIONAL. Tensors without a shard descriptor are standalone.
 
-> **[OQ-3]:** Shard descriptor: how does a shard reference its position within the
-> logical parent tensor? The current design uses offset + shape. An alternative is a
-> more general subpaving region descriptor, which would allow non-rectangular or
-> non-contiguous shards. The simpler offset + shape approach is specified here
-> pending further design work.
+> **Note (non-normative):** The shard descriptor intentionally uses the simplest
+> possible representation: an axis-aligned box (hyperrectangle) defined by
+> `shard_offset` and `shape`. This covers all practical sharding patterns in ML
+> inference (batch splitting, tensor parallelism, pipeline stages), which always
+> produce rectangular sub-regions. A more general subpaving region descriptor was
+> considered but rejected: it conflates memory layout (how elements are arranged)
+> with logical partitioning (which sub-region of the parent this shard represents),
+> and non-rectangular shards have no identified use case in the target domain.
+> See ADR-004.
 
 > **Note (non-normative):** Sharding describes how a logical tensor is divided into
 > independently-stored pieces. Protocol-level splitting (splitting a tensor's data
@@ -608,26 +715,43 @@ A shard descriptor is OPTIONAL. Tensors without a shard descriptor are standalon
 
 ## Sparse Layouts
 
-> **[OQ-1]:** Multiple buffers for sparse tensors: does a single Hurray tensor
-> descriptor reference one buffer (dense) or potentially several (sparse: data + index
-> arrays)? Is Apache Arrow's multi-buffer-per-column model suitable, or does the tensor
-> model require a different approach? Sparse layouts require qualitatively different
-> descriptor structures (multiple buffers for values, indices, and indptr arrays). The
-> named sparse formats below are listed for future specification but are not yet
-> normatively defined.
+### Buffer Table
 
-The following sparse storage formats are candidates for future inclusion:
+Every tensor descriptor contains a **buffer table**: an ordered list of buffer handles,
+each with its own byte size and alignment. The buffer table is encoded as a `uint8`
+count field followed by that many buffer handle entries, as defined in
+`buffer-protocol.md`.
 
-- **CSR** (Compressed Sparse Row): `values` buffer, `col_indices` buffer (`uint64`),
-  `row_ptr` buffer (`uint64`).
-- **CSC** (Compressed Sparse Column): `values` buffer, `row_indices` buffer (`uint64`),
-  `col_ptr` buffer (`uint64`).
-- **COO** (Coordinate format): `values` buffer, `indices` buffer (`uint64[nnz][rank]`).
-- **ELLPACK**: padded per-row index + value arrays.
-- **BSR** (Block Sparse Row): like CSR but with dense blocks at each non-zero position.
+For dense tensors (all layout tags `0x01`–`0x06` and `0x40`), the buffer table MUST
+contain exactly one entry (count = `0x01`). All layout-specific `buffer_index` fields
+(e.g., in the general subpaving layout) index into this table.
 
-These formats will be defined in a future revision of this specification once the
-multi-buffer descriptor model (see **[OQ-1]**) is resolved.
+For sparse layout tags (defined below), the buffer table MUST contain the number of
+entries specified by the layout. Each buffer in the table holds a distinct component
+array (values, indices, pointers) whose element type and length are defined by the
+sparse layout tag. Buffer entries within the table MUST NOT overlap in memory.
+
+> **Note (non-normative):** Requiring a `uint8` count of `0x01` for dense tensors
+> costs one byte on the wire but gives every descriptor a uniform structure. Decoders
+> can always read the count first and allocate the right number of buffer handles
+> without special-casing dense vs. sparse. The general subpaving layout already uses
+> `buffer_index` per region; the buffer table formalises what those indices refer to.
+
+### Sparse Format Candidates
+
+The following sparse storage formats are candidates for future specification as named
+layout tags. Each requires the buffer count and component semantics listed:
+
+| Format | Layout tag | Buffers | Buffer 0 | Buffer 1 | Buffer 2 |
+|--------|-----------|---------|----------|----------|----------|
+| COO (Coordinate) | TBD | 2 | `values` (tensor element type, `nnz` elements) | `indices` (`uint64`, `nnz × rank` elements) | — |
+| CSR (Compressed Sparse Row) | TBD | 3 | `values` (tensor element type, `nnz` elements) | `col_indices` (`uint64`, `nnz` elements) | `row_ptr` (`uint64`, `nrows + 1` elements) |
+| CSC (Compressed Sparse Column) | TBD | 3 | `values` (tensor element type, `nnz` elements) | `row_indices` (`uint64`, `nnz` elements) | `col_ptr` (`uint64`, `ncols + 1` elements) |
+| BSR (Block Sparse Row) | TBD | 3 | `values` (tensor element type, `nnz_blocks × block_rows × block_cols` elements) | `col_indices` (`uint64`, `nnz_blocks` elements) | `row_ptr` (`uint64`, `nblock_rows + 1` elements) |
+| ELLPACK | TBD | 2 | `values` (tensor element type, `nrows × max_nnz_per_row` elements) | `col_indices` (`uint64`, `nrows × max_nnz_per_row` elements) | — |
+
+Layout tags and full normative definitions for these formats will be assigned in a
+future revision of this specification.
 
 > **Note (non-normative):** The general subpaving layout (`0x06`) can describe certain
 > sparse-like structures (e.g., a tensor where only some rectangular regions contain
@@ -649,29 +773,6 @@ supported by a future extension of the tiling descriptor).
 Truly opaque custom layouts -- those not expressible through any combination of named
 layouts -- MUST use the extension mechanism (layout tags `0xF0` -- `0xFE`) with an
 out-of-band agreement between producer and consumer on the layout semantics.
-
----
-
-## Open Questions Summary
-
-> **[OQ-1]:** Multiple buffers for sparse tensors: does a single Hurray tensor
-> descriptor reference one buffer (dense) or potentially several (sparse: data + index
-> arrays)? Is Apache Arrow's multi-buffer-per-column model suitable, or does the tensor
-> model require a different approach?
-
-> **[OQ-2]:** Panel/Pack format: should it be a named layout (for describing
-> computation-ready buffers passed between pipeline stages) or explicitly out of scope
-> as an ephemeral computational format?
-
-> **[OQ-3]:** Shard descriptor: how does a shard reference its position within the
-> logical parent tensor? Offset + shape (current design) vs. a more general subpaving
-> region descriptor.
-
-> **[OQ-4]:** Morton curve for non-power-of-two dimensions: should the spec mandate
-> zero-padding to the next power of two, or define a different addressing scheme?
-
-> **[OQ-5]:** Should the Hilbert curve be a named Tier 2 layout (with a normative
-> index mapping) or remain purely in the extension range with no normative definition?
 
 ---
 
