@@ -187,21 +187,142 @@ No single layout is universally optimal. The right layout depends on the operati
 
 ---
 
+### 2.11 NIXL (NVIDIA Inference Xfer Library)
+
+**What it is:** An open-source tensor transfer library from NVIDIA, designed specifically
+for high-throughput tensor exchange in LLM inference pipelines (announced at GTC 2025).
+
+**Primary use case:** KV cache migration in **disaggregated prefill/decode** inference
+architectures, where the prefill (prompt processing) and decode (token generation) stages
+run on different GPU nodes. The KV cache — a tensor of shape `[layers, 2, heads, seq_len,
+head_dim]` — must be transferred between nodes at high speed for each request.
+
+**Transport model:**
+- Sender registers a GPU memory region (CUDA buffer) with the RDMA NIC using GPUDirect
+  RDMA. The NIC can DMA directly from GPU memory without a GPU→CPU copy.
+- The receiver pre-allocates an aligned GPU buffer and shares its RDMA memory key and
+  remote address with the sender.
+- The sender issues an RDMA Write (or Read) operation. The NIC moves data directly from
+  source GPU memory to destination GPU memory over the network, with zero CPU involvement.
+- Result: no CPU copies, no host-memory staging, no gRPC framing overhead.
+
+**Transport backends:** UCX (InfiniBand, RoCE), NVIDIA GDS (GPU Direct Storage), NVMe-oF.
+
+**What it does not define:**
+- Any format for tensor descriptor, layout, or quantization metadata.
+- Layout negotiation — it assumes both sides agree on the tensor format out-of-band.
+- Multi-layout support — it transfers raw byte buffers, not structured tensor objects.
+
+**Adoption:** Used by vLLM (disaggregated prefill/decode), NVIDIA TensorRT-LLM, Dynamo
+(NVIDIA's inference scheduler).
+
+**Assessment:** The closest existing prior art to what Hurray's RDMA data plane (OQ-2)
+would implement at the transport layer. NIXL solves the "move bytes fast" problem but
+provides no tensor metadata, layout, or quantization vocabulary — which is exactly what
+Hurray's descriptor layer adds on top.
+
+---
+
+### 2.12 NCCL + GPUDirect RDMA
+
+**What it is:** NVIDIA Collective Communications Library — the standard library for
+GPU-to-GPU communication in distributed ML workloads.
+
+**How it works:** NCCL implements collective operations (AllReduce, AllGather,
+ReduceScatter, Broadcast, Send/Recv) over GPU tensors. When both GPUs are on different
+nodes connected via InfiniBand or RoCE, NCCL uses GPUDirect RDMA: the NIC reads from
+source GPU memory and writes to destination GPU memory without host CPU involvement.
+
+**Tensor model:** None. NCCL operates on flat GPU buffers — a pointer, a count, and a
+dtype. All layout semantics are handled by the caller.
+
+**Use in inference:** Tensor parallelism (splitting a model's weight matrices across GPUs)
+and pipeline parallelism (splitting model layers across nodes) use NCCL point-to-point
+(Send/Recv) for activation tensors. These are increasingly used in large-model inference
+(not just training).
+
+**Assessment:** NCCL provides the RDMA transport primitive; it does not define any tensor
+interchange protocol. It is the incumbent for GPU collective communications, but it
+provides no layout negotiation, no streaming framing, and no quantization support.
+
+---
+
+### 2.13 UCX (Unified Communication X)
+
+**What it is:** An open-source communication framework that abstracts over multiple
+high-performance transport layers: InfiniBand (verbs), RoCE, TCP/IP, shared memory,
+and CUDA IPC.
+
+**How it works:** UCX provides a unified API (`ucp_put_nb`, `ucp_get_nb`, `ucp_send_nb`,
+etc.) for RDMA put/get, atomic, and stream operations, dispatching to the best available
+transport on a per-connection basis. Fallback to TCP is automatic when RDMA is unavailable.
+
+**Role in the ecosystem:** UCX is not a user-facing protocol. It is the transport layer
+used by:
+- OpenMPI / MVAPICH (HPC MPI)
+- NCCL (via its verbs backend)
+- NIXL (primary transport backend)
+- Ray (distributed object store transfers)
+
+**Relevance to Hurray:** Hurray's OQ-2 (RDMA data plane) would likely sit above UCX in
+the software stack. UCX handles the actual RDMA operation; the Hurray protocol handles
+memory registration handshake, descriptor exchange, and session management.
+
+**Assessment:** UCX is the practical implementation substrate for any RDMA-based Hurray
+transport, not a format or protocol to evaluate as prior art per se. Worth knowing as
+the layer Hurray's RDMA extension must integrate with.
+
+---
+
+### 2.14 Apache Arrow Flight
+
+**What it is:** A gRPC-based RPC framework for high-performance Arrow data exchange,
+built on top of the Arrow IPC format.
+
+**How it works:** Arrow Flight defines a set of RPCs — `DoGet` (server streams data to
+client), `DoPut` (client streams data to server), `DoExchange` (bidirectional), and
+metadata calls (`GetFlightInfo`, `ListFlights`). Data travels as `FlightData` messages,
+each containing an Arrow IPC message header and a raw data body.
+
+**Transport:** gRPC over HTTP/2. All data — control and payload — goes through gRPC
+streaming. No RDMA support. Implementations can achieve ~2–3 GB/s on fast LAN.
+
+**Layout model:** Inherits Arrow's limitations: row-major or column-major only, no
+tiled or packed layouts, no quantization.
+
+**Strengths:** Excellent for columnar record batch interchange. Simple RPC model. Good
+ecosystem (Java, C++, Python, Go, Rust clients).
+
+**Weaknesses for tensor workloads:**
+- gRPC serialization requires at least one CPU copy per message — incompatible with
+  true zero-copy for GB-scale tensor buffers.
+- Buffer alignment is not preserved through gRPC: receivers must copy to aligned memory
+  before passing to GPU or BLAS kernels.
+- No layout negotiation, no quantization metadata, no device memory support.
+
+**Assessment:** The primary design inspiration for Hurray's network transport protocol.
+Hurray adopts Arrow Flight's streaming RPC model (descriptor before data, typed messages,
+bidirectional exchange) and extends it with layout negotiation, extension layout entry
+encoding, parallel shard transfers, and a hook for an RDMA data plane.
+
+---
+
 ## 3. Comparative Summary
 
-| | DLPack | Arrow | SafeTensors | GGUF | ONNX | Zarr | Hurray (goal) |
-|---|---|---|---|---|---|---|---|
-| **Zero-copy runtime** | ✅ | ✅ | Partial | Partial | ❌ | ❌ | ✅ |
-| **IPC / streaming** | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Language-agnostic ABI** | ✅ | ✅ | ❌ | ❌ | Partial | ❌ | ✅ |
-| **Tiled/blocked layouts** | ❌ | ❌ | ❌ | ❌ | ❌ | Partial | ✅ |
-| **Strides** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Quantization metadata** | ❌ | ❌ | ❌ | ✅ (informal) | Partial | ❌ | ✅ |
-| **Sparsity descriptors** | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ✅ |
-| **Sub-byte packing** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ |
-| **Variable-shape (ragged)** | ❌ | Partial | ❌ | ❌ | Partial | ✅ | ✅ |
-| **On-disk storage** | ❌ | Partial | ✅ | ✅ | ✅ | ✅ | Partial |
-| **Adoption** | High | High | High | High | High | Medium | — |
+| | DLPack | Arrow | SafeTensors | GGUF | ONNX | Zarr | NIXL | NCCL | Arrow Flight | Hurray (goal) |
+|---|---|---|---|---|---|---|---|---|---|---|
+| **Zero-copy runtime** | ✅ | ✅ | Partial | Partial | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ |
+| **RDMA / GPU-direct** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Optional |
+| **Network streaming** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ✅ | ✅ |
+| **Layout negotiation** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Language-agnostic ABI** | ✅ | ✅ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ✅ | ✅ |
+| **Tiled/blocked layouts** | ❌ | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ✅ |
+| **Strides** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Quantization metadata** | ❌ | ❌ | ❌ | ✅ (informal) | Partial | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Sparsity descriptors** | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Sub-byte packing** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **On-disk storage** | ❌ | Partial | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | Partial |
+| **Adoption** | High | High | High | High | High | Medium | Emerging | High | Medium | — |
 
 ---
 
@@ -216,6 +337,8 @@ No existing format combines:
 5. **Alignment guarantees** — 64-byte minimum for SIMD; page-aligned for GPU/IPC — expressed in the spec, not left to convention.
 
 The closest analogy: Parquet is to Zarr as Arrow is to Hurray. Existing formats cover storage well. The runtime interchange layer for tensor data remains genuinely open.
+
+On the transport side, NIXL and NCCL solve the "move bytes fast" problem for GPU tensors using RDMA, but provide no tensor metadata vocabulary — no layout, no quantization, no descriptor. Arrow Flight provides the right streaming RPC model but uses gRPC throughout, which prevents zero-copy and alignment preservation for GB-scale tensor buffers. Hurray combines the descriptor layer missing from NIXL/NCCL with the streaming framing of Arrow Flight and an optional RDMA data plane hook.
 
 ---
 
