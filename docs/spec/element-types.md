@@ -257,6 +257,12 @@ These formulas apply to contiguous (dense) layouts. For strided layouts, the buf
 - **Memory Layout (`memory-layout.md`)**: Stride semantics for sub-byte types require special treatment. Strides are expressed in logical elements; the packing rules in this section define how logical element indices map to bit positions within the buffer.
 - **Metadata (`metadata.md`)**: The type tag defined here is stored as a `uint8` field in the binary tensor descriptor.
 
+## Relationship to the Python Array API
+
+> **Note (non-normative):** The Tier 1 numeric types — `bool`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float16`, `bfloat16`, `float32`, `float64`, `complex64`, `complex128` — overlap with the dtype vocabulary defined by the Python Array API Standard (data-apis.org/array-api). This alignment is intentional: Hurray tensors carrying Tier 1 element types can be surfaced through a Python Array API-compliant interface (via `__array_namespace__`, `__dlpack__`, and `__dlpack_device__`) without dtype translation.
+
+> **Note (non-normative):** Tier 2 types (`float8_e4m3`, `float8_e5m2`, `float8_e8m0`, `int4`, `uint4`, `int2`, `uint2`) have no counterpart in the Python Array API Standard. Language bindings exposing these types SHOULD use a `hurray`-namespaced dtype object rather than mapping them to a standard Array API dtype. Quantized tensor types (see `quantization.md`) are similarly out of scope for the Array API.
+
 ## Open Questions
 
 > **[OQ-1]:** Should `float8_e4m3` follow the OCP OFP8 convention (no infinities, two NaN values) or the IEEE 754 draft for binary8 (which may differ)? Current text follows OCP OFP8. This should be revisited when IEEE 754 binary8 is finalized.
