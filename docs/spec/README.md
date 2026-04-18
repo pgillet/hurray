@@ -33,7 +33,16 @@ descriptor whose major version field exceeds the reader's supported major versio
 | [element-types.md](element-types.md) | Numeric element type system: type tags, bit widths, encoding, sub-byte packing |
 | [data-model.md](data-model.md) | Element type system, shape and dimension model |
 | [quantization.md](quantization.md) | Per-tensor, per-channel, and per-block quantization |
-| [memory-layout.md](memory-layout.md) | Memory layouts: strided, tiled, Morton, general subpaving; sub-byte stride semantics; sharding |
+| [memory-layout.md](memory-layout.md) | Layout taxonomy, common fields, element address computation, alignment, sharding, buffer table |
+| [layouts/row-major.md](layouts/row-major.md) | Row-major (C order) layout — tag `0x01` |
+| [layouts/column-major.md](layouts/column-major.md) | Column-major (Fortran order) layout — tag `0x02` |
+| [layouts/strided.md](layouts/strided.md) | Strided layout with negative/zero stride support — tag `0x03` |
+| [layouts/tiled.md](layouts/tiled.md) | Tiled / blocked layout with recursive nesting — tag `0x04` |
+| [layouts/morton.md](layouts/morton.md) | Morton (Z-order curve) layout — tag `0x05` |
+| [layouts/subpaving.md](layouts/subpaving.md) | General subpaving (irregular regions) layout — tag `0x06` |
+| [layouts/coo.md](layouts/coo.md) | COO (Coordinate) sparse layout — tag `0x07` |
+| [layouts/csr.md](layouts/csr.md) | CSR (Compressed Sparse Row) sparse layout — tag `0x08` |
+| [layouts/hilbert.md](layouts/hilbert.md) | Hilbert curve layout — tag `0x40` |
 | [buffer-protocol.md](buffer-protocol.md) | Zero-copy semantics, alignment, device memory |
 | [metadata.md](metadata.md) | Tensor descriptor binary encoding |
 | [interchange.md](interchange.md) | Runtime interchange: in-process, IPC, cross-machine |
