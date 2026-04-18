@@ -35,7 +35,8 @@ followed by zero or more **optional sections** selected by the flags field.
 [Buffer Table]         variable
 [Quantization]         variable, present if HAS_QUANTIZATION flag is set
 [Shard]                variable, present if HAS_SHARD flag is set
-[Extension Type]       variable, present if HAS_EXTENSION_TYPE flag is set
+[Statistics]           72 bytes, present if HAS_STATISTICS flag is set
+[Extension Type]       20 bytes, present if HAS_EXTENSION_TYPE flag is set
 ```
 
 All multi-byte fields MUST be encoded in little-endian byte order (least significant
@@ -75,7 +76,8 @@ A reader MUST NOT read beyond `descriptor_length` bytes when parsing a descripto
 | 0 | `HAS_QUANTIZATION` | A quantization descriptor section is present (see [Quantization Section](#quantization-section)). |
 | 1 | `HAS_SHARD` | A shard descriptor section is present (see [Shard Section](#shard-section)). |
 | 2 | `HAS_EXTENSION_TYPE` | An extension type descriptor section is present. MUST be set if and only if `type_tag` is in the range `0xF0`–`0xFE` (see [Extension Type Section](#extension-type-section)). |
-| 3–31 | (reserved) | MUST be `0`. A reader MUST reject a descriptor with any reserved flag bit set. |
+| 3 | `HAS_STATISTICS` | A statistics section is present (see [Statistics Section](#statistics-section)). |
+| 4–31 | (reserved) | MUST be `0`. A reader MUST reject a descriptor with any reserved flag bit set. |
 
 ---
 
@@ -250,6 +252,75 @@ Present if and only if the `HAS_SHARD` flag (bit 1) is set.
 
 The constraint `shard_offset[k] + shape[k] <= parent_shape[k]` MUST hold for every
 dimension `k`. A reader MUST reject a shard descriptor that violates this constraint.
+
+---
+
+## Statistics Section
+
+Present if and only if the `HAS_STATISTICS` flag (bit 3) is set.
+
+The statistics section is a fixed-size **72-byte** block. All statistics are
+**advisory**: they reflect the tensor data at write time. A reader MUST NOT rely on
+any statistic for correctness; statistics MAY be used only as optimization hints
+(algorithm selection, memory pre-allocation, routing decisions).
+
+> **Note (non-normative):** A streaming writer that has not processed the entire
+> tensor buffer before emitting the descriptor (e.g., a pipeline stage forwarding data
+> on the fly) MUST omit the statistics section (`HAS_STATISTICS` not set) rather than
+> emitting invalid statistics. A writer that knows only a subset of statistics (e.g.,
+> `nnz` is known from a sparse format but `value_mean` was not computed) MUST mark
+> the unknown fields as not valid in `computed_mask`.
+
+### computed_mask
+
+The `computed_mask` field (first 4 bytes of the section) is a bitmask indicating
+which statistics fields contain valid data. A reader MUST check the relevant bit
+before using any field. Fields whose bit is not set MUST be treated as unknown,
+regardless of their encoded value.
+
+| Bit | Name | Covers |
+|-----|------|--------|
+| 0 | `NNZ_VALID` | `nnz` |
+| 1 | `SPARSITY_VALID` | `sparsity_ratio` |
+| 2 | `VALUE_RANGE_VALID` | `value_min`, `value_max`, `value_abs_max` |
+| 3 | `VALUE_STATS_VALID` | `value_mean`, `value_stddev` |
+| 4 | `NM_SPARSITY_VALID` | `nm_n`, `nm_m` |
+| 5 | `NAN_INF_VALID` | `has_nan`, `has_inf` |
+| 6–31 | (reserved) | MUST be `0`. |
+
+### Field Encoding
+
+The 72-byte statistics block is encoded as follows. All multi-byte fields are
+little-endian.
+
+| Offset | Field | Type | Description |
+|--------|-------|------|-------------|
+| 0 | `computed_mask` | `uint32` | Validity bitmask (see above). |
+| 4 | `_reserved` | `uint32` | MUST be `0x00000000`. |
+| 8 | `nnz` | `uint64` | Number of non-zero elements. Valid when `NNZ_VALID` is set. |
+| 16 | `sparsity_ratio` | `float64` | Fraction of zero elements: `(total_elements - nnz) / total_elements`. Range `[0.0, 1.0]`. Valid when `SPARSITY_VALID` is set. |
+| 24 | `value_min` | `float64` | Minimum element value, dequantized to `float64`. Valid when `VALUE_RANGE_VALID` is set. |
+| 32 | `value_max` | `float64` | Maximum element value, dequantized to `float64`. Valid when `VALUE_RANGE_VALID` is set. |
+| 40 | `value_abs_max` | `float64` | Maximum absolute element value (`max(abs(value_min), abs(value_max))`). Key input for symmetric quantization range calibration. Valid when `VALUE_RANGE_VALID` is set. |
+| 48 | `value_mean` | `float64` | Arithmetic mean of all elements, dequantized to `float64`. Valid when `VALUE_STATS_VALID` is set. |
+| 56 | `value_stddev` | `float64` | Population standard deviation of all elements, dequantized to `float64`. MUST be greater than or equal to `0.0`. Valid when `VALUE_STATS_VALID` is set. |
+| 64 | `nm_n` | `uint8` | N in the N:M structured sparsity pattern (e.g., `2` for 2:4 sparsity). `0x00` if not applicable. Valid when `NM_SPARSITY_VALID` is set. |
+| 65 | `nm_m` | `uint8` | M in the N:M structured sparsity pattern (e.g., `4` for 2:4 sparsity). MUST satisfy `nm_n <= nm_m`. `0x00` if not applicable. Valid when `NM_SPARSITY_VALID` is set. |
+| 66 | `has_nan` | `uint8` | `0x01` if at least one NaN element is present; `0x00` if no NaN was found. Valid when `NAN_INF_VALID` is set. |
+| 67 | `has_inf` | `uint8` | `0x01` if at least one positive or negative infinity is present; `0x00` otherwise. Valid when `NAN_INF_VALID` is set. |
+| 68 | `_reserved2` | `uint8[4]` | MUST be `0x00`. |
+
+> **Note (non-normative):** `value_min`, `value_max`, `value_abs_max`, `value_mean`,
+> and `value_stddev` are always expressed in `float64` regardless of the tensor's
+> element type. For quantized tensors, these values reflect dequantized (real-valued)
+> statistics, not the raw quantized storage values. For `bool` types, the statistics
+> are defined over the integer domain `{0, 1}`.
+
+> **Note (non-normative):** N:M structured sparsity is particularly relevant for
+> NVIDIA Ampere/Ada/Hopper Tensor Cores, which provide hardware-accelerated 2:4
+> sparsity (2 non-zeros in every group of 4 consecutive elements). Declaring the
+> N:M pattern in the descriptor lets a receiver select the sparse kernel path without
+> scanning the buffer.
 
 ---
 
