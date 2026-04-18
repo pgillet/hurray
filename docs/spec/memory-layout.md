@@ -56,6 +56,7 @@ MAY accept the descriptor but MUST NOT dereference or interpret the tensor data 
 | General Subpaving | `0x06` | 1 | Dense | [layouts/subpaving.md](layouts/subpaving.md) |
 | COO (Coordinate) | `0x07` | 1 | Sparse | [layouts/coo.md](layouts/coo.md) |
 | CSR (Compressed Sparse Row) | `0x08` | 1 | Sparse | [layouts/csr.md](layouts/csr.md) |
+| CSC (Compressed Sparse Column) | `0x09` | 1 | Sparse | [layouts/csc.md](layouts/csc.md) |
 | Hilbert curve | `0x40` | 2 | Dense | [layouts/hilbert.md](layouts/hilbert.md) |
 
 Writers choose the layout. Hurray imposes no requirement on which layout a writer

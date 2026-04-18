@@ -42,6 +42,7 @@ descriptor whose major version field exceeds the reader's supported major versio
 | [layouts/subpaving.md](layouts/subpaving.md) | General subpaving (irregular regions) layout — tag `0x06` |
 | [layouts/coo.md](layouts/coo.md) | COO (Coordinate) sparse layout — tag `0x07` |
 | [layouts/csr.md](layouts/csr.md) | CSR (Compressed Sparse Row) sparse layout — tag `0x08` |
+| [layouts/csc.md](layouts/csc.md) | CSC (Compressed Sparse Column) sparse layout — tag `0x09` (also known as CCS) |
 | [layouts/hilbert.md](layouts/hilbert.md) | Hilbert curve layout — tag `0x40` |
 | [buffer-protocol.md](buffer-protocol.md) | Zero-copy semantics, alignment, device memory |
 | [metadata.md](metadata.md) | Tensor descriptor binary encoding |
