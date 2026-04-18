@@ -74,10 +74,12 @@ The protocol is **half-duplex per stream**: within a single stream, the client s
 request and the server responds with a sequence of messages. Multiple streams MAY be
 multiplexed over a single connection.
 
-> **Note (non-normative):** Multiplexing is an application-level concern; the protocol
-> does not mandate a specific multiplexing scheme. Implementations MAY use one TCP
-> connection per stream, or MAY multiplex multiple streams over a single connection
-> using an application-level stream identifier in the message header.
+> **Note (non-normative):** The `stream_id` field is an opaque per-stream identifier.
+> Implementations MAY use one TCP connection per stream, or MAY multiplex multiple
+> streams over a single connection by demultiplexing on `stream_id`. Messages are
+> self-framing (fixed-size header + `payload_length` bytes), so a receiver can always
+> advance to the next message regardless of `stream_id`. Normative multiplexing rules
+> are not defined in this version of the spec.
 
 ### Message Framing
 
@@ -474,10 +476,7 @@ stream. The connection MAY remain open for other streams.
 
 > **[OQ-2]:** ~~RDMA data plane handshake.~~ **Resolved:** `RDMA_REGISTER` (`0x0000000C`) and `RDMA_READY` (`0x0000000D`) message types are now defined. The party owning the source buffer registers its memory region and sends `RDMA_REGISTER` (rkey + remote address + length) over the control plane; the peer responds with `RDMA_READY`; the RDMA operation executes out-of-band; `TENSOR_DATA_END` is sent over the control plane as the authoritative completion signal. See [RDMA Data Plane](#rdma-data-plane).
 
-> **[OQ-3]:** Multiplexing: should the protocol define a normative stream multiplexing
-> scheme over a single TCP connection (using `stream_id`), or delegate multiplexing
-> entirely to the transport layer (one TCP connection per stream)? A normative scheme
-> avoids the overhead of multiple TCP connections but adds protocol complexity.
+> **[OQ-3]:** ~~Multiplexing scheme.~~ **Resolved:** The `stream_id` field is defined as an opaque per-stream identifier. Implementations MAY multiplex multiple streams over a single TCP connection using `stream_id` for demultiplexing, but the protocol does not mandate a normative multiplexing scheme. Each stream MAY equivalently run on its own connection. Normative multiplexing rules are deferred to a future revision once the format is stable.
 
 > **[OQ-4]:** `TENSOR_PUT` semantics: the `TENSOR_PUT` / `TENSOR_PUT_ACK` message pair
 > is defined but not fully specified. Does the server store the tensor persistently, or
