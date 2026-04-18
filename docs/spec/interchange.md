@@ -437,6 +437,53 @@ buffer is ready.
 
 ---
 
+## TENSOR_PUT
+
+### Overview
+
+`TENSOR_PUT` allows a client to push a tensor to the server. The protocol defines
+the wire exchange only — the server-side storage model (lifetime, eviction, collision
+handling) is an implementation concern and is intentionally out of scope.
+
+### TENSOR_PUT Flow
+
+```
+Client                          Server
+  |--- TENSOR_PUT --------------->|  (tensor key + descriptor)
+  |--- TENSOR_DATA (one or more)->|  (data frames)
+  |--- TENSOR_DATA_END ---------->|
+  |<-- TENSOR_PUT_ACK ------------|  (server confirmed receipt)
+```
+
+With the RDMA data plane, `TENSOR_DATA` frames are replaced by the RDMA handshake
+described in [TENSOR_PUT with RDMA](#tensor_put-with-rdma).
+
+### TENSOR_PUT Payload
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tensor_key` | `utf8 string` | Identifier for the pushed tensor. Encoded as a `uint32` byte length followed by UTF-8 bytes. |
+| `descriptor` | `byte sequence` | Serialized tensor descriptor as defined in `metadata.md`. Encoded as a `uint32` byte length followed by the descriptor bytes. |
+| `total_data_bytes` | `uint64` | Total number of bytes that will follow in `TENSOR_DATA` frames. |
+
+### TENSOR_PUT_ACK Payload
+
+The `TENSOR_PUT_ACK` message has an empty payload (`payload_length = 0`). It
+signals that the server has received and accepted the complete tensor buffer. It
+does not imply anything about how the server stores, forwards, or uses the tensor.
+
+If the server cannot accept the tensor for any reason (e.g., policy rejection, resource
+exhaustion), it MUST send an `ERROR` message instead of `TENSOR_PUT_ACK` and close
+the stream.
+
+> **Note (non-normative):** Server-side storage semantics — including tensor lifetime,
+> eviction policy, and key collision handling — are deliberately unspecified. A server
+> implementation is free to store the tensor for the session, forward it immediately to
+> another peer, or discard it after use. The protocol's role is delivery confirmation,
+> not storage coordination.
+
+---
+
 ## Error Handling
 
 ### ERROR Payload
@@ -478,10 +525,7 @@ stream. The connection MAY remain open for other streams.
 
 > **[OQ-3]:** ~~Multiplexing scheme.~~ **Resolved:** The `stream_id` field is defined as an opaque per-stream identifier. Implementations MAY multiplex multiple streams over a single TCP connection using `stream_id` for demultiplexing, but the protocol does not mandate a normative multiplexing scheme. Each stream MAY equivalently run on its own connection. Normative multiplexing rules are deferred to a future revision once the format is stable.
 
-> **[OQ-4]:** `TENSOR_PUT` semantics: the `TENSOR_PUT` / `TENSOR_PUT_ACK` message pair
-> is defined but not fully specified. Does the server store the tensor persistently, or
-> only for the duration of the session? How are key collisions handled? This requires
-> a server-side storage model that is currently out of scope.
+> **[OQ-4]:** ~~`TENSOR_PUT` semantics.~~ **Resolved:** Server-side storage model is explicitly out of scope. `TENSOR_PUT_ACK` means "received and accepted"; it carries no implication about persistence, lifetime, or collision handling. Those are implementation concerns. The server sends `ERROR` to reject a PUT for any reason. See [TENSOR_PUT](#tensor_put).
 
 ---
 
