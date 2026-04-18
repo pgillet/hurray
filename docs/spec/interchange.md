@@ -112,6 +112,8 @@ send an `ERROR` message in response.
 | `0x00000009` | `ERROR` | Either | Error response; terminates the stream |
 | `0x0000000A` | `PING` | Either | Keepalive request |
 | `0x0000000B` | `PONG` | Either | Keepalive response |
+| `0x0000000C` | `RDMA_REGISTER` | Either | RDMA memory region registration: shares rkey and remote address |
+| `0x0000000D` | `RDMA_READY` | Either | Acknowledges RDMA_REGISTER; signals readiness for the RDMA transfer |
 | `0x000000F0`–`0x000000FE` | (reserved) | — | Reserved for future use |
 | `0x000000FF` | (invalid) | — | Reserved; MUST NOT be used |
 
@@ -351,6 +353,88 @@ violates these constraints.
 
 ---
 
+## RDMA Data Plane
+
+### Overview
+
+When both client and server advertise the `RDMA_DATA_PLANE` capability flag during
+session establishment, the data plane for individual tensor transfers MAY use RDMA
+rather than TCP `TENSOR_DATA` frames. The control plane (TCP) is still used for all
+session management, descriptor exchange, and completion signalling.
+
+> **Note (non-normative):** The RDMA data plane bypasses TCP framing for the tensor
+> buffer itself. For GB-scale tensors this eliminates CPU copies and TCP serialisation
+> overhead, achieving near-line-rate GPU-to-GPU transfer via GPUDirect RDMA. The
+> underlying RDMA operations are performed by an RDMA library such as UCX
+> (`ucp_put_nb` / `ucp_get_nb`) or libibverbs (`ibv_post_send`). The Hurray protocol
+> specifies the handshake messages; it does not mandate a specific RDMA library.
+
+### Handshake Flow (Server → Client Tensor Transfer)
+
+When both parties have advertised `RDMA_DATA_PLANE`, the server MAY substitute the
+`TENSOR_DATA` / `TENSOR_DATA_END` sequence with an RDMA handshake. The client MUST
+be prepared to handle either path.
+
+```
+Client                          Server
+  |                               |
+  |--- TENSOR_REQUEST ----------->|
+  |<-- TENSOR_DESCRIPTOR ---------|
+  |<-- RDMA_REGISTER -------------|  (server registers buffer, shares rkey + addr)
+  |--- RDMA_READY --------------->|  (client is ready; RDMA operation may begin)
+  |                               |
+  |   [RDMA Write or Read executes outside the TCP control plane]
+  |                               |
+  |<-- TENSOR_DATA_END -----------|  (server signals that buffer is ready on client side)
+```
+
+The server MUST send `TENSOR_DESCRIPTOR` before `RDMA_REGISTER`. The `RDMA_REGISTER`
+message MUST be sent on the same stream as the corresponding `TENSOR_DESCRIPTOR`.
+
+### RDMA_REGISTER Payload
+
+Sent by the party that owns the source data buffer — the server for `TENSOR_REQUEST`
+transfers, the client for `TENSOR_PUT` transfers:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `remote_addr` | `uint64` | Virtual address of the registered memory region on the sender's side. Little-endian. |
+| `length` | `uint64` | Size of the memory region in bytes. MUST equal `total_data_bytes` from the preceding `TENSOR_DESCRIPTOR`. Little-endian. |
+| `rkey` | `byte sequence` | Opaque RDMA memory key. Encoded as a `uint32` byte-length prefix followed by that many bytes. The format is RDMA-library-specific (e.g., a UCX packed rkey blob, or a 4-byte IB verbs `rkey`). |
+
+A receiver that cannot complete RDMA setup (e.g., memory pinning failed, no RDMA
+hardware available on the required path) MUST respond with an `ERROR` message instead
+of `RDMA_READY`. The sender MUST then fall back to transmitting the tensor via
+`TENSOR_DATA` frames on the control plane.
+
+### RDMA_READY Payload
+
+The `RDMA_READY` message has an empty payload (`payload_length = 0`). It signals
+that the receiver has processed `RDMA_REGISTER` and is ready for the RDMA transfer
+to begin.
+
+### Completion
+
+After the RDMA operation completes on the sender's side, the sender MUST send
+`TENSOR_DATA_END` over the control plane. The receiver MUST NOT read from the
+transferred buffer before receiving `TENSOR_DATA_END`.
+
+> **Note (non-normative):** RDMA Write completion on the sender does not imply that
+> the receiver has observed the data without an explicit memory fence or signal.
+> `TENSOR_DATA_END` serves as that authoritative "buffer is ready" signal. The sender
+> MUST ensure the RDMA operation has completed (e.g., via a completion queue event)
+> before sending `TENSOR_DATA_END`.
+
+### TENSOR_PUT with RDMA
+
+For `TENSOR_PUT` (client → server), roles are reversed: after sending
+`TENSOR_DESCRIPTOR`, the client sends `RDMA_REGISTER`; the server responds with
+`RDMA_READY`. The client performs the RDMA Write into the server's memory region and
+then sends `TENSOR_DATA_END`. The server sends `TENSOR_PUT_ACK` after confirming the
+buffer is ready.
+
+---
+
 ## Error Handling
 
 ### ERROR Payload
@@ -388,11 +472,7 @@ stream. The connection MAY remain open for other streams.
 > big-endian clients to byte-swap on receipt. Another is to define a transport-level
 > byte-swap flag that does not affect the format spec. Resolution pending.
 
-> **[OQ-2]:** RDMA data plane: when both parties advertise `RDMA_DATA_PLANE` capability,
-> what is the handshake for exchanging RDMA memory region keys and remote addresses?
-> This likely requires additional message types (`RDMA_REGISTER`, `RDMA_READY`) and
-> a dependency on an RDMA transport library (e.g., UCX, libibverbs). Fully specifying
-> this is deferred to a future revision.
+> **[OQ-2]:** ~~RDMA data plane handshake.~~ **Resolved:** `RDMA_REGISTER` (`0x0000000C`) and `RDMA_READY` (`0x0000000D`) message types are now defined. The party owning the source buffer registers its memory region and sends `RDMA_REGISTER` (rkey + remote address + length) over the control plane; the peer responds with `RDMA_READY`; the RDMA operation executes out-of-band; `TENSOR_DATA_END` is sent over the control plane as the authoritative completion signal. See [RDMA Data Plane](#rdma-data-plane).
 
 > **[OQ-3]:** Multiplexing: should the protocol define a normative stream multiplexing
 > scheme over a single TCP connection (using `stream_id`), or delegate multiplexing
