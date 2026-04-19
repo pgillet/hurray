@@ -13,7 +13,7 @@ quantization schemes, and access patterns of modern AI/ML inference pipelines.
 - Support the full range of quantization schemes used in modern inference.
 - Be streamable: a reader MUST be able to start processing tensor data without buffering the entire input, and a writer MUST be able to emit tensor data incrementally without buffering the entire output. Tensor descriptors always precede their data buffers; the format is self-delimiting; back-references and end-of-file indexes are not permitted.
 - Be extensible without breaking existing readers.
-- Be Python Array API-compatible for standard dtypes: the `hurray-python` bindings layer SHOULD expose a Python Array API-compliant interface (`__array_namespace__`, `__dlpack__`, `__dlpack_device__`) for tensors with Tier 1 element types. Quantized and sub-byte types are Hurray extensions beyond the Array API's dtype vocabulary and are exposed through a `hurray`-namespaced dtype object.
+- Align the Tier 1 element type vocabulary with the Python Array API Standard, enabling zero-copy interoperability without dtype translation for standard numeric types. See [`docs/impl/python-bindings.md`](../impl/python-bindings.md) for binding-level requirements.
 
 ## RFC 2119 Notice
 
