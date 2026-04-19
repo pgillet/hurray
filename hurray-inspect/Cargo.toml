@@ -1,0 +1,14 @@
+[package]
+name = "hurray-inspect"
+description = "CLI tool to inspect Hurray binary tensor descriptor files as a human-readable hex table."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "hurray-inspect"
+path = "src/main.rs"
+
+[dependencies]
+thiserror = { workspace = true }

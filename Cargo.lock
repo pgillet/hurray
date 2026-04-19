@@ -108,6 +108,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hurray-inspect"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "hurray-io"
 version = "0.1.0"
 dependencies = [
