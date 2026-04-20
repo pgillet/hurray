@@ -120,3 +120,5 @@ Key references the research and architecture agents are aware of:
 | GGUF | Block quantization encoding reference (Q4_K, Q8_0, etc.) |
 | ONNX TensorProto | Type system breadth reference |
 | Zarr v3 | Chunk/shard layout and codec pipeline reference |
+| NetCDF | Widely adopted scientific N-D array file format; no zero-copy, no quantization |
+| OPeNDAP | De facto data transport protocol for array data in Earth Sciences; not zero-copy, not inference-oriented |
