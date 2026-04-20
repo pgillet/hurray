@@ -85,9 +85,11 @@ hurray/
 
 | Agent | Owns |
 |-------|------|
-| `researcher` | State-of-the-art surveys, prior art analysis, hardware constraint research. Runs before major design decisions. |
-| `architect` | Design decisions, trade-off analysis, ADRs. Consumes researcher output. |
-| `format-spec-writer` | All files under `docs/spec/`. Resolves ambiguities reported by implementation agents. |
+| `researcher` | State-of-the-art surveys, prior art analysis, hardware constraint research. Maintains `docs/prior-art.md`. Runs before major design decisions. |
+| `architect` | Design decisions, trade-off analysis, ADRs (`docs/adr/`). Consumes researcher output. Resolves open questions escalated by `spec-checker`. |
+| `format-spec-writer` | All files under `docs/spec/` and `docs/impl/`. Resolves ambiguities and contradictions reported by `spec-checker` or implementation agents. |
+| `spec-checker` | Read-only audit of the full spec corpus (`docs/spec/`, `docs/impl/`). Reports contradictions, gaps, redundant definitions, unclosed open questions [OQ-N], and RFC 2119 misuse. Never edits files directly — findings go to `format-spec-writer` (editorial fixes) or `architect` (design questions). Invoked periodically or before major spec milestones. |
+| `planner` | Breaks complex features into concrete, phased implementation steps. Runs before `rust-developer` for non-trivial work. |
 | `rust-developer` | All files under `hurray-*/src/`. Implements what the spec defines. Does not write tests. |
 | `rust-test-writer` | All files under `hurray-*/tests/` and `#[cfg(test)]` modules. Tests the public API, not internals. |
 | `rust-reviewer` | Reviews implementation and tests for correctness, idioms, and spec fidelity. |
@@ -95,16 +97,29 @@ hurray/
 | `performance-optimizer` | Profiling and optimization passes. Only invoked explicitly. |
 | `refactor-cleaner` | Code cleanup and refactoring. Only invoked explicitly. |
 | `doc-updater` | Keeps `///` doc comments and `docs/` in sync with implementation changes. |
-| `planner` | Breaks features into concrete, phased implementation steps. |
 
 ## Development Workflow
 
+### Spec phase (current)
+
 ```
-researcher          (surveys prior art)
+researcher          (surveys prior art, updates docs/prior-art.md)
     ↓
 architect           (makes design decision, writes ADR)
     ↓
-format-spec-writer  (writes normative spec section)
+format-spec-writer  (writes/updates docs/spec/ and docs/impl/)
+    ↓
+spec-checker        (audits full corpus for consistency, reports findings)
+    ↓
+format-spec-writer  (applies editorial fixes from spec-checker report)
+    ↑
+architect           (resolves design-level findings from spec-checker)
+```
+
+### Implementation phase (future)
+
+```
+planner             (breaks feature into steps)
     ↓
 rust-developer      (implements against the spec)
     ↓
@@ -113,6 +128,8 @@ rust-test-writer    (writes tests against the public API)
 rust-reviewer       (reviews both)
     ↓
 rust-build-resolver (fixes any compile errors)
+    ↓
+doc-updater         (syncs doc comments and docs/ with implementation)
 ```
 
 ## Spec Writing Conventions
