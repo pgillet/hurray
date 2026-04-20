@@ -177,7 +177,43 @@ No single layout is universally optimal. The right layout depends on the operati
 
 ---
 
-### 2.10 HPC Libraries: PLASMA and SLATE
+### 2.10 NetCDF
+
+**What it is:** Network Common Data Form — a widely adopted open standard for array-oriented scientific data (climate, oceanography, geophysics).
+
+**How it works:** Files store N-dimensional variables with named dimensions, attributes, and a small set of primitive types (float32, float64, int16, int32, etc.). CDL (Common Data Language) provides a text representation. The classic format is based on XDR; NetCDF-4 uses HDF5 as the storage layer.
+
+**Layout model:** Dense arrays only. Row-major (C order). No strides, no tiling, no sparse layouts.
+
+**Quantization:** None. Scaling conventions (add_offset, scale_factor attributes) exist but are not standardized as first-class metadata.
+
+**Interchange:** File-based. No in-process ABI, no IPC protocol, no zero-copy semantics.
+
+**Adoption:** Very high in Earth Sciences, geospatial, and computational fluid dynamics communities. The Python ecosystem (xarray, netCDF4-python) relies on it heavily.
+
+**Assessment:** A practical reference for N-dimensional array file formats with named dimensions and rich metadata conventions. Not designed for runtime interchange, quantized inference, or multi-layout pipelines.
+
+---
+
+### 2.11 OPeNDAP
+
+**What it is:** Open-source Project for a Network Data Access Protocol — a de facto standard in the Earth Sciences community for remote access to scientific array data.
+
+**How it works:** OPeNDAP defines a data model (based on NetCDF/DODS), a constraint expression language for server-side sub-setting and projection, and an HTTP-based transport protocol (DAP2 / DAP4). A client sends a constrained request (e.g., "variable X, indices [0:10, 50:100]"); the server computes the sub-set and streams the result as binary + metadata.
+
+**Layout model:** Dense arrays, row-major. No tiling, no sparsity, no sub-byte packing.
+
+**Quantization:** None.
+
+**Interchange:** Network-only, request/response model. No zero-copy, no RDMA, no in-process ABI.
+
+**Adoption:** High in Earth Sciences (NASA, NOAA, CMIP climate archives). Implemented by Hyrax (OPeNDAP server) and THREDDS Data Server.
+
+**Assessment:** Prior art for server-side array sub-setting and streaming over HTTP. Demonstrates demand for a protocol that understands array structure (shapes, slices, variable names), not just raw bytes. Hurray's streaming and interchange goals operate in a similar problem space but target in-process / IPC / RDMA use cases rather than HTTP-based remote access.
+
+---
+
+### 2.12 HPC Libraries: PLASMA and SLATE
 
 **PLASMA** — A parallel linear algebra library that natively uses tiled matrix layouts. Tiles are stored as individually allocated blocks, enabling asynchronous task-parallel execution on multicore CPUs. Not an interchange format.
 
@@ -187,7 +223,7 @@ No single layout is universally optimal. The right layout depends on the operati
 
 ---
 
-### 2.11 NIXL (NVIDIA Inference Xfer Library)
+### 2.13 NIXL (NVIDIA Inference Xfer Library)
 
 **What it is:** An open-source tensor transfer library from NVIDIA, designed specifically
 for high-throughput tensor exchange in LLM inference pipelines (announced at GTC 2025).
@@ -223,7 +259,7 @@ Hurray's descriptor layer adds on top.
 
 ---
 
-### 2.12 NCCL + GPUDirect RDMA
+### 2.14 NCCL + GPUDirect RDMA
 
 **What it is:** NVIDIA Collective Communications Library — the standard library for
 GPU-to-GPU communication in distributed ML workloads.
@@ -247,7 +283,7 @@ provides no layout negotiation, no streaming framing, and no quantization suppor
 
 ---
 
-### 2.13 UCX (Unified Communication X)
+### 2.15 UCX (Unified Communication X)
 
 **What it is:** An open-source communication framework that abstracts over multiple
 high-performance transport layers: InfiniBand (verbs), RoCE, TCP/IP, shared memory,
@@ -274,7 +310,7 @@ the layer Hurray's RDMA extension must integrate with.
 
 ---
 
-### 2.14 Apache Arrow Flight
+### 2.16 Apache Arrow Flight
 
 **What it is:** A gRPC-based RPC framework for high-performance Arrow data exchange,
 built on top of the Arrow IPC format.
@@ -309,20 +345,20 @@ encoding, parallel shard transfers, and a hook for an RDMA data plane.
 
 ## 3. Comparative Summary
 
-| | DLPack | Arrow | SafeTensors | GGUF | ONNX | Zarr | NIXL | NCCL | Arrow Flight | Hurray (goal) |
-|---|---|---|---|---|---|---|---|---|---|---|
-| **Zero-copy runtime** | ✅ | ✅ | Partial | Partial | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ |
-| **RDMA / GPU-direct** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Optional |
-| **Network streaming** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ✅ | ✅ |
-| **Layout negotiation** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Language-agnostic ABI** | ✅ | ✅ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ✅ | ✅ |
-| **Tiled/blocked layouts** | ❌ | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ✅ |
-| **Strides** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Quantization metadata** | ❌ | ❌ | ❌ | ✅ (informal) | Partial | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Sparsity descriptors** | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Sub-byte packing** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **On-disk storage** | ❌ | Partial | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | Partial |
-| **Adoption** | High | High | High | High | High | Medium | Emerging | High | Medium | — |
+| | DLPack | Arrow | SafeTensors | GGUF | ONNX | Zarr | NetCDF | OPeNDAP | NIXL | NCCL | Arrow Flight | Hurray (goal) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **Zero-copy runtime** | ✅ | ✅ | Partial | Partial | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ |
+| **RDMA / GPU-direct** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Optional |
+| **Network streaming** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Partial | ❌ | ✅ | ✅ |
+| **Layout negotiation** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Language-agnostic ABI** | ✅ | ✅ | ❌ | ❌ | Partial | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
+| **Tiled/blocked layouts** | ❌ | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Strides** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Quantization metadata** | ❌ | ❌ | ❌ | ✅ (informal) | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Sparsity descriptors** | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Sub-byte packing** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **On-disk storage** | ❌ | Partial | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Partial |
+| **Adoption** | High | High | High | High | High | Medium | High | Medium | Emerging | High | Medium | — |
 
 ---
 
