@@ -4,30 +4,54 @@
 
 Think Apache Arrow, but for tensors.
 
+## Current Phase
+
+The project is in the **specification and requirements phase**. Work is focused on `docs/spec/`, `docs/impl/`, and `docs/prior-art.md`. Rust implementation work is deferred until the spec is stable. Do not produce implementation code unless explicitly asked.
+
 ## Project Structure
 
 ```
 hurray/
 ├── CLAUDE.md                   # This file
+├── TODO.md                     # Running list of ideas and future tasks (reviewed periodically)
 ├── Cargo.toml                  # Workspace root
 ├── docs/
-│   └── spec/                   # Format specification (source of truth)
-│       ├── README.md           # Scope, goals, RFC 2119 notice, versioning
-│       ├── data-model.md       # Element type system, shape/dimension model
-│       ├── quantization.md     # Quantization schemes: per-tensor, per-channel, per-block
-│       ├── memory-layout.md    # Strides, contiguous, tiled, packed (sub-byte)
-│       ├── buffer-protocol.md  # Zero-copy semantics, alignment, device memory
-│       ├── metadata.md         # Tensor descriptor binary encoding
-│       ├── interchange.md      # Runtime interchange: in-process, IPC, cross-machine
-│       ├── versioning.md       # Format version field, compatibility policy
-│       └── references.md       # Normative references
-├── docs/
+│   ├── prior-art.md            # Research snapshot: formats, protocols, libraries
+│   ├── spec/                   # Format specification (source of truth)
+│   │   ├── README.md           # Scope, goals, RFC 2119 notice, versioning
+│   │   ├── data-model.md       # Shape/dimension model
+│   │   ├── element-types.md    # Element type system (int, float, quantized, custom)
+│   │   ├── quantization.md     # Quantization schemes: per-tensor, per-channel, per-block
+│   │   ├── memory-layout.md    # Layout index and overview
+│   │   ├── layouts/            # Per-layout spec files
+│   │   │   ├── row-major.md
+│   │   │   ├── column-major.md
+│   │   │   ├── strided.md
+│   │   │   ├── tiled.md
+│   │   │   ├── morton.md
+│   │   │   ├── hilbert.md
+│   │   │   ├── subpaving.md
+│   │   │   ├── coo.md          # Sparse: Coordinate list
+│   │   │   ├── csr.md          # Sparse: Compressed Sparse Row
+│   │   │   └── csc.md          # Sparse: Compressed Sparse Column
+│   │   ├── buffer-protocol.md  # Zero-copy semantics, alignment, device memory
+│   │   ├── metadata.md         # Tensor descriptor binary encoding
+│   │   ├── interchange.md      # Runtime interchange: in-process, IPC, cross-machine
+│   │   ├── versioning.md       # Format version field, compatibility policy
+│   │   └── references.md       # Normative references
+│   ├── impl/                   # Implementation requirements (not the spec itself)
+│   │   ├── README.md           # Overview of implementation requirement docs
+│   │   ├── compliance.md       # Compliance checklist for implementors
+│   │   ├── rust-reference.md   # Rust reference implementation guide
+│   │   ├── c-ffi.md            # C FFI implementation guide
+│   │   └── python-bindings.md  # Python bindings implementation guide
 │   └── adr/                    # Architecture Decision Records
-│       └── ADR-001-*.md
+│       └── ADR-NNN-*.md
 ├── hurray-core/                # Core types, no I/O, no async
 ├── hurray-io/                  # Async I/O: streaming + file format (tokio)
 ├── hurray-ffi/                 # C ABI layer for language bindings
-└── hurray-python/              # Python bindings (PyO3)
+├── hurray-python/              # Python bindings (PyO3)
+└── hurray-inspect/             # CLI hex viewer for Hurray descriptor files
 ```
 
 ## Guiding Principles
@@ -112,13 +136,16 @@ rust-build-resolver (fixes any compile errors)
 
 Key references the research and architecture agents are aware of:
 
-| Format | Relevance |
-|--------|-----------|
+| Format / Protocol | Relevance |
+|-------------------|-----------|
 | DLPack | Closest existing tensor ABI; no quantization, limited layout metadata |
 | Apache Arrow | Buffer protocol and IPC framing inspiration; columnar, not tensor-focused |
+| Apache Arrow Flight | Streaming RPC model reference; gRPC prevents true zero-copy at scale |
 | SafeTensors | Simple safe serialization; not a zero-copy runtime protocol |
 | GGUF | Block quantization encoding reference (Q4_K, Q8_0, etc.) |
 | ONNX TensorProto | Type system breadth reference |
 | Zarr v3 | Chunk/shard layout and codec pipeline reference |
 | NetCDF | Widely adopted scientific N-D array file format; no zero-copy, no quantization |
-| OPeNDAP | De facto data transport protocol for array data in Earth Sciences; not zero-copy, not inference-oriented |
+| OPeNDAP | De facto array data transport protocol in Earth Sciences; HTTP-based, not zero-copy |
+| NIXL | NVIDIA tensor transfer library; solves RDMA transport but has no tensor metadata vocabulary |
+| NCCL + GPUDirect | GPU collective communications; raw buffer transfers, no layout or quantization metadata |
