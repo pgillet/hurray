@@ -41,13 +41,15 @@ dimensions. It is encoded as a `uint32` in the tensor descriptor (`metadata.md`)
 - Higher ranks are used for batched inputs, activation maps, and weight tensors
   in neural networks.
 
-There is no upper bound on rank imposed by the data model. Implementations MAY
-impose practical limits; a conforming implementation MUST support tensors of
-rank up to `64` inclusive.
+The maximum rank is **64**. A writer MUST NOT emit a descriptor with `rank > 64`.
+A reader MUST reject a descriptor with `rank > 64`. A conforming implementation
+MUST support tensors of rank `0` through `64` inclusive (see
+`docs/adr/ADR-008-normative-rank-cap-64.md`).
 
-> **Note (non-normative):** The `uint32` rank field allows values up to
-> `0xFFFFFFFF`, but physical memory constraints make ranks above a few hundred
-> unrealisable in practice.
+> **Note (non-normative):** The `uint32` rank field can encode values above 64,
+> but those values are reserved and will be rejected. The cap matches PyTorch's
+> MAX_DIMS = 64 and bounds the shape-array size at 512 bytes (64 × 8), enabling
+> stack allocation on the descriptor-parsing hot path.
 
 ---
 
@@ -181,8 +183,4 @@ error. A zero-length data buffer MAY be represented with a null pointer; the
 
 ## Open Questions
 
-> **[OQ-1]:** Should the specification define a maximum rank (e.g., `64`) as a
-> normative cap, or leave it unconstrained with only a SHOULD-level
-> recommendation? A normative cap simplifies implementation (fixed-size stack
-> buffers for shape arrays) but may be unnecessarily restrictive for scientific
-> computing use cases. Current text requires support up to rank `64` inclusive.
+All open questions in this section are resolved. See `docs/adr/ADR-007-permit-empty-tensors.md` (OQ-2) and `docs/adr/ADR-008-normative-rank-cap-64.md` (OQ-1).
