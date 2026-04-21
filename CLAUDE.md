@@ -1,8 +1,20 @@
-# Hurray
+# Hurray — Agent Configuration
 
-**Hurray** is a language-agnostic, zero-copy runtime interchange format for multi-dimensional tensor data, optimized for the memory layout diversity, quantization schemes, and access patterns of modern AI/ML inference pipelines.
+> For the human-readable project overview, format contract, and key properties, see **`README.md`** at the repo root.
 
-Think Apache Arrow, but for tensors.
+## Live Information Sources
+
+Agents MUST read from project files directly rather than relying on memory for project content:
+
+| What | Where |
+|------|-------|
+| Project overview and format contract | `README.md` |
+| Pending ideas and tasks | `TODO.md` |
+| Open questions | `grep -rn "OQ-" docs/spec/` |
+| Architectural decisions | `docs/adr/` |
+| Prior art survey | `docs/prior-art.md` |
+| Format specification | `docs/spec/` |
+| Implementation requirements | `docs/impl/` |
 
 ## Current Phase
 
@@ -151,18 +163,4 @@ doc-updater         (syncs doc comments and docs/ with implementation)
 
 ## Prior Art
 
-Key references the research and architecture agents are aware of:
-
-| Format / Protocol | Relevance |
-|-------------------|-----------|
-| DLPack | Closest existing tensor ABI; no quantization, limited layout metadata |
-| Apache Arrow | Buffer protocol and IPC framing inspiration; columnar, not tensor-focused |
-| Apache Arrow Flight | Streaming RPC model reference; gRPC prevents true zero-copy at scale |
-| SafeTensors | Simple safe serialization; not a zero-copy runtime protocol |
-| GGUF | Block quantization encoding reference (Q4_K, Q8_0, etc.) |
-| ONNX TensorProto | Type system breadth reference |
-| Zarr v3 | Chunk/shard layout and codec pipeline reference |
-| NetCDF | Widely adopted scientific N-D array file format; no zero-copy, no quantization |
-| OPeNDAP | De facto array data transport protocol in Earth Sciences; HTTP-based, not zero-copy |
-| NIXL | NVIDIA tensor transfer library; solves RDMA transport but has no tensor metadata vocabulary |
-| NCCL + GPUDirect | GPU collective communications; raw buffer transfers, no layout or quantization metadata |
+See `docs/prior-art.md` for the full survey. A summary table is in `README.md`.
