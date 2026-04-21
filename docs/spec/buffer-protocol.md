@@ -159,19 +159,19 @@ callback MUST be safe to call from any thread.
 
 ### Reference Counting
 
-Implementations MAY use reference counting to support multiple simultaneous
-readers of the same buffer (e.g., a tensor shared between two downstream
-pipeline stages). When reference counting is used:
+Reference counting is an **implementation detail** — not a normative contract
+(see `docs/adr/ADR-009-release-callback-not-normative-refcount.md`). A producer
+that wishes to support multiple simultaneous consumers of the same buffer MUST
+implement reference counting internally. Each consumer receives a separate buffer
+handle whose release callback decrements the internal count; the actual
+deallocation occurs only when the count reaches zero. Consumers are unaware of
+this; they call their release callback exactly once as the normative contract
+requires.
 
-- The initial reference count is `1` (held by the consumer at handoff).
-- Each additional reader that retains the buffer MUST increment the reference
-  count atomically.
-- Each reader MUST decrement the reference count atomically when it releases.
-- The release callback is invoked exactly when the reference count reaches `0`.
-
-The reference counting mechanism is an implementation detail; the protocol
-guarantees only that the release callback is called exactly once per buffer
-handoff.
+> **Note (non-normative):** This is the same model used by DLPack's
+> `DLManagedTensor.deleter`. It keeps the ABI surface minimal and allows each
+> language binding to use its own lifetime management idiom (Python GC,
+> Rust `Arc`, etc.) without bridging to a C reference count.
 
 ---
 
@@ -218,8 +218,5 @@ and runtime boundaries. The following invariants MUST hold at all times:
 
 ## Open Questions
 
-> **[OQ-1]:** Should the specification define a normative reference-counting API
-> at the C ABI level, or leave the reference counting mechanism entirely to the
-> implementation? The current text treats reference counting as an implementation
-> detail. Defining a normative API would make multi-consumer sharing interoperable
-> across independent implementations but adds API surface area.
+All open questions in this section are resolved. See
+`docs/adr/ADR-009-release-callback-not-normative-refcount.md` (OQ-1).
