@@ -8,7 +8,7 @@ Think Apache Arrow, but for tensors.
 
 ## Core Properties
 
-These properties are the contract of the Hurray format. Every section of the specification MUST be consistent with all of them. The `spec-checker` agent uses this list as its primary checklist.
+These properties are the contract of the Hurray format. Every section of the specification MUST be consistent with all of them.
 
 ### 1. Zero-Copy First
 
