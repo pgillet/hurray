@@ -151,9 +151,16 @@ A tensor is **empty** if `element_count = 0`. This occurs when at least one
 dimension has size `0`. An empty tensor is valid; its data buffer has size `0`
 bytes.
 
-An empty tensor MUST still carry a valid descriptor with a correct element type
-and layout tag. A reader MUST accept an empty tensor without treating it as an
-error.
+An empty tensor MUST still carry a complete, valid descriptor with a correct
+element type, layout tag, buffer table, and any applicable quantization
+descriptor. A reader MUST accept an empty tensor without treating it as an
+error. A zero-length data buffer MAY be represented with a null pointer; the
+64-byte alignment requirement does not apply to a zero-length buffer.
+
+> **Note (non-normative):** The decision to permit empty tensors is recorded in
+> `docs/adr/ADR-007-permit-empty-tensors.md`. The primary motivation is
+> round-trip fidelity with PyTorch, NumPy, JAX, Apache Arrow, and DLPack, all
+> of which permit zero-size dimensions.
 
 ---
 
@@ -179,8 +186,3 @@ error.
 > recommendation? A normative cap simplifies implementation (fixed-size stack
 > buffers for shape arrays) but may be unnecessarily restrictive for scientific
 > computing use cases. Current text requires support up to rank `64` inclusive.
-
-> **[OQ-2]:** Should empty tensors (any dimension size `0`) be normatively
-> permitted, or should a zero-size dimension be rejected as invalid? PyTorch and
-> NumPy allow zero-size dimensions; ONNX does not in all contexts. Current text
-> permits them.
