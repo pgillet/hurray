@@ -17,6 +17,12 @@ This section focuses primarily on the **network transport** mode, as it is the m
 complex and the most relevant to distributed inference pipelines. In-process and IPC
 modes are covered in [In-Process and IPC](#in-process-and-ipc).
 
+A Hurray stream MAY contain zero or more tensors. Back-to-back concatenation of
+self-delimiting descriptor+data pairs is the canonical multi-tensor encoding: a
+reader processes one tensor at a time, advancing to the next descriptor after the
+current tensor's data is consumed. No container header, index, or tensor names are
+defined at this level (see `docs/adr/ADR-010-multi-tensor-collections-deferred.md`).
+
 > **Note (non-normative):** The design of the Hurray network transport protocol draws
 > inspiration from Apache Arrow Flight, but differs in several key respects: it is
 > tensor-focused (not columnar), it supports layout and device negotiation, it defines
