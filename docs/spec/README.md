@@ -11,7 +11,7 @@ quantization schemes, and access patterns of modern AI/ML inference pipelines.
 - Define a binary tensor descriptor encoding that is language- and runtime-agnostic.
 - Enable zero-copy buffer sharing across runtimes, processes, and devices.
 - Support the full range of quantization schemes used in modern inference.
-- Be streamable: a reader MUST be able to start processing tensor data without buffering the entire input, and a writer MUST be able to emit tensor data incrementally without buffering the entire output. Tensor descriptors always precede their data buffers; the format is self-delimiting; back-references and end-of-file indexes are not permitted.
+- Be streamable (streaming format): a reader MUST be able to start processing tensor data without buffering the entire input, and a writer MUST be able to emit tensor data incrementally without buffering the entire output. Tensor descriptors always precede their data buffers; the format is self-delimiting; back-references are not permitted. File format writers operate in a single forward pass and append a footer index at the end.
 - Be extensible without breaking existing readers.
 - Align the Tier 1 element type vocabulary with the Python Array API Standard, enabling zero-copy interoperability without dtype translation for standard numeric types. See [`docs/impl/python-bindings.md`](../impl/python-bindings.md) for binding-level requirements.
 
@@ -46,6 +46,7 @@ descriptor whose major version field exceeds the reader's supported major versio
 | [layouts/hilbert.md](layouts/hilbert.md) | Hilbert curve layout — tag `0x40` |
 | [buffer-protocol.md](buffer-protocol.md) | Zero-copy semantics, alignment, device memory |
 | [metadata.md](metadata.md) | Tensor descriptor binary encoding |
-| [interchange.md](interchange.md) | Runtime interchange: in-process, IPC, cross-machine |
+| [interchange.md](interchange.md) | Streaming IPC format: in-process, IPC, cross-machine network transport |
+| [file-format.md](file-format.md) | File format: random-access container with named tensors, footer index, KV metadata |
 | [versioning.md](versioning.md) | Format version field and compatibility policy |
 | [references.md](references.md) | Normative references |

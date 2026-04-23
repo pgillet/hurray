@@ -1,8 +1,11 @@
 # Hurray
 
-**Hurray** is a language-agnostic, zero-copy runtime interchange format for multi-dimensional tensor data, optimized for the memory layout diversity, quantization schemes, and access patterns of modern AI/ML inference pipelines.
+**Hurray** is a language-agnostic, zero-copy tensor format for multi-dimensional tensor data, optimized for the memory layout diversity, quantization schemes, and access patterns of modern AI/ML inference pipelines.
 
-Think Apache Arrow, but for tensors.
+Hurray defines two binary formats that share the same tensor descriptor encoding:
+
+- **Streaming format** — for runtime interchange: in-process pointer passing, IPC, and cross-machine streaming. Self-delimiting, no seek required. Think Apache Arrow, but for tensors.
+- **File format** — for on-disk model storage and distribution: named tensors, footer index for random access, mmap-based zero-copy loading. Think SafeTensors or GGUF, but with rich layout and quantization metadata.
 
 ---
 
@@ -12,33 +15,39 @@ These properties are the contract of the Hurray format. Every section of the spe
 
 ### 1. Zero-Copy First
 
-Tensor data is shared across runtimes and languages via buffer handles, not copies. Buffers are aligned to 64 bytes minimum (SIMD), page-aligned for GPU/IPC. The format defines a stable C ABI so any language can participate without going through Rust. Quantization parameter arrays (scales, zero-points) live in separate buffer table entries — not interleaved with data — preserving zero-copy access to both.
+Tensor data is shared across runtimes and languages via buffer handles, not copies. In the streaming format, buffers are passed by reference (64-byte minimum alignment for SIMD, page-aligned for GPU/IPC). In the file format, tensor data buffers are aligned to page boundaries within the file (4 KiB minimum) to enable zero-copy mmap-to-GPU loading. The format defines a stable C ABI so any language can participate without going through Rust. Quantization parameter arrays (scales, zero-points) live in separate buffer table entries — not interleaved with data — preserving zero-copy access to both.
 
-### 2. Streamable by Design
+### 2. Two Formats, One Descriptor
 
-The tensor descriptor always precedes its data buffer. A reader can start processing before the full payload arrives. No back-references, no end-of-file indexes, no buffering of the full input required. Both readers and writers operate incrementally. The format is self-delimiting: a receiver can determine the descriptor's total byte length from the first 10 bytes.
+Both formats share the same tensor descriptor encoding. A tensor descriptor parser written once works for both the streaming IPC format and the file format. The file format adds a container layer (magic `HRRYFILE`, tensor names, footer index, optional typed key-value metadata) without modifying the descriptor.
 
-### 3. Rich Memory Layout Vocabulary
+### 3. Streamable by Design
+
+**Streaming format:** The tensor descriptor always precedes its data buffer. A reader can start processing before the full payload arrives. No back-references, no end-of-file indexes, no buffering of the full input required. Both readers and writers operate incrementally. The format is self-delimiting: a receiver can determine the descriptor's total byte length from the first 10 bytes.
+
+**File format:** Writers operate in a single forward pass — tensor descriptors and data are written sequentially, byte offsets are tracked in memory, and the footer index and 32-byte trailer are written last. No backward seek is required to write a file. Readers can use the footer index for random access (seek to any tensor by name) or read the file sequentially without seeking.
+
+### 4. Rich Memory Layout Vocabulary
 
 Ten layout types are defined: row-major, column-major, strided, tiled/blocked (for GEMM), Morton Z-order, Hilbert curve, general subpaving, and sparse COO/CSR/CSC. Strides are expressed in logical elements, not bytes. Negative and zero strides are valid. Sub-byte packing (int4, bool) is first-class.
 
-### 4. First-Class Quantization
+### 5. First-Class Quantization
 
 Five normative quantization schemes are defined: per-tensor affine, per-channel affine, per-block affine (GGUF family), NF4 (QLoRA), and MXFP (OCP Microscaling / NVIDIA Blackwell). The storage type (`type_tag`) is orthogonal to the quantization scheme (`scheme_tag`) — a tensor is quantized if and only if the `HAS_QUANTIZATION` flag is set. Dequantization formulas are normative.
 
-### 5. Language-Agnostic
+### 6. Language-Agnostic
 
 No Rust-isms leak into the format or the C FFI boundary. The binary spec uses generic type names (`int32`, `float16`, `uint8`). Any language that can read a struct from a buffer can implement it. The spec deliberately avoids Rust, Python, or C++ idioms.
 
-### 6. Self-Describing and Self-Delimiting
+### 7. Self-Describing and Self-Delimiting
 
 Every tensor descriptor carries its own length in the first 10 bytes (readable before parsing the rest). Magic bytes (`HRRY`) and version fields allow format evolution. Optional sections (quantization, shard, statistics, extension type) are gated by flag bits and length-prefixed so readers can skip what they don't understand without rejecting the tensor.
 
-### 7. Inference-Optimized Type System
+### 8. Inference-Optimized Type System
 
 Tier 1 types cover `float16`, `bfloat16`, `float32`, `float64`, signed/unsigned integers from `int4` to `int64`, `bool`. Tier 2 adds `float8_e4m3` and `float8_e5m2` for Blackwell/MI300X inference. Private extension tags (`0xF0`–`0xFE`) allow vendor-specific types. Each private extension tag MUST carry an inline descriptor encoding at minimum: bit width, packing, and floating-point parameters.
 
-### 8. Multi-Transport Interchange
+### 9. Multi-Transport Interchange
 
 The interchange protocol covers in-process (pointer passing), IPC (shared memory), and cross-machine (streaming framing + optional RDMA data plane via GPUDirect). Layout negotiation is built into the protocol. Sender and receiver agree on the tensor format before data moves.
 
@@ -50,13 +59,15 @@ See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the full annotated file tre
 
 ## Key Design Invariants
 
-These invariants must never be violated by any spec section or implementation:
+These invariants apply to both formats unless noted:
 
-- Descriptor always precedes its data buffer
-- No back-references, no end-of-file indexes
+- Descriptor always precedes its data buffer (both formats)
+- No back-references within a tensor (both formats)
+- **Streaming format only:** no end-of-file indexes; self-delimiting, no seek required
+- **File format only:** footer index for random access; 4 KiB-aligned data buffers for mmap
 - Strides expressed in logical elements, not bytes
 - Little-endian throughout — no endianness negotiation
-- 64-byte minimum buffer alignment; page-aligned for GPU/IPC
+- 64-byte minimum buffer alignment for SIMD (streaming); 4 KiB minimum for mmap (file)
 - `type_tag` (storage type) is orthogonal to `scheme_tag` (quantization scheme)
 
 ---
@@ -74,16 +85,16 @@ These invariants must never be violated by any spec section or implementation:
 
 See `docs/prior-art.md` for the full research snapshot. Key references:
 
-| Format / Protocol | Relevance |
-|-------------------|-----------|
-| DLPack | Closest existing tensor ABI; no quantization, limited layout metadata |
-| Apache Arrow | Buffer protocol and IPC framing inspiration; columnar, not tensor-focused |
-| Apache Arrow Flight | Streaming RPC model reference; gRPC prevents true zero-copy at scale |
-| SafeTensors | Simple safe serialization; not a zero-copy runtime protocol |
-| GGUF | Block quantization encoding reference (Q4_K, Q8_0, etc.) |
-| ONNX TensorProto | Type system breadth reference |
-| Zarr v3 | Chunk/shard layout and codec pipeline reference |
-| NetCDF | Widely adopted scientific N-D array file format; no zero-copy, no quantization |
-| OPeNDAP | De facto array data transport protocol in Earth Sciences; HTTP-based, not zero-copy |
-| NIXL | NVIDIA tensor transfer library; RDMA transport but no tensor metadata vocabulary |
-| NCCL + GPUDirect | GPU collective communications; raw buffer transfers, no layout or quantization metadata |
+| Format / Protocol | Format type | Relevance |
+|-------------------|-------------|-----------|
+| DLPack | Streaming (in-process) | Closest existing tensor ABI; no quantization, limited layout metadata |
+| Apache Arrow | Both (stream + file) | Buffer protocol and IPC framing inspiration; columnar, not tensor-focused |
+| Apache Arrow Flight | Streaming (network) | Streaming RPC model reference; gRPC prevents true zero-copy at scale |
+| SafeTensors | File | Simple safe serialization; footer index, mmap-friendly; no layout diversity, no quantization |
+| GGUF | File | Block quantization encoding reference; typed KV metadata model; binary footer index |
+| ONNX TensorProto | File | Type system breadth reference |
+| Zarr v3 | File (chunked) | Chunk/shard layout and codec pipeline reference |
+| NetCDF | File | Widely adopted scientific N-D array file format; no zero-copy, no quantization |
+| OPeNDAP | Streaming (network) | De facto array data transport protocol in Earth Sciences; HTTP-based, not zero-copy |
+| NIXL | Streaming (network) | NVIDIA tensor transfer library; RDMA transport but no tensor metadata vocabulary |
+| NCCL + GPUDirect | Streaming (network) | GPU collective communications; raw buffer transfers, no layout or quantization metadata |

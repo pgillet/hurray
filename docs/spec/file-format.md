@@ -1,0 +1,336 @@
+# File Format — Hurray Format Specification
+
+> **Status:** Draft
+
+> This section uses RFC 2119 key words: MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT,
+> SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL.
+
+## Scope
+
+This section defines the **Hurray file format**: a random-access container for one or
+more named tensors, intended for on-disk model storage, distribution, and mmap-based
+zero-copy loading. It is the companion to the streaming IPC format defined in
+`interchange.md`.
+
+The two formats are **complementary, not competing**:
+
+| | Streaming format | File format |
+|-|-----------------|-------------|
+| Transport | Socket, pipe, RDMA, IPC | Seekable file or mmap-able region |
+| Tensor count | Unbounded, unknown upfront | Fixed, enumerable via index |
+| Tensor names | None | Required, unique UTF-8 |
+| Random access | No | Yes — seek to any tensor by name |
+| Writer constraint | Single-pass, no seek required | Single-pass, sequential write + footer |
+| Reader start | Immediately (streaming) | After file is complete (index in footer) |
+| Prior art | Arrow IPC stream, gRPC | SafeTensors, GGUF, Arrow IPC file |
+
+Both formats share the **same tensor descriptor encoding** defined in `metadata.md`.
+The file format adds a container layer; it does not redefine how individual tensors
+are described.
+
+See `docs/adr/ADR-011-file-format-random-access-container.md` for the design decisions.
+
+---
+
+## File Layout
+
+A Hurray file has the following structure, in order:
+
+```
+[ File header          ]   64 bytes, fixed
+[ Padding              ]   0x00 bytes, to first_descriptor_offset
+[ Tensor region        ]   repeated: descriptor → padding → data buffer(s) → padding
+[ KV metadata section  ]   optional, located by trailer
+[ Index section        ]   located by trailer
+[ Trailer              ]   32 bytes, fixed, at file_size - 32
+```
+
+All multi-byte fields MUST be encoded in little-endian byte order.
+
+---
+
+## File Header
+
+The file header occupies the first 64 bytes of the file.
+
+| Offset | Field | Type | Description |
+|--------|-------|------|-------------|
+| 0 | `magic` | `uint8[8]` | MUST be `0x48 0x52 0x52 0x59 0x46 0x49 0x4C 0x45` (ASCII `HRRYFILE`). |
+| 8 | `container_version_major` | `uint8` | Container format major version. Current: `0x01`. |
+| 9 | `container_version_minor` | `uint8` | Container format minor version. Current: `0x00`. |
+| 10 | `_reserved` | `uint8[2]` | MUST be `0x00`. |
+| 12 | `file_flags` | `uint32` | Bitmask of file-level flags. See [§ File Flags](#file-flags). |
+| 16 | `data_buffer_alignment` | `uint32` | Alignment (bytes) applied to all tensor data buffers within the file. MUST be a power of two and MUST be at least `4096`. MUST NOT exceed `2097152` (2 MiB). |
+| 20 | `first_descriptor_offset` | `uint64` | Absolute byte offset of the first tensor descriptor. MUST be `>= 64`. Typically `64` (immediately after the header). |
+| 28 | `tensor_count_hint` | `uint64` | Number of tensors in the file, if known at write time. Writers that do not know this upfront MUST set this field to `0xFFFFFFFFFFFFFFFF`. Readers MUST NOT rely on this field for correctness; use the index entry count instead. |
+| 36 | `_reserved_header` | `uint8[28]` | MUST be `0x00`. Reserved for future use. |
+
+Total: 64 bytes.
+
+A reader MUST reject a file whose `magic` does not equal `HRRYFILE`. A reader MUST
+reject a file whose `container_version_major` exceeds the highest major version the
+reader supports.
+
+### File Flags
+
+| Bit | Name | Meaning |
+|-----|------|---------|
+| 0 | `HAS_KV_METADATA` | KV metadata section is present; `kv_offset` and `kv_length` in the trailer are non-zero. |
+| 1 | `SORTED_INDEX` | Index entries are sorted by UTF-8 byte order of `name`, enabling binary search. A writer MUST NOT set this flag unless the index is actually sorted. |
+| 2–31 | (reserved) | MUST be `0`. A reader MUST reject a file with reserved flag bits set. |
+
+---
+
+## Tensor Region
+
+Following the file header (and any padding to `first_descriptor_offset`), tensors are
+written sequentially. Each tensor occupies the following region:
+
+```
+[ Tensor descriptor    ]   as defined in metadata.md (begins with HRRY magic)
+[ Padding              ]   0x00 bytes to align next data buffer to data_buffer_alignment
+[ Data buffer 0        ]   tensor data, byte_size bytes
+[ Padding              ]   0x00 bytes to align next item to data_buffer_alignment
+[ Data buffer 1        ]   (if buffer_count > 1)
+[ Padding              ]
+  ...
+[ Padding              ]   0x00 bytes to align next descriptor to 8 bytes
+```
+
+### Descriptor Placement
+
+Each tensor descriptor MUST begin at a byte offset that is a multiple of `8`. The
+first descriptor begins at `first_descriptor_offset` (which MUST be 8-byte aligned).
+Subsequent descriptors begin at the next 8-byte-aligned offset after the previous
+tensor's last data buffer (including padding).
+
+### Data Buffer Placement
+
+The first data buffer of a tensor MUST begin at a byte offset that is a multiple of
+`data_buffer_alignment`. If the tensor descriptor ends at a byte offset that is not
+a multiple of `data_buffer_alignment`, the writer MUST insert `0x00` padding bytes
+to reach the next `data_buffer_alignment` boundary.
+
+If a tensor has multiple data buffers (e.g., dense data + quantization parameter
+buffers), each buffer MUST begin at a `data_buffer_alignment`-aligned offset. Padding
+bytes between buffers MUST be `0x00`.
+
+### Empty Tensors
+
+An empty tensor (any dimension size `0`) has data buffer byte size `0`. Its data
+buffer region occupies `0` bytes. The writer MUST still insert sufficient padding
+after the descriptor to satisfy alignment requirements for the *next* descriptor.
+
+---
+
+## KV Metadata Section
+
+The KV metadata section, when present (`HAS_KV_METADATA` flag set), is located by
+the trailer's `kv_offset` and `kv_length` fields. It MUST be aligned to an 8-byte
+boundary.
+
+### KV Section Encoding
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `kv_count` | `uint32` | Number of key-value entries. |
+| `kv_entries[kv_count]` | (variable) | Sequentially encoded KV entries. |
+
+Each KV entry is encoded as:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `key_length` | `uint16` | Length of the key in bytes. MUST be at least `1`. |
+| `key` | `uint8[key_length]` | UTF-8 key bytes, no null terminator. |
+| `value_tag` | `uint8` | Type tag for the value (see [§ KV Value Types](#kv-value-types)). |
+| `value` | (variable) | Value payload, encoded per value_tag. |
+
+Keys MUST be unique within the KV section (case-sensitive, byte-exact comparison).
+A reader MUST reject a file with duplicate KV keys. Keys MUST be valid UTF-8.
+
+### KV Value Types
+
+| Tag | Type | Payload encoding |
+|-----|------|-----------------|
+| `0x01` | `utf8 string` | `uint32` byte length, then UTF-8 bytes. |
+| `0x02` | `int64` | 8 bytes, little-endian. |
+| `0x03` | `uint64` | 8 bytes, little-endian. |
+| `0x04` | `float64` | 8 bytes, little-endian IEEE 754 binary64. |
+| `0x05` | `bool` | 1 byte. `0x00` = false, `0x01` = true. All other values MUST be rejected. |
+| `0x06` | `byte sequence` | `uint32` byte length, then opaque bytes. |
+| `0x07` | `array` | `uint8` element type tag (MUST be `0x01`–`0x06`), then `uint32` element count, then element payloads concatenated. |
+| `0x08`–`0xEF` | (reserved) | MUST NOT be used. A reader MUST reject a file containing a reserved value tag. |
+| `0xF0`–`0xFE` | (extension) | Implementation-private. MUST NOT appear in files exchanged between independent implementations unless agreed out of band. |
+| `0xFF` | (invalid) | MUST NOT be used. |
+
+> **Note (non-normative):** The KV section is intended for model-level metadata:
+> architecture name, quantization configuration identifier, tokenizer vocabulary
+> size, etc. It is not a substitute for per-tensor metadata; per-tensor fields
+> belong in the tensor descriptor.
+
+---
+
+## Index Section
+
+The index section is located by the trailer's `index_offset` and `index_length`
+fields. It MUST be aligned to an 8-byte boundary.
+
+### Index Encoding
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `index_entry_count` | `uint64` | Number of index entries. MUST equal the number of tensors in the file. |
+| `index_entries[index_entry_count]` | (variable) | Sequentially encoded index entries. |
+
+Each index entry is encoded as:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name_length` | `uint16` | Length of the tensor name in bytes. MUST be at least `1`. |
+| `name` | `uint8[name_length]` | UTF-8 tensor name bytes, no null terminator. |
+| `descriptor_offset` | `uint64` | Absolute byte offset of the tensor descriptor from the start of the file. |
+| `descriptor_length` | `uint32` | Length of the tensor descriptor in bytes. MUST equal the descriptor's own internal `descriptor_length` field; a reader MUST reject a file where they disagree. |
+| `data_offset` | `uint64` | Absolute byte offset of the first data buffer from the start of the file. |
+| `data_length` | `uint64` | Total byte length of all data buffers for this tensor (sum of all buffer `byte_size` values, plus inter-buffer padding within the tensor's data region). |
+| `flags` | `uint32` | Reserved for future use. MUST be `0x00000000`. |
+
+Index entry names MUST be unique within the index (case-sensitive, byte-exact).
+Index entries are written in tensor write order by default. If the `SORTED_INDEX`
+file flag is set, entries MUST be sorted by UTF-8 byte order of `name` (strict
+byte comparison, no Unicode normalisation).
+
+> **Note (non-normative):** The `descriptor_length` field in the index duplicates the
+> descriptor's own internal length to enable fast enumeration: a reader that wants to
+> list all tensor names, shapes, and dtypes can parse the index without touching any
+> descriptor byte, at O(index size) cost instead of O(file size).
+
+> **Note (non-normative):** `data_length` covers the full data region including
+> inter-buffer padding. A reader that wants to mmap the entire data region of a tensor
+> can use `data_offset` and `data_length` without parsing the buffer table.
+
+---
+
+## Trailer
+
+The trailer occupies the last 32 bytes of the file (bytes `file_size - 32` through
+`file_size - 1`).
+
+| Offset from trailer start | Field | Type | Description |
+|---------------------------|-------|------|-------------|
+| 0 | `index_offset` | `uint64` | Absolute byte offset of the index section from the start of the file. |
+| 8 | `index_length` | `uint64` | Byte length of the index section. |
+| 16 | `kv_offset` | `uint64` | Absolute byte offset of the KV metadata section. `0` if no KV section. |
+| 24 | `kv_length` | `uint32` | Byte length of the KV metadata section. `0` if no KV section. |
+| 28 | `trailer_magic` | `uint8[4]` | MUST be `0x48 0x52 0x52 0x59` (ASCII `HRRY`). |
+
+Total: 32 bytes.
+
+A reader locates the trailer by seeking to `file_size - 32`. It MUST verify
+`trailer_magic` before trusting any other trailer field.
+
+A reader MUST reject a file whose `index_offset + index_length` extends into the
+trailer (i.e., `index_offset + index_length > file_size - 32`).
+
+---
+
+## Reader Protocol
+
+### Random-Access (Seek-Capable) Reader
+
+1. Read bytes 0–7. MUST equal `HRRYFILE`.
+2. Read bytes 8–63 (remainder of file header). Check `container_version_major`.
+3. Seek to `file_size - 32`. Read trailer. Verify `trailer_magic`.
+4. Seek to `index_offset`. Read `index_length` bytes. Parse index.
+5. Optionally seek to `kv_offset`. Read KV metadata.
+6. For each requested tensor: seek to `descriptor_offset`, parse descriptor;
+   seek to `data_offset`, mmap or read `data_length` bytes.
+
+### Sequential Reader (No Seek)
+
+A reader that cannot seek MAY consume the file sequentially:
+
+1. Read and verify file header.
+2. Advance to `first_descriptor_offset`.
+3. Read each tensor descriptor (self-delimiting: length in bytes 6–9 of the
+   descriptor). Use the descriptor's buffer table to determine data size and
+   alignment. Read data. Skip padding to next 8-byte boundary.
+4. Continue until the byte sequence no longer begins with `HRRY` descriptor magic
+   (indicating the start of the KV or index section) or until EOF.
+
+A sequential reader cannot perform random access and cannot look up tensors by name
+without reading the entire file in order. This mode is OPTIONAL to implement.
+
+---
+
+## Writer Protocol
+
+A conforming streaming writer produces a valid Hurray file in a single forward pass:
+
+1. Write the file header. Set `tensor_count_hint` to `0xFFFFFFFFFFFFFFFF` if the
+   count is not known.
+2. For each tensor, in any order:
+   a. Record the current byte offset as `descriptor_offset`.
+   b. Write the tensor descriptor.
+   c. Insert `0x00` padding to the next `data_buffer_alignment` boundary.
+   d. Record the current byte offset as `data_offset`.
+   e. Write each data buffer; insert padding between buffers and after the last
+      one to maintain `data_buffer_alignment`.
+   f. Insert `0x00` padding to the next 8-byte boundary.
+   g. Record `descriptor_length` and `data_length` for the index.
+3. Write the KV metadata section (if any). Record its offset and length.
+4. Write the index section. Record its offset and length.
+5. Write the 32-byte trailer.
+
+The writer MUST NOT seek backward at any point. All offset information is tracked
+in memory as a list of `(name, descriptor_offset, descriptor_length, data_offset,
+data_length)` tuples, which is the only in-memory state required beyond the tensors
+themselves.
+
+---
+
+## Alignment and Padding Summary
+
+| Item | Required alignment | Padding fill |
+|------|--------------------|--------------|
+| File header | n/a (byte 0) | — |
+| First tensor descriptor | `first_descriptor_offset` (≥ 8-byte aligned) | `0x00` |
+| Subsequent tensor descriptors | 8-byte | `0x00` |
+| Data buffers (all) | `data_buffer_alignment` (≥ 4096) | `0x00` |
+| KV metadata section | 8-byte | `0x00` |
+| Index section | 8-byte | `0x00` |
+| Trailer | last 32 bytes of file | — |
+
+---
+
+## Relationship to Other Sections
+
+- **`metadata.md`** defines the tensor descriptor encoding used verbatim within
+  tensor regions. The `descriptor_length` field in the index caches the value of
+  the descriptor's own internal length field.
+- **`interchange.md`** defines the streaming IPC format. The two formats are
+  complementary: file magic `HRRYFILE` distinguishes the file format from a stream
+  that begins with an `HRRY` descriptor.
+- **`buffer-protocol.md`** defines alignment rules. The file format's
+  `data_buffer_alignment` (minimum 4096 bytes) enables zero-copy mmap of tensor
+  data. The same device-tag and ownership rules apply to mmapped buffers.
+- **`versioning.md`** defines descriptor versioning. Container versioning
+  (`container_version_major` / `container_version_minor`) is independent of
+  descriptor versioning.
+
+---
+
+## Open Questions
+
+> **[OQ-1]:** Should single-tensor files be required to use a specific tensor name
+> (e.g., `"tensor"`) or may the name be freely chosen? Current text allows any
+> non-empty name. A reserved default name would simplify single-tensor use cases
+> but adds a special case.
+
+> **[OQ-2]:** The `SORTED_INDEX` flag requires UTF-8 byte order comparison with no
+> Unicode normalisation. Should NFC or case-folding normalisation be permitted in a
+> future `SORTED_INDEX_NFC` flag, or is strict byte order sufficient for the
+> foreseeable use cases?
+
+> **[OQ-3]:** Should the trailer carry a CRC-32C of the index section for integrity
+> verification? Current text defers this to v1.1. Related: `metadata.md` OQ-1 also
+> considers a descriptor checksum.
