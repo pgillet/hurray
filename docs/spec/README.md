@@ -14,6 +14,7 @@ quantization schemes, and access patterns of modern AI/ML inference pipelines.
 - Be streamable (streaming format): a reader MUST be able to start processing tensor data without buffering the entire input, and a writer MUST be able to emit tensor data incrementally without buffering the entire output. Tensor descriptors always precede their data buffers; the format is self-delimiting; back-references are not permitted. File format writers operate in a single forward pass and append a footer index at the end.
 - Be extensible without breaking existing readers.
 - Align the Tier 1 element type vocabulary with the Python Array API Standard, enabling zero-copy interoperability without dtype translation for standard numeric types. See [`docs/impl/python-bindings.md`](../impl/python-bindings.md) for binding-level requirements.
+- Serve as the storage foundation of an array database engine: the file format, tiled/blocked layout, Morton and Hilbert curve layouts, and footer index are designed to be compatible with sub-array queries, tile-skipping, and range-based retrieval. Spec decisions that would foreclose chunk-based access, spatial locality, or dimension-range indexing MUST be evaluated against this use case before being adopted.
 
 ## RFC 2119 Notice
 
