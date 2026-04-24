@@ -33,6 +33,7 @@ descriptor whose major version field exceeds the reader's supported major versio
 |---------|-------------|
 | [element-types.md](element-types.md) | Numeric element type system: type tags, bit widths, encoding, sub-byte packing |
 | [data-model.md](data-model.md) | Element type system, shape and dimension model |
+| [compound-types.md](compound-types.md) | Compound Annotation: logical fixed-size tuple over a trailing dimension |
 | [quantization.md](quantization.md) | Per-tensor, per-channel, and per-block quantization |
 | [memory-layout.md](memory-layout.md) | Layout taxonomy, common fields, element address computation, alignment, sharding, buffer table |
 | [layouts/row-major.md](layouts/row-major.md) | Row-major (C order) layout — tag `0x01` |

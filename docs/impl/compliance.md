@@ -116,3 +116,38 @@ A conforming implementation MUST pass a test suite that covers:
 The reference Rust implementation provides the canonical test suite. Language binding
 test suites SHOULD mirror the reference suite and additionally test language-specific
 interoperability (see `python-bindings.md`, `c-ffi.md`).
+
+## Compound Annotation
+
+Compound Annotation support is defined in
+[`docs/spec/compound-types.md`](../spec/compound-types.md). A conforming
+implementation that advertises compound-annotation support MUST pass the
+following test vectors. An implementation that does not support compound
+annotations MUST reject any descriptor with `HAS_COMPOUND` set.
+
+### Mandatory test vectors
+
+(a) **Valid compound annotation.** A rank-3 tensor of shape `[H, W, 3]`
+    with `type_tag = 0x11` (`uint8`), `layout_tag = 0x01` (row-major),
+    `HAS_COMPOUND` set, `component_count = 3`, `HAS_COMPONENT_NAMES` set,
+    and names `"r"`, `"g"`, `"b"`. A conforming reader MUST accept the
+    descriptor and expose either the primitive view (rank 3) or the
+    compound view (rank 2 with a 3-tuple element), at the implementation's
+    discretion.
+
+(b) **Shape mismatch.** A descriptor with `HAS_COMPOUND` set in which
+    `shape[rank - 1]` is not equal to `component_count`. A conforming
+    reader MUST reject this descriptor.
+
+(c) **Non-unit trailing stride on strided layout.** A descriptor with
+    `layout_tag = 0x03` (strided), `HAS_COMPOUND` set, and
+    `strides[rank - 1] != 1`. A conforming reader MUST reject this
+    descriptor.
+
+(d) **Quantization and compound both set.** A descriptor with both
+    `HAS_QUANTIZATION` (bit 0) and `HAS_COMPOUND` (bit 4) set. A
+    conforming reader MUST reject this descriptor.
+
+(e) **Version gate.** A v1.1 descriptor with `HAS_COMPOUND` set presented
+    to a reader that only supports v1.0. The v1.0 reader MUST reject the
+    descriptor (this follows from the v1.0 reserved-flag rejection rule).

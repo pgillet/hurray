@@ -131,6 +131,12 @@ defines the mapping to real-valued elements. The storage type is always
 orthogonal to the quantization scheme: `type_tag` never encodes quantization
 semantics.
 
+> **Note (non-normative):** A tensor MAY carry an optional Compound
+> Annotation (see [`compound-types.md`](compound-types.md)) that groups its
+> innermost dimension into a named or unnamed fixed-size tuple. The
+> annotation does not change the tensor's bytes, shape, strides, or storage
+> type; it only changes the consumer-facing view.
+
 ---
 
 ## Scalar Tensors

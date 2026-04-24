@@ -35,9 +35,14 @@ followed by zero or more **optional sections** selected by the flags field.
 [Buffer Table]         variable
 [Quantization]         variable, present if HAS_QUANTIZATION flag is set
 [Shard]                variable, present if HAS_SHARD flag is set
+[Compound Annotation]  variable, present if HAS_COMPOUND flag is set
 [Statistics]           72 bytes, present if HAS_STATISTICS flag is set
 [Extension Type]       20 bytes, present if HAS_EXTENSION_TYPE flag is set
 ```
+
+When multiple optional sections are present, they MUST appear in the byte
+stream in the order shown above: Quantization, Shard, Compound Annotation,
+Statistics, Extension Type.
 
 All multi-byte fields MUST be encoded in little-endian byte order (least significant
 byte at the lowest address).
@@ -77,7 +82,8 @@ A reader MUST NOT read beyond `descriptor_length` bytes when parsing a descripto
 | 1 | `HAS_SHARD` | A shard descriptor section is present (see [Shard Section](#shard-section)). |
 | 2 | `HAS_EXTENSION_TYPE` | An extension type descriptor section is present. MUST be set if and only if `type_tag` is in the range `0xF0`–`0xFE` (see [Extension Type Section](#extension-type-section)). |
 | 3 | `HAS_STATISTICS` | A statistics section is present (see [Statistics Section](#statistics-section)). |
-| 4–31 | (reserved) | MUST be `0`. A reader MUST reject a descriptor with any reserved flag bit set. |
+| 4 | `HAS_COMPOUND` | A Compound Annotation Section is present; see [`compound-types.md`](compound-types.md). Introduced in format version `1.1`. |
+| 5–31 | (reserved) | MUST be `0`. A reader MUST reject a descriptor with any reserved flag bit set. |
 
 ---
 
@@ -252,6 +258,35 @@ Present if and only if the `HAS_SHARD` flag (bit 1) is set.
 
 The constraint `shard_offset[k] + shape[k] <= parent_shape[k]` MUST hold for every
 dimension `k`. A reader MUST reject a shard descriptor that violates this constraint.
+
+---
+
+## Compound Annotation Section
+
+Present if and only if the `HAS_COMPOUND` flag (bit 4) is set. When both
+`HAS_SHARD` and `HAS_COMPOUND` are set, the Compound Annotation Section
+MUST follow the Shard Section in the byte stream.
+
+| Offset | Field              | Type       | Description |
+|--------|--------------------|------------|-------------|
+| 0      | `section_length`   | `uint32`   | Total byte length of this section, including this field. |
+| 4      | `component_count`  | `uint8`    | Number of components. MUST be `>= 2` and `<= 64`. |
+| 5      | `flags`            | `uint8`    | Compound flags (bit 0 = `HAS_COMPONENT_NAMES`; bits 1–7 reserved, MUST be `0`). |
+| 6      | `_reserved`        | `uint8[2]` | MUST be `0x00`. |
+| 8      | `name_table_length`| `uint32`   | Byte length of the name table. MUST be `0x00000000` if and only if `HAS_COMPONENT_NAMES` is clear. |
+| 12     | `name_table`       | `bytes[name_table_length]` | Present if and only if `HAS_COMPONENT_NAMES` is set. Consists of `component_count` entries of `uint16 name_length` followed by `name_length` UTF-8 bytes. |
+
+All multi-byte fields are little-endian.
+
+Full semantics, the complete set of zero-copy preconditions, layout
+compatibility, DLPack lowering, and the rules governing component counts
+and names are specified in [`compound-types.md`](compound-types.md). A
+reader MUST validate every condition defined in that section before
+presenting a compound view of the tensor.
+
+`HAS_COMPOUND` is introduced in format version `1.1`. A v1.0 reader MUST
+reject a descriptor with `HAS_COMPOUND` set; this is already implied by
+the v1.0 reserved-flag rejection rule in the [Flags](#flags) table.
 
 ---
 

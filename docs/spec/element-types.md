@@ -8,6 +8,8 @@ This section defines the complete numeric element type system for the Hurray ten
 
 > **Note (non-normative):** Hurray is a strictly numeric tensor format. String types, structured types, and arbitrary user-defined element types are out of scope. The type system is designed to cover the full range of numeric precisions encountered in modern AI/ML inference, from float64 down to 2-bit quantized integers.
 
+> **Note (non-normative):** The type-tag space defined in this section describes **primitive storage types only**. Logical grouping of primitive elements into fixed-size tuples (e.g., RGB pixels, complex-like pairs, quaternions) is handled by the Compound Annotation Section; see [`compound-types.md`](compound-types.md). No compound type is ever represented in the `type_tag` field.
+
 ## Normative Requirements
 
 > This section uses RFC 2119 key words: MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT,
