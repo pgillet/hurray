@@ -2,7 +2,7 @@
 
 This checklist is applied to every new or modified section of the Hurray format specification. Items that do not apply to a given section should be noted as N/A with a brief justification.
 
-The 10 categories correspond directly to the 9 Core Properties defined in `README.md`, plus two cross-cutting quality checks. Core Property 3 (Streamable by Design) applies differently to the streaming format and the file format; the checklist items below are labelled accordingly.
+The 12 categories correspond directly to the 10 Core Properties defined in `README.md`, plus two cross-cutting quality checks. Core Property 3 (Streamable by Design) applies differently to the streaming format and the file format; the checklist items below are labelled accordingly.
 
 ---
 
@@ -82,14 +82,23 @@ The 10 categories correspond directly to the 9 Core Properties defined in `READM
 - [ ] Does the section break any existing invariant in either protocol (e.g., descriptor-before-data ordering, trailer-at-end-of-file)?
 - [ ] If new flags are introduced, are flag bit positions documented and reserved bits required to be `0`?
 
-## 10. RFC 2119 Correctness
+## 10. Array Database Compatibility
+*(Core Property 10)*
+
+- [ ] Does the section introduce any requirement that would prevent chunk-based or tile-based storage and retrieval? If so, is the restriction justified?
+- [ ] If the section modifies the tiled, Morton, or Hilbert layout definitions, does it preserve spatial locality properties required for range-query cache efficiency?
+- [ ] If the section modifies the file format footer index, does the change remain compatible with future extension by a spatial or dimension-range index?
+- [ ] Does the section preclude or complicate sub-array queries (reading a contiguous region of a tensor without loading the full buffer)? If so, flag for architect review.
+- [ ] If new metadata fields are introduced, could they carry dimension domain or coordinate information relevant to an array database (e.g., axis labels, tile extents, dimension ranges)?
+
+## 11. RFC 2119 Correctness
 
 - [ ] Does the section include the RFC 2119 notice near the top?
 - [ ] Are normative keywords (`MUST`, `SHOULD`, `MAY`, etc.) in uppercase?
 - [ ] Are normative keywords absent from non-normative blocks (prefixed `> **Note (non-normative):**`)?
 - [ ] Are open questions marked with `> **[OQ-N]:**` and sequentially numbered within the file?
 
-## 11. Cross-Section Consistency
+## 12. Cross-Section Consistency
 
 - [ ] Does any term, field, or formula in this section contradict another spec section?
 - [ ] Are all cross-references to other sections accurate (correct section names and field names)?

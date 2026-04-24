@@ -51,6 +51,10 @@ Tier 1 types cover `float16`, `bfloat16`, `float32`, `float64`, signed/unsigned 
 
 The interchange protocol covers in-process (pointer passing), IPC (shared memory), and cross-machine (streaming framing + optional RDMA data plane via GPUDirect). Layout negotiation is built into the protocol. Sender and receiver agree on the tensor format before data moves.
 
+### 10. Array Database Foundation
+
+Hurray is designed to serve as the storage layer of an array database engine — covering the full tensor supply chain: capture, storage, retrieval, and sharing. The tiled/blocked layout enables chunk-based access and tile-skipping for sub-array queries. Morton Z-order and Hilbert curve layouts preserve spatial locality across dimensions, improving range query cache performance. The file format footer index supports O(1) tensor lookup by name and is designed to be extensible with spatial or dimension-range indexes. Spec decisions that would foreclose chunk-based storage, spatial locality, or dimension-range indexing MUST be evaluated against this use case before being adopted.
+
 ---
 
 See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the full annotated file tree.
