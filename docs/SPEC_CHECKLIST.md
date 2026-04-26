@@ -90,6 +90,7 @@ The 12 categories correspond directly to the 10 Core Properties defined in `READ
 - [ ] If the section modifies the file format footer index, does the change remain compatible with future extension by a spatial or dimension-range index?
 - [ ] Does the section preclude or complicate sub-array queries (reading a contiguous region of a tensor without loading the full buffer)? If so, flag for architect review.
 - [ ] If new metadata fields are introduced, could they carry dimension domain or coordinate information relevant to an array database (e.g., axis labels, tile extents, dimension ranges)?
+- [ ] Is the section compatible with a SQL/MDA query engine (ISO 9075-15) consuming Hurray buffers? In particular: can query results be handed off to an ML inference pipeline without copying, and can quantized types be treated as first-class column types?
 
 ## 11. RFC 2119 Correctness
 
