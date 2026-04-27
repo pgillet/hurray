@@ -43,9 +43,7 @@ tensor descriptor encoding, with the following design:
    fixed-size 32-byte trailer at the end of the file locates the index. This is the
    only design compatible with single-pass streaming writes.
 
-5. **Trailer:** Fixed 32 bytes at `file_size - 32`. Contains: `index_offset` (uint64),
-   `index_length` (uint64), `kv_offset` (uint64), `kv_length` (uint32), and
-   `trailer_magic` (`HRRY_END`, 4 bytes ASCII).
+5. **Trailer:** Fixed 40 bytes at `file_size - 40`. Contains: `index_offset` (uint64), `index_length` (uint64), `kv_offset` (uint64), `kv_length` (uint32), `index_crc32c` (uint32, valid when `HAS_INDEX_CRC32C` file flag is set), `_reserved` (uint8[4], MUST be `0x00`), and `trailer_magic` (`HRRY`, 4 bytes ASCII). The trailer was extended from 32 to 40 bytes to add `index_crc32c` and 4 reserved bytes; `trailer_magic` changed from `HRRY_END` to `HRRY` to fit within 4 bytes. The `HAS_INDEX_CRC32C` flag (bit 2 of `file_flags`) governs whether `index_crc32c` is populated and MUST be verified.
 
 6. **Alignment:** Tensor data buffers MUST be aligned to a page boundary within the
    file. The default page size is 4096 bytes; the file header MAY declare a larger
@@ -59,7 +57,7 @@ tensor descriptor encoding, with the following design:
 
 8. **Streaming write:** MUST be supported. A writer tracks byte offsets as it writes
    each tensor inline, then appends KV metadata (if any), then the index, then the
-   32-byte trailer. No backward seeks are required.
+   40-byte trailer. No backward seeks are required.
 
 9. **Streaming read (no seek):** OPTIONAL. Tensor descriptors and data appear inline
    in file order; a non-seeking reader MAY consume them sequentially without the

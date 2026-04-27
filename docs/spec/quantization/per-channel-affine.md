@@ -19,7 +19,7 @@ descriptor's buffer table.
 
 ## Binary Encoding
 
-Total descriptor length: **16 bytes**.
+Total descriptor length: **20 bytes**.
 
 | Offset | Field | Type | Description |
 |--------|-------|------|-------------|
@@ -29,6 +29,8 @@ Total descriptor length: **16 bytes**.
 | 4 | `axis` | `uint32` | Index of the quantized axis. MUST be strictly less than `rank`. |
 | 8 | `scale_buffer_index` | `uint32` | Index in the buffer table of the buffer holding the `scale` array. |
 | 12 | `zero_point_buffer_index` | `uint32` | Index in the buffer table of the buffer holding the `zero_point` array. |
+| 16 | `scale_type_tag` | `uint8` | Storage type of the scale values. MUST be `0x03` (`float32`) in this version of the specification. Reserved for future lower-precision scale types. |
+| 17 | `_reserved` | `uint8[3]` | MUST be `0x00`. |
 
 All multi-byte fields MUST be encoded in little-endian byte order.
 
@@ -74,6 +76,8 @@ If the `SYMMETRIC` flag is set, `zero_point[c]` is treated as `0` for all `c`.
 - `axis` MUST satisfy `axis < rank`.
 - `shape[axis]` MUST NOT equal `0xFFFFFFFFFFFFFFFF` (the dynamic dimension
   sentinel): per-channel quantization requires a statically known channel count.
+- `scale_type_tag` MUST be `0x03` when `scheme_version = 0x01`. Future scheme versions MAY define additional values. A reader MUST reject a `scheme_version = 0x01` descriptor with any other value.
+- The `_reserved` bytes MUST be `0x00` when `scheme_version = 0x01`. A reader MUST reject a `scheme_version = 0x01` descriptor with any non-zero reserved byte.
 - Every element of the `scale` array MUST be a finite, non-zero `float32` value.
 - Every element of the `zero_point` array (when present) MUST lie within the
   representable range of the storage type.
@@ -104,7 +108,7 @@ The tensor descriptor's buffer table carries three buffers:
 - Buffer 1 — scale array, `768 * 4 = 3072` bytes, `float32`.
 - Buffer 2 — zero-point array, `768 * 4 = 3072` bytes, `int32`.
 
-Quantization descriptor bytes (16 total):
+Quantization descriptor bytes (20 total):
 
 ```
 Offset  Value (hex)                   Field
@@ -115,10 +119,12 @@ Offset  Value (hex)                   Field
 4       00 00 00 00                   axis = 0
 8       01 00 00 00                   scale_buffer_index = 1
 12      02 00 00 00                   zero_point_buffer_index = 2
+16      03                            scale_type_tag = 0x03 (float32)
+17      00 00 00                      _reserved = 0x00
 ```
 
 The `quantization_length` prefix in the tensor descriptor's Quantization
-Section would be `0x00000010` (16).
+Section would be `0x00000014` (20).
 
 Dequantization of element `q` at logical position `[c, k]`:
 
