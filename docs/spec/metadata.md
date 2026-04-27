@@ -206,7 +206,7 @@ Immediately following the layout-specific fields, the buffer table is encoded.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `buffer_count` | `uint8` | Number of buffer handles. MUST be at least 1. For all dense layout tags (`0x01`–`0x06`, `0x40`), MUST be exactly `0x01`. |
+| `buffer_count` | `uint8` | Number of buffer handles. MUST be at least 1. For dense layout tags (`0x01`–`0x06`, `0x40`) without quantization, MUST be exactly `0x01`. For quantized dense tensors, MUST equal `0x01` plus the number of quantization-parameter buffers required by the active scheme (see `quantization.md` § Buffer Table Placement Rules). |
 
 Followed by `buffer_count` **buffer handles**, each encoded as 16 bytes:
 
@@ -217,13 +217,7 @@ Followed by `buffer_count` **buffer handles**, each encoded as 16 bytes:
 | 12 | `device_tag` | `uint8` | Device where this buffer resides (see `buffer-protocol.md` and Device Tags in `interchange.md`). |
 | 13 | `_reserved` | `uint8[3]` | MUST be `0x00`. |
 
-> **Note (non-normative):** For sparse layout tags (COO, CSR, etc., to be assigned in
-> a future revision), `buffer_count` will exceed 1. Each entry holds a distinct
-> component array (values, indices, pointers). The layout-specific fields use
-> `buffer_index` to address individual entries. Requiring `buffer_count = 0x01` for
-> all current dense layouts costs one byte but gives every descriptor a uniform
-> structure: decoders always read the count first and allocate the right number of
-> handles without special-casing.
+> **Note (non-normative):** For sparse layout tags (COO `0x07`, CSR `0x08`, CSC `0x09`), `buffer_count` exceeds 1 — each entry holds a distinct component array (values, indices, pointers). For quantized dense tensors, quantization-parameter buffers (scales, zero-points) extend the buffer table beyond the layout baseline. The layout-defined minimum is always `0x01` for dense layouts; quantization schemes append their parameter buffers on top.
 
 ---
 
@@ -425,11 +419,6 @@ Total: 61 bytes. Fixed header (20) + shape (16) + byte_offset (8) + buffer table
 
 ## Open Questions
 
-> **[OQ-1]:** Should the descriptor include a checksum field (e.g., CRC-32 of the
-> descriptor body) for corruption detection? This would add 4 bytes to every descriptor
-> and require a full-pass computation on write. Alternatively, corruption detection
-> could be delegated to the transport layer (TCP checksum, TLS). Resolution pending.
+> **[OQ-1]:** ~~Should the descriptor include a CRC-32 checksum field?~~ **Resolved:** No checksum in the descriptor. Integrity is delegated to the transport/storage layer (TCP, TLS, ECC, ZFS). Adding 4 bytes and a full-pass CRC on every descriptor would penalise in-process and IPC interchange where corruption is not a realistic threat. If file-level integrity is needed, it belongs in the file format footer (see `file-format.md` OQ-3).
 
-> **[OQ-2]:** The binary encoding of the quantization descriptor is deferred to
-> `quantization.md`. The `quantization_length` prefix ensures readers can skip it
-> safely in the interim.
+> **[OQ-2]:** ~~The binary encoding of the quantization descriptor is deferred to `quantization.md`.~~ **Resolved:** The encoding is fully defined in `quantization.md`: a fixed 4-byte header (`scheme_tag`, `scheme_version`, `flags`) followed by a per-scheme payload. Complete byte-level layouts are specified in `quantization/per-tensor-affine.md`, `quantization/per-channel-affine.md`, `quantization/per-block-affine.md`, `quantization/nf4.md`, and `quantization/mxfp.md`. The `quantization_length` prefix in `metadata.md` allows readers to skip unrecognised schemes safely.

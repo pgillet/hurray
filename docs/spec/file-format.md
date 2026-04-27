@@ -42,7 +42,7 @@ A Hurray file has the following structure, in order:
 [ Tensor region        ]   repeated: descriptor → padding → data buffer(s) → padding
 [ KV metadata section  ]   optional, located by trailer
 [ Index section        ]   located by trailer
-[ Trailer              ]   32 bytes, fixed, at file_size - 32
+[ Trailer              ]   40 bytes, fixed, at file_size - 40
 ```
 
 All multi-byte fields MUST be encoded in little-endian byte order.
@@ -77,7 +77,8 @@ reader supports.
 |-----|------|---------|
 | 0 | `HAS_KV_METADATA` | KV metadata section is present; `kv_offset` and `kv_length` in the trailer are non-zero. |
 | 1 | `SORTED_INDEX` | Index entries are sorted by UTF-8 byte order of `name`, enabling binary search. A writer MUST NOT set this flag unless the index is actually sorted. |
-| 2–31 | (reserved) | MUST be `0`. A reader MUST reject a file with reserved flag bits set. |
+| 2 | `HAS_INDEX_CRC32C` | The `index_crc32c` field in the trailer carries a valid CRC-32C of the index section bytes. When this flag is set, a reader MUST verify the CRC and MUST reject the file if it does not match. Writers SHOULD always set this flag and populate `index_crc32c`. When this flag is not set, the `index_crc32c` field MUST be `0x00000000` and readers MUST NOT perform checksum verification. |
+| 3–31 | (reserved) | MUST be `0`. A reader MUST reject a file with reserved flag bits set. |
 
 ---
 
@@ -212,7 +213,7 @@ byte comparison, no Unicode normalisation).
 
 ## Trailer
 
-The trailer occupies the last 32 bytes of the file (bytes `file_size - 32` through
+The trailer occupies the last 40 bytes of the file (bytes `file_size - 40` through
 `file_size - 1`).
 
 | Offset from trailer start | Field | Type | Description |
@@ -221,15 +222,19 @@ The trailer occupies the last 32 bytes of the file (bytes `file_size - 32` throu
 | 8 | `index_length` | `uint64` | Byte length of the index section. |
 | 16 | `kv_offset` | `uint64` | Absolute byte offset of the KV metadata section. `0` if no KV section. |
 | 24 | `kv_length` | `uint32` | Byte length of the KV metadata section. `0` if no KV section. |
-| 28 | `trailer_magic` | `uint8[4]` | MUST be `0x48 0x52 0x52 0x59` (ASCII `HRRY`). |
+| 28 | `index_crc32c` | `uint32` | CRC-32C of the index section bytes (the `index_length` bytes starting at `index_offset`). Valid only when the `HAS_INDEX_CRC32C` file flag (bit 2) is set. MUST be `0x00000000` when the flag is not set. |
+| 32 | `_reserved` | `uint8[4]` | MUST be `0x00`. Reserved for future trailer fields. |
+| 36 | `trailer_magic` | `uint8[4]` | MUST be `0x48 0x52 0x52 0x59` (ASCII `HRRY`). |
 
-Total: 32 bytes.
+Total: 40 bytes.
 
-A reader locates the trailer by seeking to `file_size - 32`. It MUST verify
+A reader locates the trailer by seeking to `file_size - 40`. It MUST verify
 `trailer_magic` before trusting any other trailer field.
 
+A reader MUST check the `HAS_INDEX_CRC32C` file flag before interpreting `index_crc32c`. If the flag is set, the reader MUST verify the CRC-32C against the index section bytes and MUST reject the file on mismatch. If the flag is not set, `index_crc32c` MUST be `0x00000000`; a reader that finds a non-zero value with the flag unset MUST reject the file.
+
 A reader MUST reject a file whose `index_offset + index_length` extends into the
-trailer (i.e., `index_offset + index_length > file_size - 32`).
+trailer (i.e., `index_offset + index_length > file_size - 40`).
 
 ---
 
@@ -239,7 +244,7 @@ trailer (i.e., `index_offset + index_length > file_size - 32`).
 
 1. Read bytes 0–7. MUST equal `HRRYFILE`.
 2. Read bytes 8–63 (remainder of file header). Check `container_version_major`.
-3. Seek to `file_size - 32`. Read trailer. Verify `trailer_magic`.
+3. Seek to `file_size - 40`. Read trailer. Verify `trailer_magic`. If `HAS_INDEX_CRC32C` is set in `file_flags`, record `index_crc32c` for verification after step 4.
 4. Seek to `index_offset`. Read `index_length` bytes. Parse index.
 5. Optionally seek to `kv_offset`. Read KV metadata.
 6. For each requested tensor: seek to `descriptor_offset`, parse descriptor;
@@ -279,7 +284,7 @@ A conforming streaming writer produces a valid Hurray file in a single forward p
    g. Record `descriptor_length` and `data_length` for the index.
 3. Write the KV metadata section (if any). Record its offset and length.
 4. Write the index section. Record its offset and length.
-5. Write the 32-byte trailer.
+5. Compute CRC-32C over the index section bytes. Set `HAS_INDEX_CRC32C` in `file_flags`. Write the 40-byte trailer with `index_crc32c` populated.
 
 The writer MUST NOT seek backward at any point. All offset information is tracked
 in memory as a list of `(name, descriptor_offset, descriptor_length, data_offset,
@@ -298,7 +303,7 @@ themselves.
 | Data buffers (all) | `data_buffer_alignment` (≥ 4096) | `0x00` |
 | KV metadata section | 8-byte | `0x00` |
 | Index section | 8-byte | `0x00` |
-| Trailer | last 32 bytes of file | — |
+| Trailer | last 40 bytes of file | — |
 
 ---
 
@@ -321,16 +326,8 @@ themselves.
 
 ## Open Questions
 
-> **[OQ-1]:** Should single-tensor files be required to use a specific tensor name
-> (e.g., `"tensor"`) or may the name be freely chosen? Current text allows any
-> non-empty name. A reserved default name would simplify single-tensor use cases
-> but adds a special case.
+> **[OQ-1]:** ~~Should single-tensor files be required to use a specific tensor name?~~ **Resolved:** No required name. Tensor names are always meaningful and left to the producer. For the array database use case (Core Property 10), mandating a generic name like `"data"` would erase the semantic identity of the tensor. Readers that need a single-tensor API SHOULD use the sole entry in the footer index without reference to its name.
 
-> **[OQ-2]:** The `SORTED_INDEX` flag requires UTF-8 byte order comparison with no
-> Unicode normalisation. Should NFC or case-folding normalisation be permitted in a
-> future `SORTED_INDEX_NFC` flag, or is strict byte order sufficient for the
-> foreseeable use cases?
+> **[OQ-2]:** ~~Should a future `SORTED_INDEX_NFC` flag be defined for NFC-normalised or case-folded comparisons?~~ **Resolved:** Strict UTF-8 byte order is sufficient. Tensor names in practice are ASCII identifiers; NFC normalisation adds implementation complexity with no practical benefit for the target use case. A new flag can be defined if a future use case genuinely requires Unicode-aware sorting.
 
-> **[OQ-3]:** Should the trailer carry a CRC-32C of the index section for integrity
-> verification? Current text defers this to v1.1. Related: `metadata.md` OQ-1 also
-> considers a descriptor checksum.
+> **[OQ-3]:** ~~Should the trailer carry a CRC-32C of the footer index for integrity verification?~~ **Resolved:** Added. The `index_crc32c` field (uint32, offset 28 in the trailer) carries the CRC-32C of the index section bytes. Writers SHOULD always populate it; a value of `0x00000000` signals "not computed" and readers MAY accept without verification. The trailer grows from 32 to 40 bytes accordingly. Related `metadata.md` OQ-1 (descriptor checksum) was resolved as "no" — file-at-rest integrity is a stronger argument than in-flight descriptor integrity.

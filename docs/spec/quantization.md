@@ -86,7 +86,7 @@ descriptor.
 |-------|------------|
 | `0x00` | Reserved (invalid) |
 | `0x01` – `0x3F` | Tier 1 schemes (MUST be supported by conforming implementations that advertise quantization support) |
-| `0x40` – `0x7F` | Tier 2 schemes (OPTIONAL) |
+| `0x40` – `0x7F` | Tier 2 schemes (OPTIONAL); range `0x60`–`0x7F` reserved for future nested/composite schemes |
 | `0x80` – `0xEF` | Reserved for future specification versions |
 | `0xF0` – `0xFE` | Implementation-private extension schemes |
 | `0xFF` | Reserved (invalid) |
@@ -178,34 +178,14 @@ be accompanied by a major version increment.
 
 ## Open Questions
 
-> **[OQ-1]:** Should this file define a normative encoding for double
-> quantization (quantizing the scale buffer itself, as in bitsandbytes QLoRA
-> "nested" quantization)? The current design makes the scale buffer a flat
-> `float32` array. Double quantization would require either a recursive
-> descriptor or a separate scheme tag. Deferred until a concrete interop need
-> arises.
+> **[OQ-1]:** Should this file define a normative encoding for double quantization (quantizing the scale buffer itself, as in bitsandbytes QLoRA "nested" quantization)? **Deferred.** Rationale: the base quantization encoding must be validated through implementation before a recursive or two-level descriptor can be specified safely. Double quantization is primarily a weight-storage optimization rather than a runtime interchange primitive. Scheme tags `0x60`–`0x7F` are reserved for future nested/composite schemes. A conforming implementation MAY express double quantization today by representing the scale tensor as a separate quantized tensor using existing scheme tags, with the relationship conveyed by application-layer convention.
+>
+> **Note (non-normative):** The intended future occupant of the `0x60`–`0x7F` range is a nested-scale scheme compatible with bitsandbytes-style double quantization (NF4 data with quantized `float8` scales and a `float32` super-scale). This will be specified in a future revision once implementation experience is available.
 
-> **[OQ-2]:** The MXFP scheme currently fixes `block_size = 32` per the OCP MX
-> v1.0 specification. Future OCP revisions (or NVIDIA-specific variants) may
-> define alternative block sizes. Should `block_size` be left parameterised at
-> the scheme level now to avoid a new scheme tag later, or should the fixed
-> constraint be enforced to ensure strict OCP conformance? Current text enforces
-> `block_size = 32`.
+> **[OQ-2]:** ~~Should MXFP `block_size` be fixed at 32 or parameterised?~~ **Resolved:** `block_size` is parameterised. The field already exists in the binary encoding; the constraint is: MUST be a power of two in `[16, 2048]`. The lower bound of 16 excludes values with no hardware Tensor Core support. The OCP MX v1.0 canonical value of `32` is documented as the default. Rationale: avoids scheme tag proliferation for what is effectively one scheme with a size variation; future OCP revisions and hardware variants can use different block sizes under the same scheme tag.
 
-> **[OQ-3]:** Per-channel and per-block schemes currently limit the scale type
-> to `float32` (per-channel) or `float16/bfloat16/float32` (per-block). Should
-> per-channel support lower-precision scale types as well? The storage saving
-> is modest (a few KB per layer) and the precision cost is non-trivial for
-> per-channel weight quantization. Deferred.
+> **[OQ-3]:** ~~Should per-channel affine support lower-precision scale types?~~ **Resolved:** Per-channel scales remain locked to `float32` (`scale_type_tag = 0x03`). Rationale: storage saving is negligible (~8–16 KB per layer) while accuracy cost is real for precision-critical per-channel weight quantization. A `scale_type_tag` field (+ 3 reserved bytes) has been added to the per-channel affine binary encoding at offset 16 to allow future relaxation without a wire-format break.
 
-> **[OQ-4]:** Should the descriptor include an explicit `num_blocks` field for
-> the block-based schemes, or is deriving it from `shape[axis]` and
-> `block_size` sufficient? Current text derives it. Deriving is simpler but
-> requires a shape resolution step on the reader side; an explicit field would
-> be redundant but self-contained. Deferred.
+> **[OQ-4]:** ~~Should the descriptor include an explicit `num_blocks` field?~~ **Resolved:** `num_blocks` remains derived: `num_blocks = shape[axis] / block_size`. Rationale: the value is fully determined by fields already present in the descriptor; an explicit field would be redundant and introduce a new mismatch failure mode.
 
-> **[OQ-5]:** NF4 decoding requires the fixed 16-entry lookup table. Should
-> this table be duplicated into a normative reference appendix (to insulate
-> against accidental mutation of the main table in future edits), or is the
-> inline specification sufficient? Current text keeps it inline in
-> `quantization/nf4.md`.
+> **[OQ-5]:** ~~Should the NF4 lookup table be duplicated into a normative reference appendix?~~ **Resolved:** The table remains inline in `quantization/nf4.md`. Rationale: duplication would risk the two copies diverging; a single source of truth is safer. Spec audits (spec-checker) are the guard against accidental mutation.

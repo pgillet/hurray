@@ -139,11 +139,77 @@ Tier 2 types are OPTIONAL. Conforming implementations MAY support any subset of 
 
 **float8_e5m2 (`0x41`)**: 1 sign bit, 5 exponent bits, 2 mantissa bits. Exponent bias is 15. This format supports infinities (`0x7C` and `0xFC`) and NaN values (exponent all ones, mantissa non-zero).
 
-**float8_e8m0 (`0x42`)**: 8 exponent bits, no sign bit, no mantissa bits. This is a power-of-two scale factor format. The value is `2^(bits - 127)` where `bits` is the unsigned 8-bit integer. The bit pattern `0xFF` is reserved and MUST NOT be used as a data value.
+**float8_e8m0 (`0x42`)**: 8 exponent bits, no sign bit, no mantissa bits. This is a power-of-two scale factor format. The value is `2^(bits - 127)` where `bits` is the unsigned 8-bit integer in the range `[0x01, 0xFE]`. The bit patterns `0x00` and `0xFF` are reserved (NaN per OCP MX v1.0 § 5.6) and MUST NOT be used as data values. A reader encountering `0x00` or `0xFF` in a `float8_e8m0` buffer MUST treat the containing descriptor as invalid.
 
 > **Note (non-normative):** `float8_e8m0` is primarily used as a scale factor type in microscaling (MX) quantization formats, not as a general-purpose element type.
 
 Implementations MUST preserve all float8 bit patterns exactly during zero-copy interchange.
+
+### Sub-Byte Floating-Point Types
+
+| Type | Tag | Bit Width | Format | Description |
+|------|-----|-----------|--------|-------------|
+| `float4_e2m1` | `0x43` | 4 | 1-2-1 | OCP MX: 1 sign, 2 exponent, 1 mantissa |
+| `float6_e2m3` | `0x44` | 6 | 1-2-3 | OCP MX: 1 sign, 2 exponent, 3 mantissa |
+| `float6_e3m2` | `0x45` | 6 | 1-3-2 | OCP MX: 1 sign, 3 exponent, 2 mantissa |
+
+**float4_e2m1 (`0x43`)**: 1 sign bit, 2 exponent bits, 1 mantissa bit. Exponent bias is 1. This is the MXFP4 format defined in the OCP Microscaling (MX) Specification. Each element occupies 4 bits.
+
+Packing follows the same **LSB-first** convention as `int4`: two elements are packed per byte. The element at even logical index `2k` occupies bits [3:0] (low nibble) of byte `k`; the element at odd logical index `2k+1` occupies bits [7:4] (high nibble) of byte `k`. When the total element count is odd, the high nibble of the final byte MUST be set to `0x0`.
+
+The complete value map, per OCP MX v1.0 § 5.2, is:
+
+| Bit pattern | Value |
+|-------------|-------|
+| `0x0` (`0b0000`) | +0.0 |
+| `0x8` (`0b1000`) | -0.0 |
+| `0x1`–`0x3` | positive subnormals: `(mantissa / 2) * 2^(1-bias)` = `0.5`, `1.0` |
+| `0x9`–`0xB` | negative subnormals |
+| `0x4`–`0x7` | positive normals: `(1 + mantissa / 2) * 2^(exponent - bias)` |
+| `0xC`–`0xF` | negative normals |
+
+Maximum representable value: `1.5 * 2^2 = 6.0`. There are no infinity or NaN representations; values outside `[-6.0, 6.0]` MUST be clamped by hardware.
+
+Implementations MUST preserve all `float4_e2m1` bit patterns exactly during zero-copy interchange.
+
+> **Note (non-normative):** `float4_e2m1` has native Tensor Core support on NVIDIA Blackwell (B100/B200) and is used in production quantized LLM inference. It is typically paired with `float8_e8m0` block scales under the MX quantization scheme (see `quantization.md`).
+
+**float6_e2m3 (`0x44`) and float6_e3m2 (`0x45`)**: Both are OCP MX Specification 6-bit floating-point formats. Each element occupies 6 bits.
+
+`float6_e2m3`: 1 sign bit, 2 exponent bits, 3 mantissa bits. Exponent bias is 1. Maximum representable value: `(1 + 7/8) * 2^(3-1) = 3.75`. Zero is represented by all-zero exponent and mantissa (sign-preserving). No infinity or NaN representations; out-of-range values MUST be clamped. Subnormals: exponent all-zero, mantissa non-zero → value = `(mantissa/8) * 2^(1-bias)`. Normative bit-pattern → value mapping per OCP MX v1.0 § 5.3.
+
+`float6_e3m2`: 1 sign bit, 3 exponent bits, 2 mantissa bits. Exponent bias is 3. Maximum representable value: `(1 + 3/4) * 2^(7-3) = 28.0`. Zero is represented by all-zero exponent and mantissa (sign-preserving). No infinity or NaN representations; out-of-range values MUST be clamped. Subnormals: exponent all-zero, mantissa non-zero → value = `(mantissa/4) * 2^(1-bias)`. Normative bit-pattern → value mapping per OCP MX v1.0 § 5.4.
+
+#### 6-bit packing
+
+Four 6-bit elements are packed into 3 bytes using **LSB-first** order across byte boundaries. Given four elements at logical indices `4k`, `4k+1`, `4k+2`, `4k+3` stored in bytes `B0`, `B1`, `B2`:
+
+| Element | Bits occupied |
+|---------|--------------|
+| `4k+0` | bits [5:0] of `B0` |
+| `4k+1` | bits [7:6] of `B0`, bits [3:0] of `B1` |
+| `4k+2` | bits [7:4] of `B1`, bits [1:0] of `B2` |
+| `4k+3` | bits [7:2] of `B2` |
+
+When the total number of elements is not a multiple of 4, the unused high-order bits in the final group of 3 bytes MUST be set to `0x0`.
+
+Buffer size in bytes for `N` elements: `ceil(N * 6 / 8)` = `ceil(N / 4) * 3`.
+
+Implementations MUST preserve all `float6_e2m3` and `float6_e3m2` bit patterns exactly during zero-copy interchange.
+
+> **Note (non-normative):** `float6_e2m3` and `float6_e3m2` are defined in the OCP MX specification and intended for use with MX block quantization (see `quantization.md`). Hardware adoption is currently limited compared to MXFP4.
+
+### Extended Floating-Point Types
+
+| Type | Tag | Bit Width | Description |
+|------|-----|-----------|-------------|
+| `float128` | `0x46` | 128 | IEEE 754 binary128 (quad precision) |
+
+**float128 (`0x46`)**: 1 sign bit, 15 exponent bits, 112 significand bits. Exponent bias is 16383. Total width is 128 bits (16 bytes). The sixteen bytes MUST be stored in little-endian order.
+
+All IEEE 754 binary128 bit patterns are valid, including positive and negative zero, infinities, and NaN values. Implementations MUST preserve the bit pattern exactly during zero-copy interchange.
+
+> **Note (non-normative):** `float128` is rarely used in ML inference. It is included for high-precision scientific computing workloads (e.g., physics simulations, climate modelling) that may share tensor data with inference pipelines via the array database use case (Core Property 10).
 
 ### Sub-Byte Integer Types
 
@@ -222,6 +288,10 @@ The following table summarizes all defined types and their properties.
 | `float8_e4m3` | `0x40` | 2 | 8 | 1 | no | 1 |
 | `float8_e5m2` | `0x41` | 2 | 8 | 1 | no | 1 |
 | `float8_e8m0` | `0x42` | 2 | 8 | 1 | no | 1 |
+| `float4_e2m1` | `0x43` | 2 | 4 | n/a | yes | 1 |
+| `float6_e2m3` | `0x44` | 2 | 6 | n/a | yes | 1 |
+| `float6_e3m2` | `0x45` | 2 | 6 | n/a | yes | 1 |
+| `float128` | `0x46` | 2 | 128 | 16 | no | 16 |
 | `int4` | `0x48` | 2 | 4 | n/a | yes | 1 |
 | `uint4` | `0x49` | 2 | 4 | n/a | yes | 1 |
 | `int2` | `0x4A` | 2 | 2 | n/a | yes | 1 |
@@ -265,12 +335,12 @@ These formulas apply to contiguous (dense) layouts. For strided layouts, the buf
 
 ## Open Questions
 
-> **[OQ-1]:** Should `float8_e4m3` follow the OCP OFP8 convention (no infinities, two NaN values) or the IEEE 754 draft for binary8 (which may differ)? Current text follows OCP OFP8. This should be revisited when IEEE 754 binary8 is finalized.
+> **[OQ-1]:** ~~Should `float8_e4m3` follow the OCP OFP8 convention (no infinities, two NaN values) or the IEEE 754 draft for binary8 (which may differ)?~~ **Resolved:** `float8_e4m3` normatively follows OCP OFP8 (no infinities, two NaN bit patterns, exponent bias 7), matching production hardware (NVIDIA H100/H200, AMD MI300). If IEEE 754 binary8 diverges when finalized, a separate type tag will be assigned rather than redefining this one.
 
-> **[OQ-2]:** Should the specification define a `float128` (IEEE 754 binary128) type? It is rarely used in inference but may be relevant for high-precision scientific computing. If added, it would be Tier 2 with tag `0x05`.
+> **[OQ-2]:** ~~Should the specification define a `float128` (IEEE 754 binary128) type?~~ **Resolved:** `float128` is added as a Tier 2 type with tag `0x46`. Note: the originally proposed tag `0x05` falls in the Tier 1 range (`0x01`–`0x3F`) and was corrected to `0x46` (Tier 2 range `0x40`–`0x7F`). Rationale: high-precision scientific computing workloads sharing tensor data with inference pipelines via the array database use case (Core Property 10).
 
 > **[OQ-3]:** ~~Should the private extension range (`0xF0` -- `0xFE`) require implementations to include a type descriptor (name, bit width) in the tensor metadata so that readers can at least compute buffer sizes for unknown types?~~ **Resolved by ADR-001:** Private extension type tags MUST carry an inline descriptor encoding at minimum the bit width, packing, and floating-point parameters (sign/exponent/mantissa widths, exponent bias, NaN/Inf flags). See `docs/adr/ADR-001-private-extension-type-descriptors.md`. The descriptor binary encoding will be defined in `metadata.md`.
 
-> **[OQ-4]:** Should `float4_e2m1` (MXFP4: 1 sign, 2 exponent, 1 mantissa bit) be added as a Tier 2 type? NVIDIA Blackwell (B100/B200) has native Tensor Core support for MXFP4, and it is seeing production use in quantized LLM inference. Packing rules would follow the same LSB-first pattern as `int4` (two elements per byte). Proposed tag: `0x43`.
+> **[OQ-4]:** ~~Should `float4_e2m1` (MXFP4) be added as a Tier 2 type?~~ **Resolved:** `float4_e2m1` is added as Tier 2 with tag `0x43`. Packing follows the LSB-first `int4` convention (two elements per byte). Rationale: native Tensor Core support on NVIDIA Blackwell and production use in quantized LLM inference.
 
-> **[OQ-5]:** Should `float6_e2m3` (1 sign, 2 exponent, 3 mantissa) and `float6_e3m2` (1 sign, 3 exponent, 2 mantissa) be added as Tier 2 types? Both are defined in the OCP MX specification. The 6-bit width requires a non-trivial packing scheme (4 elements per 3 bytes), which complicates buffer size calculation and stride semantics. Hardware adoption is currently limited compared to MXFP4. Proposed tags: `0x44` (`float6_e2m3`), `0x45` (`float6_e3m2`).
+> **[OQ-5]:** ~~Should `float6_e2m3` and `float6_e3m2` be added as Tier 2 types?~~ **Resolved:** Both are added as Tier 2 with tags `0x44` and `0x45` respectively. Packing: 4 elements per 3 bytes, LSB-first across byte boundaries. Buffer size: `ceil(N / 4) * 3` bytes.

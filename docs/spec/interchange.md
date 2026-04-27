@@ -42,9 +42,7 @@ defined at this level (see `docs/adr/ADR-010-multi-tensor-collections-deferred.m
 
 Within a single address space, tensor interchange is accomplished by passing a tensor
 descriptor (see `metadata.md`) and a buffer handle (see `buffer-protocol.md`) by
-value. No serialization is required. The buffer handle carries a reference count and a
-release callback; the receiver MUST retain the handle for the duration of its use and
-release it when done.
+value. No serialization is required. The buffer handle carries a release callback (see `buffer-protocol.md` § Buffer Ownership and Lifetime and ADR-009); the receiver MUST retain the handle for the duration of its use and call the release callback exactly once when done.
 
 ### IPC
 
@@ -518,14 +516,7 @@ stream. The connection MAY remain open for other streams.
 
 ## Open Questions Summary
 
-> **[OQ-1]:** Endianness negotiation: should the transport protocol allow a client
-> to request big-endian wire encoding of tensor data? The Hurray format is defined as
-> little-endian throughout (see `element-types.md`). Introducing endianness negotiation
-> at the transport layer would allow big-endian clients to avoid a local byte-swap, but
-> would add complexity and potentially break the zero-copy invariant for little-endian
-> receivers. One alternative is to keep the wire format always little-endian and require
-> big-endian clients to byte-swap on receipt. Another is to define a transport-level
-> byte-swap flag that does not affect the format spec. Resolution pending.
+> **[OQ-1]:** ~~Endianness negotiation: should the transport protocol allow a client to request big-endian wire encoding?~~ **Resolved:** No endianness negotiation. The wire format is always little-endian; big-endian clients MUST byte-swap on receipt. Rationale: all AI/ML inference hardware targeted by Hurray is little-endian; negotiation would add protocol complexity with zero practical benefit. Consistent with Arrow, DLPack, and SafeTensors.
 
 > **[OQ-2]:** ~~RDMA data plane handshake.~~ **Resolved:** `RDMA_REGISTER` (`0x0000000C`) and `RDMA_READY` (`0x0000000D`) message types are now defined. The party owning the source buffer registers its memory region and sends `RDMA_REGISTER` (rkey + remote address + length) over the control plane; the peer responds with `RDMA_READY`; the RDMA operation executes out-of-band; `TENSOR_DATA_END` is sent over the control plane as the authoritative completion signal. See [RDMA Data Plane](#rdma-data-plane).
 
