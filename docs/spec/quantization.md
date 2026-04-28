@@ -86,12 +86,17 @@ descriptor.
 |-------|------------|
 | `0x00` | Reserved (invalid) |
 | `0x01` – `0x3F` | Tier 1 schemes (MUST be supported by conforming implementations that advertise quantization support) |
-| `0x40` – `0x7F` | Tier 2 schemes (OPTIONAL); range `0x60`–`0x7F` reserved for future nested/composite schemes |
+| `0x40` – `0x5F` | Tier 2 schemes (OPTIONAL) |
+| `0x60` – `0x7F` | Reserved for future nested/composite schemes — implementations MUST NOT assign tags in this range |
 | `0x80` – `0xEF` | Reserved for future specification versions |
 | `0xF0` – `0xFE` | Implementation-private extension schemes |
 | `0xFF` | Reserved (invalid) |
 
 A reader MUST reject a descriptor whose `scheme_tag` is `0x00` or `0xFF`.
+
+Implementations MUST NOT assign semantics to scheme tags in the range
+`0x60`–`0x7F`; these are reserved for future nested/composite quantization
+schemes defined by this specification.
 
 Tags in the range `0x80` – `0xEF` MUST NOT be used by any implementation; they
 are reserved for future specification versions.
@@ -100,6 +105,22 @@ Tags in the range `0xF0` – `0xFE` MAY be used by implementations for private
 schemes. Tensors using private scheme tags MUST NOT be exchanged between
 independent implementations unless both parties have agreed on the semantics
 out of band.
+
+> **Note (non-normative):** The three block-quantization schemes defined in this
+> specification have different `block_size` lower bounds, reflecting their
+> distinct design constraints:
+>
+> - **Per-block-affine** (Tier 1, `0x03`): `block_size ≥ 2`. Any positive block
+>   size with even packing makes algebraic sense; the lower bound exists only
+>   to forbid degenerate single-element blocks.
+> - **NF4** (Tier 2, `0x04`): `block_size ≥ 8`. Below 8 elements per block the
+>   16-point NF4 information content provides no statistical benefit over a
+>   plain low-bit linear quantization, so the format is not meaningful at
+>   smaller block sizes.
+> - **MXFP** (Tier 2, `0x05`): `block_size ≥ 16`. Tier 2 microscaling formats
+>   require hardware Tensor Core support; 16 is the minimum block size for
+>   which any production silicon (NVIDIA Blackwell) currently implements MX
+>   compute.
 
 ### Assigned Scheme Tags
 
@@ -110,6 +131,40 @@ out of band.
 | Per-block affine | `0x03` | 1 | [`quantization/per-block-affine.md`](quantization/per-block-affine.md) |
 | NF4 (NormalFloat4) | `0x04` | 2 | [`quantization/nf4.md`](quantization/nf4.md) |
 | MXFP (OCP Microscaling) | `0x05` | 2 | [`quantization/mxfp.md`](quantization/mxfp.md) |
+
+---
+
+## Partial Block Policy
+
+The block-quantization schemes defined in this specification differ in whether
+they permit a partial trailing block — a final block along `axis` containing
+fewer than `block_size` valid logical elements. The active scheme's policy
+applies; readers implementing multiple schemes MUST apply the partial-block
+rule of the active scheme.
+
+- **Per-block-affine** (`0x03`): a partial trailing block is **permitted**.
+  The storage buffer MUST still allocate space for a full block of
+  `block_size` elements; the unused trailing storage elements MUST be zero
+  bytes and a reader MUST ignore them when dequantizing. The scale (and
+  zero-point) arrays MUST contain one entry per block, including the partial
+  final block. See `quantization/per-block-affine.md` § Padding for the
+  normative encoding.
+- **NF4** (`0x04`): a partial trailing block is **permitted** under the same
+  rules as per-block-affine, since NF4 derives its block index computation
+  from per-block-affine. See `quantization/nf4.md` § Description and
+  `quantization/per-block-affine.md` § Padding.
+- **MXFP** (`0x05`): a partial trailing block is **NOT permitted**.
+  `shape[axis]` MUST be a positive multiple of `block_size`. This restriction
+  is normative under the OCP MX v1.0 specification: microscaling hardware
+  assumes exact block alignment along the quantized axis. A reader MUST
+  reject an MXFP descriptor whose `shape[axis]` is not a positive multiple of
+  `block_size`. See `quantization/mxfp.md` § Validity Constraints.
+
+A reader that supports multiple schemes MUST dispatch on `scheme_tag` and
+apply the corresponding partial-block rule. A reader MUST NOT cross-apply the
+permissive per-block-affine padding rule to MXFP, nor reject a partial final
+block of a per-block-affine or NF4 tensor on the basis of the MXFP exact-
+multiple constraint.
 
 ---
 

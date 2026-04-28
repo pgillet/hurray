@@ -24,7 +24,7 @@ Total descriptor length: **20 bytes**.
 | Offset | Field | Type | Description |
 |--------|-------|------|-------------|
 | 0 | `scheme_tag` | `uint8` | MUST be `0x02`. |
-| 1 | `scheme_version` | `uint8` | MUST be `0x01`. |
+| 1 | `scheme_version` | `uint8` | MUST be `0x01`. For the version compatibility policy, see `quantization.md` § Version Compatibility. |
 | 2 | `flags` | `uint16` | Scheme-specific flags (see below). Reserved bits MUST be `0`. |
 | 4 | `axis` | `uint32` | Index of the quantized axis. MUST be strictly less than `rank`. |
 | 8 | `scale_buffer_index` | `uint32` | Index in the buffer table of the buffer holding the `scale` array. |
@@ -51,6 +51,13 @@ The `zero_point` buffer — present only if the `SYMMETRIC` flag is not set —
 MUST contain exactly `shape[axis]` consecutive `int32` values in little-endian
 byte order, starting at byte offset `0` within the referenced buffer. Its byte
 size MUST be exactly `shape[axis] * 4`.
+
+> **Note (non-normative):** The `zero_point` buffer uses `int32` regardless of
+> the storage type's bit width (e.g. `int4` or `int2`). This simplifies
+> alignment and avoids sub-byte zero-point packing. The Validity Constraints
+> section enforces that zero-point values lie within the representable range
+> of the storage type, so the wider container does not introduce additional
+> degrees of freedom on the wire.
 
 A reader MUST reject a descriptor whose `scale_buffer_index` or (when the
 `SYMMETRIC` flag is not set) `zero_point_buffer_index` is greater than or equal

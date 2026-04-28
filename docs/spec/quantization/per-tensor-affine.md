@@ -21,7 +21,7 @@ Total descriptor length: **16 bytes**.
 | Offset | Field | Type | Description |
 |--------|-------|------|-------------|
 | 0 | `scheme_tag` | `uint8` | MUST be `0x01`. |
-| 1 | `scheme_version` | `uint8` | MUST be `0x01`. |
+| 1 | `scheme_version` | `uint8` | MUST be `0x01`. For the version compatibility policy, see `quantization.md` § Version Compatibility. |
 | 2 | `flags` | `uint16` | MUST be `0x0000`. No flags are defined for this scheme. |
 | 4 | `scale` | `float32` | Dequantization scale. MUST be a finite, non-zero value. |
 | 8 | `zero_point` | `int32` | Quantization zero point. For symmetric quantization, MUST be `0x00000000`. |

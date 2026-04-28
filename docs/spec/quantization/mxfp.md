@@ -29,7 +29,7 @@ Total descriptor length: **16 bytes**.
 | Offset | Field | Type | Description |
 |--------|-------|------|-------------|
 | 0 | `scheme_tag` | `uint8` | MUST be `0x05`. |
-| 1 | `scheme_version` | `uint8` | MUST be `0x01`. |
+| 1 | `scheme_version` | `uint8` | MUST be `0x01`. For the version compatibility policy, see `quantization.md` § Version Compatibility. |
 | 2 | `flags` | `uint16` | MUST be `0x0000`. No flags are defined for this scheme. |
 | 4 | `axis` | `uint32` | Index of the axis along which the tensor is divided into microscaling blocks. MUST be strictly less than `rank`. |
 | 8 | `block_size` | `uint32` | Number of logical elements per microscaling block along `axis`. MUST be a power of two in the range `[16, 2048]`. The OCP MX v1.0 canonical value is `32`. |
@@ -43,7 +43,19 @@ The `scale` buffer MUST contain exactly `num_blocks` consecutive
 `float8_e8m0` values, one byte each, starting at byte offset `0` within the
 referenced buffer. Its byte size MUST be exactly `num_blocks` bytes.
 `num_blocks` is computed identically to the Per-Block Affine scheme using the
-descriptor-specified `block_size`: `num_blocks = shape[axis] / block_size`.
+descriptor-specified `block_size`, with the additional MXFP constraint that
+`shape[axis]` is a positive multiple of `block_size` (no partial trailing
+block — see Validity Constraints below). The full count across the whole
+tensor is:
+
+```
+num_blocks = (shape[axis] / block_size) * product(shape[j] for j ≠ axis)
+```
+
+(exact division — `shape[axis]` MUST be a positive multiple of `block_size`;
+see Validity Constraints). See `quantization/per-block-affine.md` § Block
+Layout for the derivation; MXFP differs only in disallowing partial trailing
+blocks.
 
 The bit patterns `0x00` and `0xFF` in any scale byte are reserved (NaN per OCP MX v1.0 § 5.6; see `element-types.md` § float8_e8m0) and MUST NOT appear in the scale buffer. A reader encountering `0x00` or `0xFF` in the scale buffer MUST treat the descriptor as invalid.
 

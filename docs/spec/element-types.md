@@ -155,7 +155,7 @@ Implementations MUST preserve all float8 bit patterns exactly during zero-copy i
 
 **float4_e2m1 (`0x43`)**: 1 sign bit, 2 exponent bits, 1 mantissa bit. Exponent bias is 1. This is the MXFP4 format defined in the OCP Microscaling (MX) Specification. Each element occupies 4 bits.
 
-Packing follows the same **LSB-first** convention as `int4`: two elements are packed per byte. The element at even logical index `2k` occupies bits [3:0] (low nibble) of byte `k`; the element at odd logical index `2k+1` occupies bits [7:4] (high nibble) of byte `k`. When the total element count is odd, the high nibble of the final byte MUST be set to `0x0`.
+`float4_e2m1` uses the same LSB-first 4-bit packing as `int4` (see § Sub-Byte Integer Types § 4-bit packing). When the total element count is odd, the high nibble of the final byte MUST be set to `0x0`.
 
 The complete value map, per OCP MX v1.0 § 5.2, is:
 
@@ -194,6 +194,27 @@ Four 6-bit elements are packed into 3 bytes using **LSB-first** order across byt
 When the total number of elements is not a multiple of 4, the unused high-order bits in the final group of 3 bytes MUST be set to `0x0`.
 
 Buffer size in bytes for `N` elements: `ceil(N * 6 / 8)` = `ceil(N / 4) * 3`.
+
+**Worked example.** Four 6-bit elements with bit patterns `0b000001`, `0b000010`, `0b000100`, `0b001000` (logical indices `0`, `1`, `2`, `3`) pack into bytes `B0`, `B1`, `B2` as follows.
+
+| Source | Bits taken | Destination | Resulting byte bits |
+|--------|-----------|-------------|---------------------|
+| element 0 = `0b000001` | all 6 bits | `B0[5:0]` | `B0[5:0] = 000001` |
+| element 1 = `0b000010` | bits [1:0] = `0b10` | `B0[7:6]` | `B0[7:6] = 10` |
+| element 1 = `0b000010` | bits [5:2] = `0b0000` | `B1[3:0]` | `B1[3:0] = 0000` |
+| element 2 = `0b000100` | bits [3:0] = `0b0100` | `B1[7:4]` | `B1[7:4] = 0100` |
+| element 2 = `0b000100` | bits [5:4] = `0b00` | `B2[1:0]` | `B2[1:0] = 00` |
+| element 3 = `0b001000` | all 6 bits | `B2[7:2]` | `B2[7:2] = 001000` |
+
+Assembling each byte (MSB on the left):
+
+```
+B0 = 10_000001 = 0x81
+B1 = 0100_0000 = 0x40
+B2 = 001000_00 = 0x20
+```
+
+The 3-byte packed group on the wire is therefore `0x81 0x40 0x20`.
 
 Implementations MUST preserve all `float6_e2m3` and `float6_e3m2` bit patterns exactly during zero-copy interchange.
 
@@ -303,6 +324,10 @@ The **Alignment** column specifies the minimum alignment requirement of the natu
 
 For sub-byte types, the alignment refers to the packed byte granularity: data for sub-byte types MUST start at a byte boundary within the buffer.
 
+> **Note (non-normative):** Tag `0x47` does not appear in the table because it is intentionally reserved for future assignment. Tag `0x47` is reserved and MUST NOT be assigned by this specification or private extensions; it is held for a future Tier 2 type whose assignment will be defined in a later revision.
+
+> **Note (non-normative):** The alignment column for complex types reflects the natural alignment of the constituent floating-point element: `complex64` lists alignment `4` (per `float32` half) and `complex128` lists alignment `8` (per `float64` half). This matches the natural alignment of the constituent element type. Consumers loading a full complex value as a single 128-bit SIMD register must account for the fact that only the buffer-level alignment (64 bytes minimum, see `buffer-protocol.md`) guarantees register-width alignment, not the element-level alignment.
+
 ## Buffer Size Calculation
 
 For whole-byte types with bit width `W >= 8`, the minimum buffer size in bytes for a contiguous tensor with `N` total elements is:
@@ -311,13 +336,15 @@ For whole-byte types with bit width `W >= 8`, the minimum buffer size in bytes f
 buffer_size = N * (W / 8)
 ```
 
-For sub-byte types with bit width `B < 8` and packing factor `P = 8 / B` elements per byte, the minimum buffer size in bytes for a contiguous tensor with `N` total elements is:
+For sub-byte types with bit width `B < 8`, the general minimum buffer size in bytes for a contiguous tensor with `N` total elements is:
 
 ```
-buffer_size = ceil(N / P)
+buffer_size = ceil(N * B / 8)
 ```
 
 where `ceil` denotes the ceiling function (rounding up to the next integer).
+
+For sub-byte bit widths `B ∈ {1, 2, 4}` (i.e. `bool`, `int2`/`uint2`, `int4`/`uint4`/`float4_e2m1`), `8 / B` is an integer packing factor `P` and the formula reduces to the equivalent expression `ceil(N / P)`. For `B = 6` (`float6_e2m3` and `float6_e3m2`), the general form `ceil(N * 6 / 8) = ceil(N / 4) * 3` MUST be used, because four 6-bit elements pack into three bytes rather than into a whole number of elements per byte; see § Sub-Byte Floating-Point Types § 6-bit packing.
 
 These formulas apply to contiguous (dense) layouts. For strided layouts, the buffer size depends on the strides; see `memory-layout.md`.
 
@@ -331,7 +358,7 @@ These formulas apply to contiguous (dense) layouts. For strided layouts, the buf
 
 > **Note (non-normative):** The Tier 1 numeric types — `bool`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`, `float16`, `bfloat16`, `float32`, `float64`, `complex64`, `complex128` — overlap with the dtype vocabulary defined by the Python Array API Standard (data-apis.org/array-api). This alignment is intentional: Hurray tensors carrying Tier 1 element types can be exposed to Python Array API consumers without dtype translation.
 
-> **Note (non-normative):** Tier 2 types (`float8_e4m3`, `float8_e5m2`, `float8_e8m0`, `int4`, `uint4`, `int2`, `uint2`) have no counterpart in the Python Array API Standard and are exposed as `hurray`-namespaced dtype objects in the Python bindings. Quantized tensor types (see `quantization.md`) are similarly out of scope for the Array API. Requirements for the Python bindings are defined in [`docs/impl/python-bindings.md`](../../impl/python-bindings.md).
+> **Note (non-normative):** Tier 2 types (`float8_e4m3`, `float8_e5m2`, `float8_e8m0`, `float4_e2m1`, `float6_e2m3`, `float6_e3m2`, `float128`, `int4`, `uint4`, `int2`, `uint2`) have no counterpart in the Python Array API Standard and are exposed as `hurray`-namespaced dtype objects in the Python bindings. Quantized tensor types (see `quantization.md`) are similarly out of scope for the Array API. Requirements for the Python bindings are defined in [`docs/impl/python-bindings.md`](../../impl/python-bindings.md).
 
 ## Open Questions
 

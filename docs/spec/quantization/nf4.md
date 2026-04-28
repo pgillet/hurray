@@ -23,7 +23,7 @@ Total descriptor length: **16 bytes**.
 | Offset | Field | Type | Description |
 |--------|-------|------|-------------|
 | 0 | `scheme_tag` | `uint8` | MUST be `0x04`. |
-| 1 | `scheme_version` | `uint8` | MUST be `0x01`. |
+| 1 | `scheme_version` | `uint8` | MUST be `0x01`. For the version compatibility policy, see `quantization.md` § Version Compatibility. |
 | 2 | `flags` | `uint16` | MUST be `0x0000`. No flags are defined for this scheme. |
 | 4 | `axis` | `uint32` | Index of the axis along which the tensor is divided into blocks. MUST be strictly less than `rank`. |
 | 8 | `block_size` | `uint32` | Number of logical elements per block along `axis`. MUST be a power of two; RECOMMENDED values are `64` (bitsandbytes default) or `128`. |
@@ -86,6 +86,11 @@ The multiplication is performed in `float32` arithmetic.
 - Every `scale` value MUST be a finite, non-negative `float32`.
 - `scale_buffer_index` MUST be a valid index into the buffer table and MUST NOT
   refer to the tensor data buffer.
+
+> **Note (non-normative):** The minimum block size of 8 reflects the
+> information-theoretic minimum for NF4: below 8 elements per block, the
+> 16-point quantization grid provides no statistical benefit over a
+> lower-bit format.
 
 ## Valid Storage Types
 

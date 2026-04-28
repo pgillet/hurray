@@ -228,6 +228,13 @@ The trailer occupies the last 40 bytes of the file (bytes `file_size - 40` throu
 
 Total: 40 bytes.
 
+> **Note (non-normative):** `kv_length` is `uint32` (4-byte), capping the KV
+> metadata section at approximately 4 GiB. This is intentional: KV metadata
+> holds model-level annotations (architecture, tokenizer config, quantization
+> settings) and is not expected to exceed this limit in practice. Tensor
+> data, which can be arbitrarily large, is addressed by `uint64` offsets in
+> the index.
+
 A reader locates the trailer by seeking to `file_size - 40`. It MUST verify
 `trailer_magic` before trusting any other trailer field.
 

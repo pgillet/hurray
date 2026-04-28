@@ -120,11 +120,17 @@ send an `ERROR` message in response.
 | `0x0000000B` | `PONG` | Either | Keepalive response |
 | `0x0000000C` | `RDMA_REGISTER` | Either | RDMA memory region registration: shares rkey and remote address |
 | `0x0000000D` | `RDMA_READY` | Either | Acknowledges RDMA_REGISTER; signals readiness for the RDMA transfer |
-| `0x000000F0`–`0x000000FE` | (reserved) | — | Reserved for future use |
+| `0x000000F0`–`0x000000FE` | (private extension) | — | Reserved for implementation-private extensions |
 | `0x000000FF` | (invalid) | — | Reserved; MUST NOT be used |
 
 A receiver that encounters an unrecognised `message_type` MUST send an `ERROR`
 message and close the stream.
+
+Message type values in the range `0x000000F0`–`0x000000FE` are reserved for
+implementation-private extensions. Implementations MAY use these values for
+private extension message types; messages using private extension types MUST
+NOT be sent to a peer that has not agreed to the extension out of band. The
+value `0x000000FF` is reserved and MUST NOT be used.
 
 ---
 

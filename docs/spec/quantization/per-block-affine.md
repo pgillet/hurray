@@ -20,7 +20,7 @@ Total descriptor length: **24 bytes**.
 | Offset | Field | Type | Description |
 |--------|-------|------|-------------|
 | 0 | `scheme_tag` | `uint8` | MUST be `0x03`. |
-| 1 | `scheme_version` | `uint8` | MUST be `0x01`. |
+| 1 | `scheme_version` | `uint8` | MUST be `0x01`. For the version compatibility policy, see `quantization.md` § Version Compatibility. |
 | 2 | `flags` | `uint16` | Scheme-specific flags (see below). Reserved bits MUST be `0`. |
 | 4 | `axis` | `uint32` | Index of the axis along which the tensor is divided into blocks. MUST be strictly less than `rank`. |
 | 8 | `block_size` | `uint32` | Number of **logical elements** per block along `axis`. MUST be a power of two and MUST be greater than or equal to `2`. |
@@ -115,6 +115,14 @@ multiplication.
 - `shape[axis]` MUST NOT equal `0xFFFFFFFFFFFFFFFF`.
 - Every `scale` value MUST be a finite, non-zero value.
 - `scale_type_tag` MUST be one of `0x01`, `0x02`, `0x03`.
+
+> **Note (non-normative):** The case `block_size = shape[axis]` — a single
+> block covering the entire quantized axis — is intentionally permitted. It
+> is a degenerate but valid configuration that produces semantics equivalent
+> to per-tensor affine quantization along that axis (one shared
+> `scale`/`zero_point` pair per outer position). Readers MUST handle it
+> identically to any other `block_size` value; there is no separate code
+> path.
 
 ## Valid Storage Types
 
