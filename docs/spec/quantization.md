@@ -151,8 +151,8 @@ rule of the active scheme.
   normative encoding.
 - **NF4** (`0x04`): a partial trailing block is **permitted** under the same
   rules as per-block-affine, since NF4 derives its block index computation
-  from per-block-affine. See `quantization/nf4.md` § Description and
-  `quantization/per-block-affine.md` § Padding.
+  from per-block-affine. See `quantization/per-block-affine.md` § Padding
+  (NF4 uses identical padding rules).
 - **MXFP** (`0x05`): a partial trailing block is **NOT permitted**.
   `shape[axis]` MUST be a positive multiple of `block_size`. This restriction
   is normative under the OCP MX v1.0 specification: microscaling hardware

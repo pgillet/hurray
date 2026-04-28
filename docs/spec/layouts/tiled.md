@@ -67,6 +67,11 @@ total_tiles        = product(num_tiles[k] for all k)
 buffer_elements    = total_tiles * total_tile_elements
 ```
 
+## Validity Constraints
+
+This layout MUST NOT be used for rank-0 (scalar) tensors. See
+`data-model.md` § Scalar Tensors.
+
 ## Recursive Tiling
 
 > **Note (non-normative):** Recursive tiling is useful for hierarchical blocking in

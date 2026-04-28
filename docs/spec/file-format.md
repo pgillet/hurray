@@ -259,18 +259,47 @@ trailer (i.e., `index_offset + index_length > file_size - 40`).
 
 ### Sequential Reader (No Seek)
 
-A reader that cannot seek MAY consume the file sequentially:
+A reader that cannot seek MAY consume the file sequentially. Such a reader MUST
+track the running byte offset from the start of the file at every step and use
+offset arithmetic — never inspection of data buffer content — to determine
+section boundaries.
 
-1. Read and verify file header.
-2. Advance to `first_descriptor_offset`.
-3. Read each tensor descriptor (self-delimiting: length in bytes 6–9 of the
-   descriptor). Use the descriptor's buffer table to determine data size and
-   alignment. Read data. Skip padding to next 8-byte boundary.
-4. Continue until the byte sequence no longer begins with `HRRY` descriptor magic
-   (indicating the start of the KV or index section) or until EOF.
+1. Read and verify the 64-byte file header. Set the running offset to `64`.
+2. Read padding bytes until the running offset equals `first_descriptor_offset`.
+3. For each tensor in the tensor region:
+   a. Read the tensor descriptor's first 10 bytes to obtain `descriptor_length`
+      (bytes 6–9), then read the remaining `descriptor_length - 10` bytes of the
+      descriptor. Advance the running offset by `descriptor_length`.
+   b. Read padding bytes until the running offset is a multiple of
+      `data_buffer_alignment` (the value declared in the file header).
+   c. For each entry in the descriptor's buffer table, read `byte_size` bytes of
+      data and then read padding bytes until the running offset is a multiple of
+      `data_buffer_alignment`. Advance the running offset by the buffer size and
+      the padding.
+   d. Read padding bytes until the running offset is a multiple of `8`
+      (alignment for the next descriptor).
+   e. The reader has now reached the start of either the next tensor descriptor,
+      the KV metadata section, or the index section.
+4. To determine whether step (3) should be repeated, the reader cannot inspect
+   data content (a tensor's data buffer may legitimately contain the byte
+   sequence `0x48 0x52 0x52 0x59`, and the KV / index sections do not begin
+   with `HRRY`). The end of the tensor region MUST be detected by one of:
+   - **Trailer probe (preferred):** a sequential reader that has buffered the
+     entire file in memory after the fact MAY locate the trailer at
+     `file_size - 40` and use `index_offset` (and `kv_offset` if present) to
+     determine the tensor region's end offset.
+   - **Tensor count hint:** if the file header's `tensor_count_hint` is not
+     `0xFFFFFFFFFFFFFFFF`, the reader MAY iterate exactly that many tensors.
+     The reader MUST then verify that the running offset corresponds to a
+     declared section boundary.
+   - **EOF:** the reader MAY consume bytes until end-of-file and treat the
+     terminal 40 bytes as the trailer; it MUST NOT treat that 40 bytes as
+     a tensor region.
 
-A sequential reader cannot perform random access and cannot look up tensors by name
-without reading the entire file in order. This mode is OPTIONAL to implement.
+A sequential reader cannot perform random access and cannot look up tensors by
+name without reading the entire file in order. This mode is OPTIONAL to
+implement and is significantly more constrained than the random-access reader
+defined above; conforming implementations SHOULD prefer the random-access path.
 
 ---
 

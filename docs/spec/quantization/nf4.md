@@ -81,7 +81,9 @@ The multiplication is performed in `float32` arithmetic.
 ## Validity Constraints
 
 - `axis` MUST satisfy `axis < rank`.
-- `block_size` MUST be a power of two in the range `[8, shape[axis]]`.
+- `block_size` MUST be a power of two and MUST be greater than or equal to `8`.
+- When `shape[axis]` is greater than `0`, `block_size` MUST be less than or equal to `shape[axis]`. A reader MUST reject a descriptor whose `block_size` exceeds a non-zero `shape[axis]`.
+- When `shape[axis]` equals `0` (an empty quantization axis, per ADR-007), the upper-bound check is waived. The `block_size` field MUST still be a power of two greater than or equal to `8`, but its value has no effect on buffer sizing: `num_blocks` evaluates to `0`, and the `absmax` scale buffer MUST have byte size `0`.
 - `shape[axis]` MUST NOT equal `0xFFFFFFFFFFFFFFFF`.
 - Every `scale` value MUST be a finite, non-negative `float32`.
 - `scale_buffer_index` MUST be a valid index into the buffer table and MUST NOT

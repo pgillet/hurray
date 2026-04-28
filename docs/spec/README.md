@@ -33,7 +33,12 @@ descriptor whose major version field exceeds the reader's supported major versio
 |---------|-------------|
 | [element-types.md](element-types.md) | Numeric element type system: type tags, bit widths, encoding, sub-byte packing |
 | [data-model.md](data-model.md) | Element type system, shape and dimension model |
-| [quantization.md](quantization.md) | Per-tensor, per-channel, and per-block quantization |
+| [quantization.md](quantization.md) | Quantization scheme registry: descriptor header, scheme tag space, partial-block policy, buffer placement rules |
+| [quantization/per-tensor-affine.md](quantization/per-tensor-affine.md) | Per-tensor affine quantization — scheme tag `0x01` (Tier 1) |
+| [quantization/per-channel-affine.md](quantization/per-channel-affine.md) | Per-channel (per-axis) affine quantization — scheme tag `0x02` (Tier 1) |
+| [quantization/per-block-affine.md](quantization/per-block-affine.md) | Per-block affine quantization — scheme tag `0x03` (Tier 1) |
+| [quantization/nf4.md](quantization/nf4.md) | NF4 (NormalFloat4) block quantization — scheme tag `0x04` (Tier 2) |
+| [quantization/mxfp.md](quantization/mxfp.md) | MXFP (OCP Microscaling) block quantization — scheme tag `0x05` (Tier 2) |
 | [memory-layout.md](memory-layout.md) | Layout taxonomy, common fields, element address computation, alignment, sharding, buffer table |
 | [layouts/row-major.md](layouts/row-major.md) | Row-major (C order) layout — tag `0x01` |
 | [layouts/column-major.md](layouts/column-major.md) | Column-major (Fortran order) layout — tag `0x02` |

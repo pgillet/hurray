@@ -50,6 +50,9 @@ scan to locate a specific element.
 
 ## Validity Constraints
 
+This layout MUST NOT be used for rank-0 (scalar) tensors. See
+`data-model.md` § Scalar Tensors.
+
 A conforming writer MUST ensure:
 
 1. Every stored index tuple is within bounds: `0 <= indices[i * rank + d] < shape[d]`

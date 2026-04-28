@@ -54,6 +54,11 @@ range_elements = max_offset - min_offset + 1
 Buffer size in bytes depends on the element type (see `memory-layout.md`
 § Element Address Computation).
 
+## Validity Constraints
+
+This layout MUST NOT be used for rank-0 (scalar) tensors. See
+`data-model.md` § Scalar Tensors.
+
 ## Contiguity
 
 A strided tensor is **dense** (contiguous with no gaps) if and only if the absolute
