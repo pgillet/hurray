@@ -56,7 +56,7 @@ The fixed header occupies the first 20 bytes of every tensor descriptor.
 | 6 | `descriptor_length` | `uint32` | Total length of the tensor descriptor in bytes, including the fixed header. A reader MUST use this field to advance past the descriptor without parsing all fields. |
 | 10 | `flags` | `uint32` | Descriptor flags bitmask (see [Flags](#flags)). |
 | 14 | `type_tag` | `uint8` | Element type tag (see `element-types.md`). |
-| 15 | `layout_tag` | `uint8` | Memory layout tag (see `memory-layout.md`). |
+| 15 | `layout_tag` | `uint8` | Memory layout tag (see `memory-layout.md`). See `data-model.md` § Scalar Tensors for layout restrictions that apply when `rank = 0`. |
 | 16 | `rank` | `uint32` | Number of dimensions. A rank of `0` denotes a scalar tensor. |
 
 A reader MUST reject a descriptor whose `magic` field is not `0x48 0x52 0x52 0x59`.
