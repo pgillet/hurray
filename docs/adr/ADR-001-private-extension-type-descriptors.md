@@ -14,11 +14,16 @@ A related question arose: should the core type system be replaced entirely by a 
 
 Private extension type tags (`0xF0`–`0xFE`) MUST carry an inline type descriptor in the tensor metadata. The descriptor MUST include at minimum:
 
-- A human-readable name (utf8 string, for diagnostics)
 - Bit width of a single logical element
 - Whether the type is sub-byte packed (bool), and if so the packing factor
 - Whether the type is a floating-point type (bool)
 - For floating-point types: sign bits (uint8), exponent bits (uint8), mantissa bits (uint8), exponent bias (uint16), and a flags field encoding NaN/Inf semantics
+
+A human-readable name was considered for the inline descriptor but was omitted from
+the binary encoding: a variable-length utf8 field would break the fixed 20-byte
+descriptor size and complicate reader logic. Diagnostic names for extension types are
+an application-layer concern; implementations that require them should maintain an
+out-of-band registry keyed on the implementation-defined tag value.
 
 The core enumerated type tag space (Tier 1 and Tier 2) is retained as-is. The parameterized descriptor lives only in the extension mechanism, not in the core type system.
 
