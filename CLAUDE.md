@@ -24,7 +24,7 @@ The project is in the **implementation phase**. The spec (still in Draft status)
 
 - **One sub-topic at a time.** Each development pass covers exactly one layer of the dependency stack (see workflow below). Do not advance to the next layer until the user approves the current one.
 - **Always explain before coding.** Before writing any code, describe what you are about to implement, which spec sections govern it, and any design choices you are making. Wait for the user to confirm.
-- **Every pass ships four things:** (1) implementation code, (2) unit tests (`#[cfg(test)]` modules or `tests/`), (3) a doc-comment example on every public item, (4) a new entry in `docs/cookbook/` demonstrating the feature in context.
+- **Every pass ships five things:** (1) implementation code, (2) unit tests (`#[cfg(test)]` modules or `tests/`), (3) a doc-comment example on every public item, (4) a runnable example in `<crate>/examples/<name>.rs` (Rust "script" with a `main` entry point, runnable via `cargo run --example <name>`), (5) a new entry in `docs/cookbook/` demonstrating the feature in context.
 - **`cargo clippy -- -D warnings` and `cargo test` must pass** before a pass is considered complete.
 - **Spec amendments are allowed.** If an implementation pass surfaces a genuine spec ambiguity or error, open a finding (like a spec-checker finding) and route it to `format-spec-writer` or `architect` before proceeding. The spec is not frozen.
 - **hurray-inspect depends on hurray-core.** The existing self-contained implementation in `hurray-inspect/src/main.rs` must be replaced once the relevant `hurray-core` types are available. Do not add to the self-contained version; schedule its refactor as part of the descriptor encoding pass.
