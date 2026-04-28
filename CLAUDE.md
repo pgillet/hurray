@@ -18,7 +18,16 @@ Agents MUST read from project files directly rather than relying on memory for p
 
 ## Current Phase
 
-The project is in the **specification and requirements phase**. Work is focused on `docs/spec/`, `docs/impl/`, and `docs/prior-art.md`. Rust implementation work is deferred until the spec is stable. Do not produce implementation code unless explicitly asked.
+The project is in the **implementation phase**. The spec (still in Draft status) is the source of truth, but implementation feedback MAY reveal gaps or ambiguities that require spec corrections — this is expected and permitted during the draft period. When the implementation contradicts the spec, fix the implementation first; if the spec itself is ambiguous or wrong, report it and wait for user approval before amending it.
+
+### Implementation rules
+
+- **One sub-topic at a time.** Each development pass covers exactly one layer of the dependency stack (see workflow below). Do not advance to the next layer until the user approves the current one.
+- **Always explain before coding.** Before writing any code, describe what you are about to implement, which spec sections govern it, and any design choices you are making. Wait for the user to confirm.
+- **Every pass ships four things:** (1) implementation code, (2) unit tests (`#[cfg(test)]` modules or `tests/`), (3) a doc-comment example on every public item, (4) a new entry in `docs/cookbook/` demonstrating the feature in context.
+- **`cargo clippy -- -D warnings` and `cargo test` must pass** before a pass is considered complete.
+- **Spec amendments are allowed.** If an implementation pass surfaces a genuine spec ambiguity or error, open a finding (like a spec-checker finding) and route it to `format-spec-writer` or `architect` before proceeding. The spec is not frozen.
+- **hurray-inspect depends on hurray-core.** The existing self-contained implementation in `hurray-inspect/src/main.rs` must be replaced once the relevant `hurray-core` types are available. Do not add to the self-contained version; schedule its refactor as part of the descriptor encoding pass.
 
 ## Project Structure
 
@@ -112,7 +121,7 @@ hurray/
 
 ## Development Workflow
 
-### Spec phase (current)
+### Spec phase (complete)
 
 ```
 researcher          (surveys prior art, updates docs/prior-art.md)
@@ -128,20 +137,51 @@ format-spec-writer  (applies editorial fixes from spec-checker report)
 architect           (resolves design-level findings from spec-checker)
 ```
 
-### Implementation phase (future)
+### Implementation phase (current)
+
+One layer at a time, user-approved before advancing:
 
 ```
-planner             (breaks feature into steps)
+Layer 0 — Element types + Data model     (hurray-core: ElementType, Shape)
+Layer 1 — Buffer protocol                (hurray-core: BufferHandle, DeviceTag, alignment)
+Layer 2 — Quantization descriptors       (hurray-core: scheme types, per-tensor/channel/block/NF4/MXFP)
+Layer 3 — Layout descriptors             (hurray-core: layout tags, per-layout structs, sparse multi-buffer)
+Layer 4 — Tensor descriptor encoding     (hurray-core: TensorDescriptor, binary encode/decode)
+           → refactor hurray-inspect to use hurray-core (replaces self-contained parser)
+Layer 5 — Streaming interchange          (hurray-io: IPC framing, async reader/writer)
+Layer 6 — File format                    (hurray-io: HRRYFILE container, footer index, KV section)
+Layer 7 — C FFI                          (hurray-ffi: opaque handles, function table, release callbacks)
+Layer 8 — Python bindings                (hurray-python: PyO3 + __dlpack__ zero-copy)
+```
+
+Each layer's pipeline:
+```
+planner             (breaks layer into steps, identifies spec sections)
+    ↓
+[user approval]
     ↓
 rust-developer      (implements against the spec)
     ↓
-rust-test-writer    (writes tests against the public API)
+rust-test-writer    (unit tests + integration tests)
     ↓
-rust-reviewer       (reviews both)
+rust-reviewer       (correctness, idioms, spec fidelity)
     ↓
 rust-build-resolver (fixes any compile errors)
     ↓
-doc-updater         (syncs doc comments and docs/ with implementation)
+doc-updater         (syncs /// doc comments + adds docs/cookbook/ entry)
+    ↓
+[user approval → next layer]
+```
+
+Spec feedback loop (runs in parallel when needed):
+```
+rust-developer finds ambiguity
+    ↓
+format-spec-writer (editorial) or architect (design)
+    ↓
+spec-checker (targeted re-audit of affected section)
+    ↓
+resume rust-developer
 ```
 
 ## Spec Writing Conventions
