@@ -2,6 +2,9 @@
 
 > **Status:** Draft
 
+> This section uses RFC 2119 key words: MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT,
+> SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL.
+
 ## Scope
 
 This section defines how Hurray tensors are exchanged between producers and consumers.
@@ -28,11 +31,6 @@ defined at this level (see `docs/adr/ADR-010-multi-tensor-collections-deferred.m
 > tensor-focused (not columnar), it supports layout and device negotiation, it defines
 > on-the-fly transcoding, and its data plane is designed for large buffer transfers
 > where gRPC framing overhead is impractical.
-
-## Normative Requirements
-
-> This section uses RFC 2119 key words: MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT,
-> SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL.
 
 ---
 
@@ -172,12 +170,17 @@ respond with an `ERROR` message instead and close the connection.
 
 ### Device Tags
 
+> The canonical definition of device tags lives in `buffer-protocol.md` § Device
+> Tags. The table below is reproduced for transport-protocol convenience and
+> MUST stay consistent with `buffer-protocol.md`.
+
 | Tag | Device |
 |-----|--------|
 | `0x00` | CPU (host memory) |
 | `0x01` | CUDA device memory |
 | `0x02` | ROCm device memory |
 | `0x03` | Metal device memory |
+| `0x04`–`0xEF` | Reserved — future specification versions (see `buffer-protocol.md`) |
 | `0xF0`–`0xFE` | Implementation-private device types |
 
 ---

@@ -45,6 +45,12 @@ where `ncols = shape[1]`.
 | `nnz` | `uint64` | Number of stored (non-zero) elements. MAY be 0 for an empty sparse matrix. |
 | `_reserved` | `uint8[8]` | MUST be `0x00`. |
 
+## Validity Constraints
+
+This layout MUST NOT be used for rank-0 (scalar) tensors. See
+`data-model.md` § Scalar Tensors. CSC is further restricted to rank 2 (see
+§ Description).
+
 ## Storage Invariants
 
 A conforming writer MUST ensure:

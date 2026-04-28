@@ -110,11 +110,14 @@ multiplication.
 ## Validity Constraints
 
 - `axis` MUST satisfy `axis < rank`.
-- `block_size` MUST be a power of two in the range `[2, shape[axis]]` (inclusive).
-  A reader MUST reject a descriptor whose `block_size` exceeds `shape[axis]`.
+- `block_size` MUST be a power of two and MUST be greater than or equal to `2`.
+- When `shape[axis]` is greater than `0`, `block_size` MUST be less than or equal to `shape[axis]`. A reader MUST reject a descriptor whose `block_size` exceeds a non-zero `shape[axis]`.
+- When `shape[axis]` equals `0` (an empty quantization axis, per ADR-007), the upper-bound check is waived. The `block_size` field MUST still be a power of two greater than or equal to `2`, but its value has no effect on buffer sizing: `num_blocks` evaluates to `0`, and the scale and zero-point buffers MUST have byte size `0` (their pointers MAY be null per `buffer-protocol.md`).
 - `shape[axis]` MUST NOT equal `0xFFFFFFFFFFFFFFFF`.
 - Every `scale` value MUST be a finite, non-zero value.
 - `scale_type_tag` MUST be one of `0x01`, `0x02`, `0x03`.
+
+> **Note (non-normative):** Permitting `block_size` to exceed `shape[axis]` when the axis is empty preserves the producer's declared quantization granularity across shape changes (for example, a filter that selects zero rows from an otherwise per-block-quantized weight tensor). The descriptor remains structurally valid and round-trippable; no blocks are materialized.
 
 > **Note (non-normative):** The case `block_size = shape[axis]` — a single
 > block covering the entire quantized axis — is intentionally permitted. It

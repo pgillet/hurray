@@ -18,7 +18,7 @@ It does not need to produce output.
 Mandatory:
 - Parse all fixed-header fields (magic, version, flags, type_tag, layout_tag, rank).
 - Reject descriptors with invalid magic, unsupported major version, or set reserved flag bits.
-- Correctly interpret shape, byte_offset, and layout-specific fields for all Tier 1 layouts (`0x01`–`0x08`).
+- Correctly interpret shape, byte_offset, and layout-specific fields for all Tier 1 layouts (`0x01`–`0x09`).
 - Read and validate the buffer table (count, byte_size, alignment, device_tag).
 - Skip optional sections using `descriptor_length` when flags are not understood.
 - Return an error for unrecognised Tier 1 layout or type tags (unless in permissive mode).
@@ -107,11 +107,21 @@ All conforming implementations MUST support **Tier 1** layouts for reading descr
 A conforming implementation MUST pass a test suite that covers:
 
 - **Descriptor parsing**: valid descriptors for all mandatory type × layout combinations.
-- **Rejection cases**: invalid magic, unsupported major version, reserved flag bits set, out-of-bounds `byte_offset`, invalid shard offset.
+- **Rejection cases**: invalid magic, unsupported major version, reserved flag bits set, out-of-bounds `byte_offset`, invalid shard offset, **`rank = 65`** (descriptor MUST be rejected per `data-model.md` § Rank, ADR-008).
 - **Round-trip**: write a tensor descriptor, read it back, verify all fields are identical.
 - **Buffer size**: verify computed buffer sizes match expected values for all mandatory types and layouts.
 - **Zero-copy invariant**: verify that bit patterns are preserved exactly after a round-trip (no NaN canonicalization, no subnormal flushing).
 - **Sparse invariant validation**: for COO, CSR, CSC — verify that constraint violations are rejected.
+
+### Empty Tensor Round-Trip Vectors
+
+Per ADR-007 (permit empty tensors), a conforming implementation MUST round-trip the following empty-tensor descriptors without loss of information:
+
+- A rank-1 tensor with shape `[0]` (empty vector).
+- A rank-3 tensor with shape `[3, 0, 5]` (zero-size middle dimension; `element_count = 0`).
+- A rank-2 CSR sparse matrix with `shape = [4, 5]` and `nnz = 0` (no stored non-zeros; `row_ptr = [0, 0, 0, 0, 0]`, `values` and `col_indices` buffers have `byte_size = 0`).
+
+For each empty-tensor vector: writer emits the descriptor with a complete buffer table (zero-size buffers permitted), reader accepts the descriptor without error, all descriptor fields match exactly after round-trip.
 
 The reference Rust implementation provides the canonical test suite. Language binding
 test suites SHOULD mirror the reference suite and additionally test language-specific

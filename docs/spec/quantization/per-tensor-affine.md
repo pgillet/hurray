@@ -37,11 +37,12 @@ For each storage element `q`:
 x_real = scale * (q - zero_point)
 ```
 
-The subtraction is performed in signed 32-bit integer arithmetic. The result
-MUST then be converted to `float32` and multiplied by `scale`. The real-valued
-element type produced by dequantization is `float32`. A consumer MAY further
-convert to `float64` or to a lower-precision float type; such conversion is out
-of scope for this specification.
+The subtraction `q - zero_point` is performed in signed 32-bit integer
+arithmetic. The result is then cast to `float32` and multiplied by `scale` in
+`float32` arithmetic. The real-valued element type produced by dequantization
+is `float32`. A consumer MAY further convert to `float64` or to a
+lower-precision float type; such conversion is out of scope for this
+specification.
 
 ## Validity Constraints
 

@@ -26,6 +26,20 @@ point-cloud processing), at the cost of a more expensive index computation than 
 | `hilbert_order` | `uint32` | Order of the Hilbert curve. MUST be greater than 0. Each tensor dimension MUST equal `2^hilbert_order`. |
 | `hilbert_rank` | `uint32` | Number of curve dimensions. MUST equal the tensor's `rank`. MUST be greater than or equal to 2. |
 
+## Validity Constraints
+
+A conforming reader MUST reject a Hilbert-curve descriptor that violates any
+of the following constraints:
+
+1. `shape[k] = 2^hilbert_order` for every `k` in `[0, hilbert_rank)`. All tensor
+   dimensions MUST be a power of two equal to `2^hilbert_order`.
+2. `hilbert_rank` MUST equal the tensor's `rank`.
+3. `hilbert_rank` MUST be greater than or equal to `2`.
+4. `hilbert_order` MUST be greater than `0`.
+
+This layout MUST NOT be used for rank-0 (scalar) tensors (constraints 2 and 3
+together exclude rank 0). See `data-model.md` § Scalar Tensors.
+
 ## Buffer Size
 
 The buffer MUST hold exactly `2^(hilbert_rank * hilbert_order)` elements.

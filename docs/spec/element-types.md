@@ -324,7 +324,9 @@ The **Alignment** column specifies the minimum alignment requirement of the natu
 
 For sub-byte types, the alignment refers to the packed byte granularity: data for sub-byte types MUST start at a byte boundary within the buffer.
 
-> **Note (non-normative):** Tag `0x47` does not appear in the table because it is intentionally reserved for future assignment. Tag `0x47` is reserved and MUST NOT be assigned by this specification or private extensions; it is held for a future Tier 2 type whose assignment will be defined in a later revision.
+Tag `0x47` is reserved for future assignment by this specification. Implementations MUST NOT use tag `0x47`. Private extensions MUST NOT assign tag `0x47`.
+
+> **Note (non-normative):** Tag `0x47` does not appear in the table because it is intentionally reserved. It is held for a future Tier 2 type whose assignment will be defined in a later revision.
 
 > **Note (non-normative):** The alignment column for complex types reflects the natural alignment of the constituent floating-point element: `complex64` lists alignment `4` (per `float32` half) and `complex128` lists alignment `8` (per `float64` half). This matches the natural alignment of the constituent element type. Consumers loading a full complex value as a single 128-bit SIMD register must account for the fact that only the buffer-level alignment (64 bytes minimum, see `buffer-protocol.md`) guarantees register-width alignment, not the element-level alignment.
 

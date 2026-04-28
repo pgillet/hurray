@@ -149,9 +149,9 @@ entries, as defined in `metadata.md`.
 
 For **dense layouts** (tags `0x01`–`0x06`, `0x40`), the buffer table MUST contain at least **one** entry. Non-quantized dense tensors MUST have exactly `buffer_count = 0x01`. Quantized dense tensors MUST have `buffer_count = 0x01` plus the number of quantization-parameter buffers required by the active scheme (see `quantization.md` § Buffer Table Placement Rules).
 
-For **sparse layouts** (tags `0x07`, `0x08`, and future sparse tags), the buffer
-table MUST contain the number of entries specified by that layout's individual spec
-file. Each buffer holds a distinct component array (values, indices, pointers).
+For **sparse layouts** (tags `0x07`, `0x08`, `0x09`, and future sparse tags), the
+buffer table MUST contain the number of entries specified by that layout's individual
+spec file. Each buffer holds a distinct component array (values, indices, pointers).
 
 ---
 

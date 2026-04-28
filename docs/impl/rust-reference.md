@@ -65,11 +65,20 @@ The implementation is split across three crates:
 - MUST NOT mix `rayon` thread pool calls directly in async contexts. CPU-bound operations MUST use `tokio::task::spawn_blocking`.
 - All async functions MUST be `Send + 'static` to support multi-threaded tokio runtimes.
 
+### Streaming Format
+
+- MUST support reading and writing the streaming IPC format defined in `docs/spec/interchange.md`: a sequence of zero or more tensor descriptors + data buffers, terminated by an end-of-stream marker.
+- The streaming format MUST be self-delimiting: `descriptor_length` allows a reader to advance past any descriptor without full parsing.
+- Back-references and end-of-file indexes are forbidden in the streaming format (streamable principle).
+
 ### File Format
 
-- MUST support reading and writing a Hurray file: a sequence of zero or more tensor descriptors + data buffers, terminated by an end-of-stream marker.
-- The file format MUST be self-delimiting: `descriptor_length` allows a reader to advance past any descriptor without full parsing.
-- Back-references and end-of-file indexes are forbidden (streamable principle).
+- MUST support reading and writing the Hurray file format defined in `docs/spec/file-format.md`. The file format is a single-pass writable, random-access readable container for one or more named tensors.
+- A writer MUST emit the file in a single forward pass (no seek-back), producing the structure: `HRRYFILE` magic + 64-byte file header + zero or more tensor regions (each tensor descriptor followed by its data buffer(s) with appropriate padding) + optional KV metadata section + index section + 40-byte trailer at `file_size - 40`.
+- The writer MUST track per-tensor `(name, descriptor_offset, descriptor_length, data_offset, data_length)` tuples in memory and emit them in the index section after all tensor regions are written.
+- A random-access reader MUST locate the trailer by seeking to `file_size - 40`, verify `trailer_magic` (ASCII `HRRY`), and use `index_offset` / `index_length` from the trailer to locate the index section.
+- When the `HAS_INDEX_CRC32C` file flag is set, the reader MUST verify the CRC-32C of the index section and reject the file on mismatch.
+- The implementation MUST support mmap-based zero-copy loading of tensor data buffers when the file's `data_buffer_alignment` matches or exceeds the host page size.
 
 ## Code Quality
 
