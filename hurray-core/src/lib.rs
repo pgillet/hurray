@@ -12,10 +12,14 @@
 //! |---------|--------|
 //! | `serde` | Derives `serde::Serialize` / `serde::Deserialize` for all public types |
 
+pub mod buffer;
 pub mod element_type;
 pub mod error;
 pub mod shape;
 
+pub use buffer::{
+    validate_colocation, BufferHandle, DeviceTag, PrivateTag, MIN_BUFFER_ALIGNMENT, PAGE_ALIGNMENT,
+};
 pub use element_type::ElementType;
 pub use error::{Error, Result};
 pub use shape::{Shape, DYNAMIC, MAX_RANK};
