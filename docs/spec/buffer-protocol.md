@@ -26,7 +26,7 @@ buffer table of the tensor descriptor (see `metadata.md` § Buffer Table).
 | Offset | Field | Type | Description |
 |--------|-------|------|-------------|
 | 0 | `byte_size` | `uint64` | Size of the buffer in bytes. `0` denotes an empty buffer. |
-| 8 | `alignment` | `uint32` | Minimum alignment of the buffer's base address in bytes. MUST be a power of two and MUST be at least `64`. |
+| 8 | `alignment` | `uint32` | Minimum alignment of the buffer's base address in bytes. MUST be a power of two; MUST be at least `64` for non-empty buffers (`byte_size > 0`); any power-of-two value (including `1`) is valid for empty buffers (`byte_size == 0`). See [§ Empty Buffers](#empty-buffers). |
 | 12 | `device_tag` | `uint8` | Device where this buffer resides. See [§ Device Tags](#device-tags). |
 | 13 | `_reserved` | `uint8[3]` | MUST be `0x00`. Readers MUST reject a descriptor with non-zero reserved bytes. |
 
