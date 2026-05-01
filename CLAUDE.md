@@ -81,6 +81,7 @@ hurray/
 - **Zero-copy first.** Data must be shareable across runtimes without copying whenever possible.
 - **Streamable.** Both readers and writers must be able to process tensor data incrementally. A reader must be able to start processing without buffering the entire input; a writer must be able to emit tensors one at a time without buffering the entire output. Tensor descriptors always precede their data buffers; the format is self-delimiting; back-references and end-of-file indexes are forbidden.
 - **Language-agnostic.** No Rust-isms leak into the format design or the C FFI boundary.
+- **Document design decisions in code.** When a non-obvious implementation choice was made over a considered alternative, add a brief inline comment explaining the WHY — not what the code does, but why this specific approach was chosen. Examples: `// PartialEq only: f32 NaN semantics make Eq unsound.` or `// Reject private tags: unconstrained wire format gives callers nothing useful.` Keep it to one line; no multi-line blocks.
 - **Correctness first, but performance is a first-class concern.** The implementation must be correct above all, but must also aim for performance from the start — choose efficient algorithms, avoid unnecessary allocations, and design for zero-copy and SIMD-friendly layouts. The `performance-optimizer` agent may be invoked proactively, not only on explicit request.
 - **Inference-optimized.** Layout diversity, quantization, and device memory are first-class concerns.
 
