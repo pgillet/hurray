@@ -73,6 +73,174 @@ pub enum Error {
     #[error("invalid quantization descriptor: {0}")]
     InvalidQuantization(String),
 
+    /// The quantization descriptor payload is shorter than the minimum required.
+    #[error("quantization descriptor too short: have {found} bytes, need {needed}")]
+    QuantizationDescriptorTooShort {
+        /// Number of bytes available.
+        found: usize,
+        /// Number of bytes required.
+        needed: usize,
+    },
+
+    /// The scheme tag `0x00` or `0xFF` is permanently reserved by the spec.
+    ///
+    /// A reader MUST reject any descriptor whose `scheme_tag` is `0x00` or `0xFF`.
+    #[error("invalid quantization scheme tag: 0x{0:02X} is permanently reserved")]
+    InvalidQuantizationSchemeTag(u8),
+
+    /// The scheme tag falls in a range reserved for future specification versions.
+    ///
+    /// Ranges: `0x60`–`0xEF`. Implementations MUST NOT assign semantics to these tags.
+    #[error(
+        "reserved quantization scheme tag: 0x{0:02X} is reserved for future specification versions"
+    )]
+    ReservedQuantizationSchemeTag(u8),
+
+    /// The scheme tag is in the implementation-private range `0xF0`–`0xFE`.
+    ///
+    /// Private scheme tags have unconstrained payloads beyond the 4-byte header;
+    /// `hurray-core` cannot interpret them. Callers that need private scheme
+    /// support must handle the raw bytes at a higher layer.
+    ///
+    /// WHY rejected here: the payload beyond the 4-byte header is unconstrained
+    /// for private tags, giving this crate nothing useful to return. Callers that
+    /// need private schemes handle the raw bytes at a higher layer (design decision #1).
+    #[error(
+        "private quantization scheme tag: 0x{0:02X} is implementation-private and not interpretable by this crate"
+    )]
+    PrivateQuantizationSchemeTag(u8),
+
+    /// The scheme tag is in an allocated range but not assigned to any known scheme.
+    #[error("unknown quantization scheme tag: 0x{0:02X}")]
+    UnknownQuantizationSchemeTag(u8),
+
+    /// The `scheme_version` field exceeds the highest version this implementation supports.
+    ///
+    /// Per the spec, a reader MUST reject a descriptor whose `scheme_version` exceeds
+    /// the highest version defined for the given `scheme_tag`.
+    #[error(
+        "unsupported scheme version: scheme tag 0x{tag:02X} version {version} is not supported (highest supported: {supported})"
+    )]
+    UnsupportedSchemeVersion {
+        /// The scheme tag being decoded.
+        tag: u8,
+        /// The version found on the wire.
+        version: u8,
+        /// The highest version this implementation supports for this tag.
+        supported: u8,
+    },
+
+    /// Reserved `flags` bits are set in the quantization descriptor header.
+    ///
+    /// Per the spec, a reader MUST reject a descriptor with any reserved `flags` bit set.
+    #[error("reserved quantization flags bits set: 0x{flags:04X} (reserved mask: 0x{mask:04X})")]
+    ReservedQuantizationFlagsBits {
+        /// The full flags value found on the wire.
+        flags: u16,
+        /// The bitmask of bits that must be zero.
+        mask: u16,
+    },
+
+    /// The `block_size` field is out of range or not a power of two for the given scheme.
+    #[error(
+        "invalid block_size {block_size} for scheme 0x{scheme_tag:02X}: must be a power of two in [{min}, {max}]"
+    )]
+    InvalidBlockSize {
+        /// The quantization scheme tag.
+        scheme_tag: u8,
+        /// The block size found on the wire.
+        block_size: u32,
+        /// Minimum permitted block size for this scheme.
+        min: u32,
+        /// Maximum permitted block size for this scheme.
+        max: u32,
+    },
+
+    /// The tensor's storage `type_tag` is not valid for the given quantization scheme.
+    ///
+    /// Each quantization scheme defines a fixed set of permitted storage types.
+    #[error(
+        "element type 0x{type_tag:02X} is not a valid storage type for scheme 0x{scheme_tag:02X}"
+    )]
+    InvalidStorageTypeForScheme {
+        /// The quantization scheme tag.
+        scheme_tag: u8,
+        /// The storage type tag found in the tensor descriptor.
+        type_tag: u8,
+    },
+
+    /// The quantization axis index is out of bounds for the tensor's rank.
+    ///
+    /// Per the spec, `axis` MUST satisfy `axis < rank`.
+    #[error("quantization axis {axis} out of bounds: rank is {rank}")]
+    QuantizationAxisOutOfBounds {
+        /// The axis value from the quantization descriptor.
+        axis: u32,
+        /// The rank of the tensor descriptor.
+        rank: u32,
+    },
+
+    /// The tensor shape along the quantization axis is incompatible with the block size.
+    ///
+    /// For MXFP, `shape[axis]` must be a positive multiple of `block_size`.
+    /// For per-block-affine and NF4, `block_size` must not exceed `shape[axis]`
+    /// when `shape[axis] > 0`.
+    #[error(
+        "quantization shape mismatch on axis {axis}: shape[axis] = {shape_axis}, block_size = {block_size}: {reason}"
+    )]
+    QuantizationShapeMismatch {
+        /// The quantization axis.
+        axis: u32,
+        /// The resolved size of `shape[axis]`.
+        shape_axis: u64,
+        /// The block size from the quantization descriptor.
+        block_size: u32,
+        /// A human-readable description of the constraint violated.
+        reason: &'static str,
+    },
+
+    /// The `zero_point` value is outside the representable range of the storage type.
+    ///
+    /// Per the spec, `zero_point` MUST lie within the representable range of the
+    /// storage type (e.g., `[0, 255]` for `uint8`).
+    #[error(
+        "zero_point {zero_point} is outside the range of storage type 0x{type_tag:02X}: [{min}, {max}]"
+    )]
+    ZeroPointOutOfRange {
+        /// The storage type tag.
+        type_tag: u8,
+        /// The zero-point value that was rejected.
+        zero_point: i32,
+        /// Minimum representable value for the storage type.
+        min: i64,
+        /// Maximum representable value for the storage type.
+        max: i64,
+    },
+
+    /// A quantization-parameter buffer index aliases the tensor data buffer.
+    ///
+    /// Per the spec, quantization-parameter buffers MUST occupy distinct indices
+    /// from the tensor data buffer.
+    #[error("quantization parameter buffer index {index} aliases the tensor data buffer index")]
+    QuantizationBufferAliasesData {
+        /// The offending quantization-parameter buffer index.
+        index: u32,
+    },
+
+    /// A quantization-parameter buffer index is out of range.
+    ///
+    /// The index must be less than `buffer_count` in the tensor descriptor's
+    /// buffer table.
+    #[error(
+        "quantization parameter buffer index {index} is out of range (buffer_count = {buffer_count})"
+    )]
+    QuantizationBufferIndexOutOfRange {
+        /// The out-of-range buffer index.
+        index: u32,
+        /// The number of buffers in the tensor descriptor's buffer table.
+        buffer_count: u32,
+    },
+
     /// The type tag `0x00` or `0xFF` is explicitly invalid per the spec.
     ///
     /// These two sentinels are permanently reserved and MUST be rejected by all
