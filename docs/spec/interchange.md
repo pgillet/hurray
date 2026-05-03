@@ -166,7 +166,8 @@ respond with an `ERROR` message instead and close the connection.
 | 0 | `TRANSCODING` | Sender can transcode tensors to a requested layout on the fly |
 | 1 | `PARALLEL_STREAMS` | Sender supports multi-stream parallel shard transfer |
 | 2 | `RDMA_DATA_PLANE` | Sender supports RDMA for the data plane |
-| 3–63 | (reserved) | MUST be 0 |
+| 3 | `RDMA_GPUDIRECT` | Sender supports GPUDirect-style writes into a receiver-registered destination memory region. MUST imply `RDMA_DATA_PLANE` (bit 2). |
+| 4–63 | (reserved) | MUST be 0 |
 
 ### Device Tags
 
@@ -273,6 +274,58 @@ fall through to the next preferred layout or the native layout.
 > Clients SHOULD list lightweight layouts (e.g. row-major `0x01`) later in their
 > preference list as a fallback, rather than requiring the server to transcode into a
 > complex layout first.
+
+---
+
+## Device Negotiation
+
+The `preferred_device` field of `TENSOR_REQUEST` drives device selection for the
+response buffer. Device selection is distinct from layout negotiation: device
+selection has no ordered preference list on the wire (a single tag is supplied),
+and the rules below define the server's response when the preferred device cannot
+be served.
+
+### Server Device Selection
+
+Upon receiving a `TENSOR_REQUEST`, the server MUST select a placement device for
+the response buffer according to the following rules, in order:
+
+1. If `preferred_device` appears in the server's `supported_devices` list (from
+   `SERVER_HELLO`) and the server has resources to satisfy it at request time,
+   the server MUST place the response buffer on `preferred_device`.
+2. If `preferred_device == 0x00` (CPU) and the server cannot satisfy CPU, the
+   server MUST send `ERROR` with `error_code = DEVICE_UNAVAILABLE` and close the
+   stream. CPU is the universal fallback; if a server cannot satisfy CPU, no
+   silent fallback is meaningful.
+3. If the preferred device is a non-CPU device the server cannot serve, the
+   server MUST send `ERROR` with `error_code = DEVICE_UNAVAILABLE` and close the
+   stream. The server MUST NOT silently fall back to a different device.
+4. Exception to rule 3: if `preferred_device` was advertised by the server in
+   `SERVER_HELLO` but is transiently unavailable (e.g., out of device memory),
+   the server MAY fall back to CPU (`0x00`) if and only if the client also
+   advertised CPU in its `CLIENT_HELLO supported_devices` list. This is the only
+   permitted silent fallback.
+5. The server MUST report the actual placement device in the `device_tag` field
+   of every buffer handle in `TENSOR_DESCRIPTOR`. Per `buffer-protocol.md`
+   § Device Colocation, all buffers of a single tensor MUST share the same
+   `device_tag`.
+6. A client that receives a `TENSOR_DESCRIPTOR` whose buffer `device_tag`
+   differs from its `preferred_device` MUST be prepared to either accept the
+   placement (if the tag is in its `supported_devices` list) or close the
+   stream with `ERROR`.
+
+> **Note (non-normative):** The "no silent fallback" design is motivated by the
+> performance characteristics of inference workloads: a model running on CUDA
+> that silently lands on CPU produces correct output but performance collapses
+> catastrophically (often by orders of magnitude). The narrow CPU-fallback
+> exception in rule 4 is provided only as a graceful degradation path for
+> clients that explicitly opt in by advertising CPU in their
+> `supported_devices` list.
+
+> **Note (non-normative):** Clients that want graceful CPU fallback should
+> advertise CPU (`0x00`) in `CLIENT_HELLO supported_devices`. The
+> `DEVICE_UNAVAILABLE` error gives the client enough information to retry with
+> a different `preferred_device` if it has alternatives available.
 
 ---
 
@@ -395,21 +448,37 @@ Client                          Server
   |                               |
   |--- TENSOR_REQUEST ----------->|
   |<-- TENSOR_DESCRIPTOR ---------|
-  |<-- RDMA_REGISTER -------------|  (server registers buffer, shares rkey + addr)
+  |<-- RDMA_REGISTER -------------|  (server registers source buffer, shares rkey + addr)
+  |--- RDMA_REGISTER ------------>|  (client registers destination buffer; only if RDMA_GPUDIRECT)
   |--- RDMA_READY --------------->|  (client is ready; RDMA operation may begin)
   |                               |
-  |   [RDMA Write or Read executes outside the TCP control plane]
+  |   [RDMA Write executes outside the TCP control plane]
   |                               |
   |<-- TENSOR_DATA_END -----------|  (server signals that buffer is ready on client side)
 ```
+
+The client's `RDMA_REGISTER` step is OPTIONAL and only occurs when both peers
+advertised the `RDMA_GPUDIRECT` capability flag in their respective `HELLO`
+messages. See [GPUDirect Destination Registration](#gpudirect-destination-registration).
 
 The server MUST send `TENSOR_DESCRIPTOR` before `RDMA_REGISTER`. The `RDMA_REGISTER`
 message MUST be sent on the same stream as the corresponding `TENSOR_DESCRIPTOR`.
 
 ### RDMA_REGISTER Payload
 
-Sent by the party that owns the source data buffer — the server for `TENSOR_REQUEST`
-transfers, the client for `TENSOR_PUT` transfers:
+The `RDMA_REGISTER` message is sent in one or two roles per transfer:
+
+- The **source-buffer owner** sends `RDMA_REGISTER` to declare its source memory
+  region. This is the server for `TENSOR_REQUEST` transfers and the client for
+  `TENSOR_PUT` transfers.
+- When both peers advertised the `RDMA_GPUDIRECT` capability flag, the
+  **destination-buffer owner** MAY also send `RDMA_REGISTER` to declare a
+  pre-pinned destination memory region. This is the client for `TENSOR_REQUEST`
+  transfers and the server for `TENSOR_PUT` transfers. See
+  [GPUDirect Destination Registration](#gpudirect-destination-registration).
+
+The payload table is identical in both roles; the role is determined by the
+sender and the position of the message in the handshake sequence.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -419,8 +488,40 @@ transfers, the client for `TENSOR_PUT` transfers:
 
 A receiver that cannot complete RDMA setup (e.g., memory pinning failed, no RDMA
 hardware available on the required path) MUST respond with an `ERROR` message instead
-of `RDMA_READY`. The sender MUST then fall back to transmitting the tensor via
-`TENSOR_DATA` frames on the control plane.
+of `RDMA_READY`. The source-buffer owner MUST then fall back to transmitting the
+tensor via `TENSOR_DATA` frames on the control plane.
+
+### GPUDirect Destination Registration
+
+When both peers advertised the `RDMA_GPUDIRECT` capability flag in their
+respective `HELLO` messages, the destination-buffer owner (the receiver) MAY
+pre-register a destination memory region and share its rkey with the sender
+via a second `RDMA_REGISTER` message. This enables the sender to write directly
+into the receiver's device memory (e.g., GPU memory), eliminating an
+intermediate host-to-device copy.
+
+1. The receiver MUST send its `RDMA_REGISTER` (destination) after the sender's
+   `RDMA_REGISTER` (source) and before `RDMA_READY`, if it intends to use
+   GPUDirect.
+2. The `length` field of the destination `RDMA_REGISTER` MUST equal
+   `total_data_bytes` from the preceding `TENSOR_DESCRIPTOR`.
+3. The receiver MUST register a buffer whose device type is consistent with the
+   `device_tag` reported in `TENSOR_DESCRIPTOR`. If the server fell back to a
+   different device per [Device Negotiation](#device-negotiation), the receiver
+   MUST NOT send a destination `RDMA_REGISTER` for a buffer on the originally
+   requested device. The receiver MUST either accept the fallback and proceed
+   without GPUDirect, or close the stream with `ERROR`.
+4. If the receiver does NOT send `RDMA_REGISTER`, the sender MUST use its own
+   buffer management strategy for the RDMA destination — typically landing data
+   in the receiver's host memory via the RDMA library's managed staging area.
+5. A sender that receives a destination `RDMA_REGISTER` but cannot perform a
+   GPUDirect write (e.g., topology mismatch) MUST send `ERROR` instead of
+   `RDMA_READY`.
+
+> **Note (non-normative):** GPUDirect requires the NIC and GPU to share a PCIe
+> root complex (or to be NVLink-connected). The protocol cannot validate this
+> topology; the receiver is responsible for ensuring it before advertising
+> `RDMA_GPUDIRECT` and before sending a destination `RDMA_REGISTER`.
 
 ### RDMA_READY Payload
 
@@ -442,11 +543,42 @@ transferred buffer before receiving `TENSOR_DATA_END`.
 
 ### TENSOR_PUT with RDMA
 
-For `TENSOR_PUT` (client → server), roles are reversed: after sending
-`TENSOR_DESCRIPTOR`, the client sends `RDMA_REGISTER`; the server responds with
-`RDMA_READY`. The client performs the RDMA Write into the server's memory region and
-then sends `TENSOR_DATA_END`. The server sends `TENSOR_PUT_ACK` after confirming the
-buffer is ready.
+For `TENSOR_PUT` (client → server), roles are reversed relative to the
+server-to-client flow: the client is the source-buffer owner and the server is
+the receiver.
+
+```
+Client                          Server
+  |                               |
+  |--- TENSOR_PUT --------------->|  (tensor key + descriptor)
+  |--- RDMA_REGISTER ------------>|  (client registers source buffer, shares rkey + addr)
+  |<-- RDMA_REGISTER -------------|  (server registers destination buffer; only if RDMA_GPUDIRECT)
+  |<-- RDMA_READY ----------------|  (server is ready; RDMA operation may begin)
+  |                               |
+  |   [RDMA Write executes outside the TCP control plane]
+  |                               |
+  |--- TENSOR_DATA_END ---------->|  (client signals data placed)
+  |<-- TENSOR_PUT_ACK ------------|  (server confirmed receipt)
+```
+
+The server's `RDMA_REGISTER` (destination) step is OPTIONAL and only occurs
+when both peers advertised the `RDMA_GPUDIRECT` capability flag in their
+respective `HELLO` messages.
+
+In `TENSOR_PUT`, the client unilaterally declares the destination `device_tag`
+in the descriptor; the server has no negotiation opportunity (there is no
+analogue of `preferred_device` for PUT transfers). If the server cannot accept
+the tensor on the declared device, it MUST send `ERROR` with
+`error_code = DEVICE_UNAVAILABLE` before any RDMA exchange and close the stream.
+
+The rules in [GPUDirect Destination Registration](#gpudirect-destination-registration)
+apply symmetrically with roles inverted: the server is the destination-buffer
+owner, and its destination `RDMA_REGISTER` declares a region whose device type
+MUST match the `device_tag` declared by the client in the descriptor.
+
+If the client (source-buffer owner) cannot perform a GPUDirect write after
+receiving the server's destination `RDMA_REGISTER` (e.g., topology mismatch),
+the client MUST send `ERROR` and close the stream before `TENSOR_DATA_END`.
 
 ---
 
@@ -532,6 +664,8 @@ stream. The connection MAY remain open for other streams.
 > **[OQ-3]:** ~~Multiplexing scheme.~~ **Resolved:** The `stream_id` field is defined as an opaque per-stream identifier. Implementations MAY multiplex multiple streams over a single TCP connection using `stream_id` for demultiplexing, but the protocol does not mandate a normative multiplexing scheme. Each stream MAY equivalently run on its own connection. Normative multiplexing rules are deferred to a future revision once the format is stable.
 
 > **[OQ-4]:** ~~`TENSOR_PUT` semantics.~~ **Resolved:** Server-side storage model is explicitly out of scope. `TENSOR_PUT_ACK` means "received and accepted"; it carries no implication about persistence, lifetime, or collision handling. Those are implementation concerns. The server sends `ERROR` to reject a PUT for any reason. See [TENSOR_PUT](#tensor_put).
+
+> **[OQ-5]:** ~~Device negotiation and GPUDirect RDMA destination registration.~~ **Resolved:** A normative [Device Negotiation](#device-negotiation) section defines server device selection rules. GPUDirect destination registration uses bidirectional `RDMA_REGISTER` gated by the new `RDMA_GPUDIRECT` capability flag (bit 3). See `docs/adr/ADR-011-server-device-selection.md` (server device selection) and `docs/adr/ADR-012-gpudirect-rdma.md` (GPUDirect RDMA).
 
 ---
 

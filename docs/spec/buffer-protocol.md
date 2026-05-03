@@ -108,10 +108,19 @@ All buffers referenced by a single tensor descriptor (data buffer + all
 quantization-parameter buffers) MUST share the same `device_tag`. A reader
 MUST reject a descriptor whose buffers carry different `device_tag` values.
 
+For `TENSOR_PUT` transfers (see `interchange.md`), the client unilaterally
+declares the destination `device_tag` in the descriptor; the server MAY reject
+the transfer with `DEVICE_UNAVAILABLE` but MUST NOT silently place buffers on a
+different device.
+
 > **Note (non-normative):** Device colocation ensures that quantized tensor
 > kernels can dereference both the data and the quantization parameters without
 > triggering cross-device transfers. A writer that needs quantization parameters
 > on a different device must emit a separate tensor descriptor.
+
+When buffer handles are exchanged across machines, the device selection rules
+in `interchange.md` § Device Negotiation govern which device tag is valid for a
+given transfer.
 
 ---
 
