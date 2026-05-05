@@ -273,6 +273,42 @@ pub enum Error {
         /// The maximum permitted rank (`64`).
         max: u32,
     },
+
+    /// Layout tag `0x00` or `0xFF` is permanently invalid.
+    ///
+    /// These sentinels are reserved by the spec and MUST be rejected by all
+    /// conforming readers regardless of operating mode
+    /// (see `docs/spec/memory-layout.md § Layout Taxonomy`).
+    #[error("invalid layout tag: 0x{0:02X} is permanently reserved")]
+    InvalidLayoutTag(u8),
+
+    /// Layout tag is in a range reserved for future specification versions.
+    ///
+    /// Reserved ranges: `0x0A`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`.
+    /// Implementations MUST NOT assign semantics to these tags in strict mode.
+    #[error("reserved layout tag: 0x{0:02X} is reserved for future specification versions")]
+    ReservedLayoutTag(u8),
+
+    /// Layout tag is in the private-extension range `0xF0`–`0xFE`.
+    ///
+    /// Private extension layouts have unconstrained payloads beyond the standard
+    /// header fields; strict-mode readers reject them unless both parties have
+    /// agreed on semantics out of band (see `docs/spec/memory-layout.md § Extension Layouts`).
+    #[error("private layout tag: 0x{0:02X} is in the private-extension range (0xF0–0xFE)")]
+    PrivateLayoutTag(u8),
+
+    /// Layout tag is not recognized by this implementation.
+    ///
+    /// Covers any allocated but unassigned tag not already matched by
+    /// [`Error::InvalidLayoutTag`] or [`Error::ReservedLayoutTag`].
+    #[error("unknown layout tag: 0x{0:02X} is not recognized by this implementation")]
+    UnknownLayoutTag(u8),
+
+    /// A layout descriptor field is invalid.
+    ///
+    /// The inner message describes the specific field and the constraint violated.
+    #[error("invalid layout descriptor: {0}")]
+    InvalidLayout(String),
 }
 
 /// Convenience alias for `Result` with [`Error`].
