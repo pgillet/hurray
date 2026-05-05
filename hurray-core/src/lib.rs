@@ -15,6 +15,7 @@
 pub mod buffer;
 pub mod element_type;
 pub mod error;
+pub mod layout;
 pub mod quantization;
 pub mod shape;
 
@@ -23,6 +24,7 @@ pub use buffer::{
 };
 pub use element_type::ElementType;
 pub use error::{Error, Result};
+pub use layout::LayoutDescriptor;
 pub use quantization::{
     validate_axis, validate_buffer_placement, Mxfp, Nf4, PerBlockAffine, PerChannelAffine,
     PerTensorAffine, QuantizationDescriptor, QuantizationSchemeTag, NF4_LUT,
