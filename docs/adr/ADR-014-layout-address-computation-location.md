@@ -128,3 +128,60 @@ The Layer 4 plan gains a prerequisite sub-task before the `hurray-inspect` refac
 
 ## Date
 2026-05-05
+
+## Amendment 2026-05-06
+
+Three Layer 4a planning questions resolved before implementation:
+
+- **`ElementAddress::element_offset` takes `&Shape`.** Revised signature:
+  `fn element_offset(&self, index: &[u64], shape: &Shape) -> Result<u64, Error>`.
+  Row-major and column-major carry no stride fields; every dense layout requires
+  shape for either stride derivation or index-envelope validation. Index rank and
+  bounds validation MUST happen inside the trait method, not in callers.
+  `LayoutDescriptor::element_offset` adopts the same signature.
+
+- **Strided returns `u64` via two's-complement reinterpretation of an `i64` sum.**
+  The trait return type stays `u64`; widening it to `i64` would impose signed
+  arithmetic on every non-strided layout. The strided impl MUST compute the sum
+  in `i64` with `checked_mul` / `checked_add` (overflow → `Error::IndexOutOfRange`
+  or new `Error::AddressOverflow`), then cast `signed_sum as u64`. The final
+  bounds check is centralised in `byte_address_from_element_offset`, which gains
+  a `buffer_size: u64` parameter and returns `Err` if the byte address falls
+  outside `[0, buffer_size)`. Sub-byte element-type bit arithmetic MUST be done
+  on the signed `i64` offset before reinterpretation (floor division semantics).
+
+- **Subpaving does NOT implement `ElementAddress`.** The trait models a single
+  `u64` offset against a single buffer; subpaving is fundamentally multi-buffer.
+  Instead, `SubpavingLayout` exposes a `pub` inherent method:
+
+  ```rust
+  pub fn locate_element(&self, index: &[u64], shape: &Shape)
+      -> Result<SubpavingLocation, Error>;
+
+  pub struct SubpavingLocation {
+      pub region_index: u32,
+      pub buffer_index: u32,
+      pub region_byte_offset: u64,
+      pub region_element_offset: u64,  // fully resolved within the region's buffer
+  }
+  ```
+
+  `locate_element` MUST recurse into the region's inner layout and return a
+  fully-resolved element offset within the region's buffer. Region lookup uses a
+  linear scan in v1 with an inline `// TODO(OQ-014.3)` comment; OQ-014.3 (region
+  ordering) is routed to `format-spec-writer` in parallel and MUST NOT be
+  resolved by implementation choice. Recursive subpaving is supported with an
+  implementation-level depth limit (8 levels) returning
+  `Error::SubpavingNestingTooDeep` — a non-normative safeguard.
+  `LayoutDescriptor::element_offset` for the `Subpaving` variant returns
+  `Error::LayoutRequiresMultiBuffer { layout_tag: 0x06 }` and its docstring
+  redirects callers to `SubpavingLayout::locate_element`.
+
+**`Error` enum additions (all additive):**
+- `AddressOverflow` — strided/byte-conversion arithmetic overflow
+- `LayoutRequiresMultiBuffer { layout_tag: u8 }` — Subpaving dispatch
+- `SubpavingNestingTooDeep` — recursion guard
+- `DynamicDimInIndexing { dim: u32 }` — DYNAMIC dimension cannot be addressed
+- `IndexNotInAnyRegion { index: Vec<u64> }` — subpaving miss
+- `IndexArithmeticOverflow` — Morton/Hilbert shift overflow
+- `ByteAddressOverflow` — byte address outside buffer bounds
