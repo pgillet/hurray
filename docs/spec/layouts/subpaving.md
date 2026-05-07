@@ -42,11 +42,25 @@ After `region_byte_offset`, the layout-specific fields for the region's
 `0x04` or `0x06`). The field names `region_layout_tag` and `region_byte_offset`
 match the binary encoding given in `metadata.md` § General Subpaving (`0x06`).
 
+> **[OQ-1]:** The binary encoding of region-specific layout fields (for
+> `region_layout_tag` values `0x04` (tiled) and `0x06` (subpaving)) is referenced
+> as "encoded inline" but the exact byte layout for these recursive cases is not
+> defined in this section. Resolution required before the reference implementation
+> can support recursive subpaving regions. For Layer 4 of the reference
+> implementation, addressing is restricted to `region_layout_tag` values `0x01`,
+> `0x02`, and `0x03`.
+
 ## Coverage Constraint
 
 The union of all regions MUST exactly cover every element in the tensor's index
 space: for every valid index `[i_0, i_1, ..., i_{r-1}]` (where `0 <= i_k < shape[k]`
 for all `k`), there MUST be exactly one region whose bounding box contains that index.
+
+> **Note (non-normative):** The order of regions in the `regions` array is not
+> specified. A conforming reader MUST NOT assume any particular ordering.
+> Implementations that need fast lookup MAY sort regions by lower-corner index at
+> read time or use a spatial index, but this is an implementation concern and not
+> part of the format.
 
 ## Non-Overlap Constraint
 

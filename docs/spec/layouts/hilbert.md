@@ -120,9 +120,14 @@ Selected index mappings for `r = 2`, `p = 2` (shape `[4, 4]`):
 | 2 | 1 | 1 | | 10 | 3 | 3 |
 | 3 | 0 | 1 | | 11 | 3 | 2 |
 | 4 | 0 | 2 | | 12 | 3 | 1 |
-| 5 | 0 | 3 | | 13 | 3 | 0 |
+| 5 | 0 | 3 | | 13 | 2 | 1 |
 | 6 | 1 | 3 | | 14 | 2 | 0 |
-| 7 | 1 | 2 | | 15 | 2 | 1 |
+| 7 | 1 | 2 | | 15 | 3 | 0 |
 
 Consecutive entries differ by exactly 1 in exactly one coordinate. Implementations
 SHOULD validate against this table as a conformance check.
+
+> **Note (non-normative):** The MUST-level normative reference for the index mapping
+> is the `CoordsToHilbert` / `HilbertToCoords` algorithm defined above. This table is
+> provided as a SHOULD-level conformance aid; if a discrepancy is ever observed
+> between table and algorithm, the algorithm output prevails.

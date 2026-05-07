@@ -31,6 +31,7 @@
 //!
 //! See `docs/spec/memory-layout.md` for the normative definition.
 
+pub mod addressing;
 pub mod col_major;
 pub mod coo;
 pub mod csc;
@@ -44,6 +45,7 @@ pub mod subpaving;
 pub mod tiled;
 pub mod unknown;
 
+pub use addressing::{byte_address_from_element_offset, ElementAddress, SubpavingLocation};
 pub use coo::CooLayout;
 pub use csc::CscLayout;
 pub use csr::CsrLayout;
@@ -578,6 +580,54 @@ impl LayoutDescriptor {
 
             // Unknown: permissive mode — accept without validation.
             Self::Unknown(_) => Ok(()),
+        }
+    }
+
+    /// Returns the linear element offset for a multi-dimensional logical index.
+    ///
+    /// Dispatches to the layout-specific [`addressing::ElementAddress`] implementation.
+    /// For multi-buffer layouts (sparse formats, general subpaving), returns
+    /// [`Error::LayoutRequiresMultiBuffer`] — use the layout-specific method instead
+    /// (e.g., [`SubpavingLocation`] via [`SubpavingLayout::locate_element`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::layout::LayoutDescriptor;
+    /// use hurray_core::Shape;
+    ///
+    /// let shape = Shape::new(vec![3, 4]).unwrap();
+    ///
+    /// // Row-major: element [1, 2] → offset 1*4 + 2 = 6.
+    /// assert_eq!(LayoutDescriptor::RowMajor.element_offset(&[1, 2], &shape).unwrap(), 6);
+    ///
+    /// // Column-major: element [1, 2] → offset 1*1 + 2*3 = 7.
+    /// assert_eq!(LayoutDescriptor::ColMajor.element_offset(&[1, 2], &shape).unwrap(), 7);
+    /// ```
+    pub fn element_offset(&self, index: &[u64], shape: &Shape) -> crate::Result<u64> {
+        use addressing::ElementAddress;
+        match self {
+            Self::RowMajor => addressing::row_major::element_offset(index, shape),
+            Self::ColMajor => addressing::col_major::element_offset(index, shape),
+            Self::Strided(s) => s.element_offset(index, shape),
+            Self::Tiled(t) => t.element_offset(index, shape),
+            Self::Morton(m) => m.element_offset(index, shape),
+            Self::Hilbert(h) => h.element_offset(index, shape),
+            // Subpaving is multi-buffer; use SubpavingLayout::locate_element.
+            Self::Subpaving(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
+                layout_tag: TAG_SUBPAVING,
+            }),
+            Self::Coo(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
+                layout_tag: TAG_COO,
+            }),
+            Self::Csr(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
+                layout_tag: TAG_CSR,
+            }),
+            Self::Csc(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
+                layout_tag: TAG_CSC,
+            }),
+            Self::PrivateExtension(p) => Err(crate::Error::PrivateLayoutTag(p.tag)),
+            Self::Unknown(u) => Err(crate::Error::UnknownLayoutTag(u.tag)),
         }
     }
 }

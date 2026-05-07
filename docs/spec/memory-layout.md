@@ -126,6 +126,19 @@ the packing formula above.
 > bit-level manipulation per element. Writers SHOULD prefer contiguous layouts for
 > sub-byte data.
 
+> **Note (non-normative):** The 6-bit types (`float6_e2m3`, `float6_e3m2`) pack 4
+> elements per 3 bytes (see `element-types.md` § Buffer Size Calculation). However,
+> because their bit width (6) does not divide evenly into 8 bits, the standard
+> sub-byte bit-addressing model (where bit position within a byte is well-defined)
+> does not apply cleanly. Elements are always addressed at the group level (3 bytes
+> per group of 4 elements); individual element extraction within a group is defined
+> by the bit layout in `element-types.md` § Encoding but is not generalised here.
+
+> **[OQ-1]:** Should a normative group-based addressing formula for 6-bit types be
+> defined in this section, or is the `element-types.md` encoding sufficient for
+> implementors? Until resolved, conforming implementations MAY treat 6-bit types
+> as requiring group-level buffer access rather than single-element byte addressing.
+
 ---
 
 ## Alignment

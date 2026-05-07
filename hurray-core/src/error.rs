@@ -309,6 +309,45 @@ pub enum Error {
     /// The inner message describes the specific field and the constraint violated.
     #[error("invalid layout descriptor: {0}")]
     InvalidLayout(String),
+
+    /// The number of index components does not match the tensor rank.
+    #[error("index rank {index_rank} does not match shape rank {shape_rank}")]
+    IndexRankMismatch {
+        index_rank: usize,
+        shape_rank: usize,
+    },
+
+    /// An index component exceeds the dimension size.
+    #[error("index[{dim}] = {index} is out of range [0, {size})")]
+    IndexOutOfRange { dim: u32, index: u64, size: u64 },
+
+    /// Arithmetic overflow when computing an element or byte address.
+    #[error("address arithmetic overflow")]
+    AddressOverflow,
+
+    /// The computed byte address falls outside the buffer bounds.
+    #[error("byte address falls outside buffer bounds [0, {buffer_size})")]
+    ByteAddressOverflow { buffer_size: u64 },
+
+    /// This layout requires multi-buffer access via an inherent method, not the trait.
+    #[error("layout tag 0x{layout_tag:02X} requires multi-buffer access; use the layout-specific method")]
+    LayoutRequiresMultiBuffer { layout_tag: u8 },
+
+    /// Subpaving nesting depth exceeded the implementation limit of 8 levels.
+    #[error("subpaving nesting depth exceeds the implementation limit of 8 levels")]
+    SubpavingNestingTooDeep,
+
+    /// A DYNAMIC dimension cannot be used for element addressing.
+    #[error("dimension {dim} is DYNAMIC and cannot be used for element addressing")]
+    DynamicDimInIndexing { dim: u32 },
+
+    /// No subpaving region contains the given index.
+    #[error("index {index:?} does not fall within any subpaving region")]
+    IndexNotInAnyRegion { index: Vec<u64> },
+
+    /// Arithmetic overflow in Morton or Hilbert index computation.
+    #[error("index arithmetic overflow in space-filling curve computation")]
+    IndexArithmeticOverflow,
 }
 
 /// Convenience alias for `Result` with [`Error`].
