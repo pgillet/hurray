@@ -180,9 +180,11 @@ Followed by `region_count` **region descriptors**, each encoded as:
 | `_reserved` | `uint8[3]` | MUST be `0x00`. |
 | `buffer_index` | `uint32` | Index of the data buffer in the buffer table that holds this region. |
 | `region_byte_offset` | `uint64` | Byte offset within the referenced buffer to the start of this region's data. |
+| `region_layout_length` | `uint32` | Byte count of the inner layout payload that follows. MUST be `0` for `region_layout_tag` values `0x01` and `0x02`. |
+| `region_layout_payload` | `bytes[region_layout_length]` | Layout-specific fields for `region_layout_tag`, encoded identically to the Layout-Specific Fields section above for that tag, with the tag byte omitted. |
 
-After `region_byte_offset`, the layout-specific fields for `region_layout_tag` are
-encoded inline (recursively if `region_layout_tag` is `0x04` or `0x06`).
+Recursive subpaving (`region_layout_tag = 0x06`) is permitted. A reader MUST
+reject any descriptor where the subpaving nesting depth exceeds 8 levels.
 
 ### Hilbert Curve (`0x40`)
 

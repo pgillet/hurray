@@ -4,14 +4,15 @@
 //! regions each with its own inner layout.
 //! See `docs/spec/layouts/subpaving.md`.
 
+use crate::layout::LayoutDescriptor;
 use crate::{Error, Result};
 
 /// A single rectangular region within a general subpaving layout.
 ///
-/// Each region has its own origin, shape, layout tag, buffer reference, and
-/// byte offset within that buffer. Region layout details beyond the tag (e.g.,
-/// strides for a strided inner layout) are encoded inline in the binary format;
-/// at this layer we capture them as raw bytes for forward-compatibility.
+/// Each region has its own origin, shape, layout tag, buffer reference, byte
+/// offset, and (for tags with additional descriptor fields) an `inner_layout`
+/// descriptor. Row-major (`0x01`) and column-major (`0x02`) have no additional
+/// fields; all other tags carry their layout-specific fields in `inner_layout`.
 ///
 /// # Examples
 ///
@@ -20,6 +21,7 @@ use crate::{Error, Result};
 ///
 /// let region = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0).unwrap();
 /// assert_eq!(region.region_layout_tag, 0x01);
+/// assert!(region.inner_layout.is_none());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -39,13 +41,29 @@ pub struct RegionDescriptor {
 
     /// Byte offset within the referenced buffer to the start of this region's data.
     pub region_byte_offset: u64,
+
+    /// Inner layout descriptor for tags with additional descriptor fields.
+    ///
+    /// `None` for `region_layout_tag` values `0x01` (row-major) and `0x02`
+    /// (column-major), which carry no additional fields. `Some` for all other
+    /// tags; the contained `LayoutDescriptor` variant MUST satisfy
+    /// `inner.tag() == region_layout_tag`.
+    ///
+    /// See ADR-015 and `docs/spec/layouts/subpaving.md` § Additional Descriptor Fields.
+    pub inner_layout: Option<Box<LayoutDescriptor>>,
 }
 
 impl RegionDescriptor {
-    /// Creates a new [`RegionDescriptor`], validating that:
-    /// - `region_layout_tag` is not `0x00` or `0xFF`,
-    /// - all `region_shape` values are > 0,
-    /// - `origin` and `region_shape` have the same length.
+    /// Creates a new [`RegionDescriptor`] with no inner layout (for row-major
+    /// `0x01` and column-major `0x02` regions).
+    ///
+    /// Validates that `region_layout_tag` is not `0x00` or `0xFF`, all
+    /// `region_shape` values are > 0, and `origin` and `region_shape` have the
+    /// same length.
+    ///
+    /// For tags with additional descriptor fields (strided, tiled, Morton,
+    /// Hilbert, or recursive subpaving), use [`RegionDescriptor::with_inner_layout`]
+    /// to attach the inner [`LayoutDescriptor`].
     ///
     /// # Errors
     ///
@@ -58,6 +76,7 @@ impl RegionDescriptor {
     ///
     /// let r = RegionDescriptor::new(vec![0, 4], vec![4, 4], 0x01, 0, 0).unwrap();
     /// assert_eq!(r.origin, [0, 4]);
+    /// assert!(r.inner_layout.is_none());
     /// ```
     pub fn new(
         origin: Vec<u64>,
@@ -91,7 +110,40 @@ impl RegionDescriptor {
             region_layout_tag,
             buffer_index,
             region_byte_offset,
+            inner_layout: None,
         })
+    }
+
+    /// Attaches an inner [`LayoutDescriptor`] to this region.
+    ///
+    /// The inner layout's tag MUST match `self.region_layout_tag`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::InvalidLayout`] if `inner.tag() != self.region_layout_tag`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::layout::{LayoutDescriptor, MortonLayout, RegionDescriptor};
+    ///
+    /// let morton = LayoutDescriptor::Morton(MortonLayout::new(vec![4, 4]).unwrap());
+    /// let r = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x05, 0, 0)
+    ///     .unwrap()
+    ///     .with_inner_layout(morton)
+    ///     .unwrap();
+    /// assert!(r.inner_layout.is_some());
+    /// ```
+    pub fn with_inner_layout(mut self, inner: LayoutDescriptor) -> Result<Self> {
+        if inner.tag() != self.region_layout_tag {
+            return Err(Error::InvalidLayout(format!(
+                "inner_layout tag 0x{:02X} does not match region_layout_tag 0x{:02X}",
+                inner.tag(),
+                self.region_layout_tag
+            )));
+        }
+        self.inner_layout = Some(Box::new(inner));
+        Ok(self)
     }
 }
 
@@ -161,10 +213,33 @@ impl SubpavingLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::LayoutDescriptor;
+    use crate::layout::{LayoutDescriptor, MortonLayout};
 
     fn simple_region() -> RegionDescriptor {
         RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0).unwrap()
+    }
+
+    // with_inner_layout: Morton layout attached to a 0x05 region.
+    #[test]
+    fn region_with_inner_layout_morton() {
+        let morton = LayoutDescriptor::Morton(MortonLayout::new(vec![4, 4]).unwrap());
+        let r = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x05, 0, 0)
+            .unwrap()
+            .with_inner_layout(morton)
+            .unwrap();
+        assert!(r.inner_layout.is_some());
+        assert_eq!(r.inner_layout.as_deref().unwrap().tag(), 0x05);
+    }
+
+    // with_inner_layout: tag mismatch returns error.
+    #[test]
+    fn region_with_inner_layout_tag_mismatch() {
+        let morton = LayoutDescriptor::Morton(MortonLayout::new(vec![4, 4]).unwrap());
+        // tag 0x01 in new(), 0x05 in with_inner_layout → mismatch
+        let err = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0)
+            .unwrap()
+            .with_inner_layout(morton);
+        assert!(matches!(err, Err(Error::InvalidLayout(_))));
     }
 
     #[test]

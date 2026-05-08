@@ -2,7 +2,7 @@
 //!
 //! Spec: docs/spec/layouts/subpaving.md § Element Address
 
-use crate::layout::{RegionDescriptor, SubpavingLayout};
+use crate::layout::{LayoutDescriptor, RegionDescriptor, SubpavingLayout};
 use crate::{Error, Result, Shape};
 
 use super::col_major::col_major_offset;
@@ -109,6 +109,26 @@ impl SubpavingLayout {
                 .map(|(&i, &o)| i - o)
                 .collect();
 
+            // Recursive subpaving: delegate to the inner SubpavingLayout.
+            if region.region_layout_tag == 0x06 {
+                let inner_shape = Shape::new(region.region_shape.clone())
+                    .map_err(|e| Error::InvalidLayout(format!("invalid region shape: {e}")))?;
+                let inner_sp = match region.inner_layout.as_deref() {
+                    Some(LayoutDescriptor::Subpaving(sp)) => sp,
+                    Some(_) => {
+                        return Err(Error::InvalidLayout(
+                            "inner_layout tag mismatch for recursive subpaving region".to_string(),
+                        ))
+                    }
+                    None => {
+                        return Err(Error::InvalidLayout(
+                            "recursive subpaving region missing inner_layout".to_string(),
+                        ))
+                    }
+                };
+                return inner_sp.locate_at_depth(&local_idx, &inner_shape, depth + 1);
+            }
+
             let region_element_offset = region_inner_offset(region, &local_idx)?;
 
             return Ok(SubpavingLocation {
@@ -137,18 +157,29 @@ fn region_inner_offset(region: &RegionDescriptor, local_idx: &[u64]) -> Result<u
     match region.region_layout_tag {
         0x01 => row_major_offset(local_idx, &region.region_shape),
         0x02 => col_major_offset(local_idx, &region.region_shape),
-        // Layer 4 restriction: strided regions require stride fields not yet
-        // carried by RegionDescriptor (see subpaving.md OQ-1).
+        // Strided, tiled, Morton, Hilbert: dispatch through inner_layout.
+        0x03 | 0x04 | 0x05 | 0x40 => {
+            let inner = region.inner_layout.as_deref().ok_or_else(|| {
+                Error::InvalidLayout(format!(
+                    "region_layout_tag 0x{:02X} requires inner_layout",
+                    region.region_layout_tag
+                ))
+            })?;
+            let region_shape = Shape::new(region.region_shape.clone())
+                .map_err(|e| Error::InvalidLayout(format!("invalid region shape: {e}")))?;
+            inner.element_offset(local_idx, &region_shape)
+        }
         tag => Err(Error::InvalidLayout(format!(
-            "region_layout_tag 0x{tag:02X} is not supported in locate_element at this layer"
+            "region_layout_tag 0x{tag:02X} is not supported in locate_element"
         ))),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::layout::{RegionDescriptor, SubpavingLayout};
+    use crate::layout::{
+        LayoutDescriptor, MortonLayout, RegionDescriptor, StridedLayout, SubpavingLayout,
+    };
     use crate::{Error, Shape};
 
     // Spec docs/spec/layouts/subpaving.md § Element Address:
@@ -284,6 +315,106 @@ mod tests {
         assert!(
             matches!(err, Error::IndexOutOfRange { dim: 0, .. }),
             "expected IndexOutOfRange, got {err:?}"
+        );
+    }
+
+    // Strided inner region: region 0 uses strided layout with strides [1, 4].
+    // Element [2, 3] → local [2, 3], strided_offset = 2*1 + 3*4 = 14.
+    #[test]
+    fn subpaving_strided_inner_region() {
+        let strided = LayoutDescriptor::Strided(StridedLayout::new(vec![1, 4]));
+        let region = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x03, 0, 0)
+            .unwrap()
+            .with_inner_layout(strided)
+            .unwrap();
+        let layout = SubpavingLayout::new(vec![region]).unwrap();
+        let shape = Shape::new(vec![4, 4]).unwrap();
+        let loc = layout.locate_element(&[2, 3], &shape).unwrap();
+        assert_eq!(loc.region_element_offset, 14); // 2*1 + 3*4
+    }
+
+    // Morton inner region: 4×4 region with Morton layout (2 bits per dim).
+    // Element [3, 2] → Morton index interleaves bits of 3 (0b11) and 2 (0b10):
+    // bit 0: x=1,y=0 → 0b01; bit 1: x=1,y=1 → 0b11 << 2 = 0b1100 → combined = 0b1101 = 13.
+    // Actually let's compute: morton_bits=[2,2], dims 0 and 1, index [3, 2].
+    // Bit 0 of dim0=3(0b11): bit0=1, bit1=1. Bit 0 of dim1=2(0b10): bit0=0, bit1=1.
+    // h = bit0(d0)<<0 | bit0(d1)<<1 | bit1(d0)<<2 | bit1(d1)<<3
+    //   = 1<<0 | 0<<1 | 1<<2 | 1<<3 = 1 + 0 + 4 + 8 = 13.
+    #[test]
+    fn subpaving_morton_inner_region() {
+        let morton = LayoutDescriptor::Morton(MortonLayout::new(vec![2, 2]).unwrap());
+        let region = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x05, 0, 0)
+            .unwrap()
+            .with_inner_layout(morton)
+            .unwrap();
+        let layout = SubpavingLayout::new(vec![region]).unwrap();
+        let shape = Shape::new(vec![4, 4]).unwrap();
+        let loc = layout.locate_element(&[3, 2], &shape).unwrap();
+        assert_eq!(loc.region_element_offset, 13);
+    }
+
+    // Error: strided region without inner_layout → InvalidLayout.
+    #[test]
+    fn subpaving_strided_missing_inner_layout() {
+        // region_layout_tag = 0x03 but inner_layout = None.
+        let region = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x03, 0, 0).unwrap();
+        let layout = SubpavingLayout::new(vec![region]).unwrap();
+        let shape = Shape::new(vec![4, 4]).unwrap();
+        let err = layout.locate_element(&[1, 1], &shape).unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidLayout(_)),
+            "expected InvalidLayout, got {err:?}"
+        );
+    }
+
+    // Recursive subpaving: outer region covers [0,0..4×4), inner subpaving
+    // splits it into two 2×4 halves (row-major).
+    // Element [3, 2] → outer local [3, 2]; inner region 1 (origin [2,0]),
+    // inner local [1, 2], row_major([1, 2], [2, 4]) = 1*4 + 2 = 6.
+    #[test]
+    fn subpaving_recursive() {
+        let inner_regions = vec![
+            RegionDescriptor::new(vec![0, 0], vec![2, 4], 0x01, 1, 0).unwrap(),
+            RegionDescriptor::new(vec![2, 0], vec![2, 4], 0x01, 2, 0).unwrap(),
+        ];
+        let inner_sp = LayoutDescriptor::Subpaving(SubpavingLayout::new(inner_regions).unwrap());
+        let outer_region = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x06, 0, 0)
+            .unwrap()
+            .with_inner_layout(inner_sp)
+            .unwrap();
+        let layout = SubpavingLayout::new(vec![outer_region]).unwrap();
+        let shape = Shape::new(vec![4, 4]).unwrap();
+        let loc = layout.locate_element(&[3, 2], &shape).unwrap();
+        assert_eq!(loc.buffer_index, 2); // inner region 1's buffer
+        assert_eq!(loc.region_byte_offset, 0);
+        assert_eq!(loc.region_element_offset, 6); // row_major([1,2],[2,4]) = 6
+    }
+
+    // Recursive subpaving: nesting depth > 8 returns SubpavingNestingTooDeep.
+    // Build 9 levels of nesting; the 9th call exceeds MAX_SUBPAVING_DEPTH.
+    #[test]
+    fn subpaving_recursive_too_deep() {
+        // Build depth-9 nesting by wrapping a simple region in 8 subpaving layers.
+        let leaf = SubpavingLayout::new(vec![
+            RegionDescriptor::new(vec![0], vec![1], 0x01, 0, 0).unwrap()
+        ])
+        .unwrap();
+
+        let mut current = leaf;
+        for _ in 0..8 {
+            let inner = LayoutDescriptor::Subpaving(current);
+            let region = RegionDescriptor::new(vec![0], vec![1], 0x06, 0, 0)
+                .unwrap()
+                .with_inner_layout(inner)
+                .unwrap();
+            current = SubpavingLayout::new(vec![region]).unwrap();
+        }
+
+        let shape = Shape::new(vec![1]).unwrap();
+        let err = current.locate_element(&[0], &shape).unwrap_err();
+        assert!(
+            matches!(err, Error::SubpavingNestingTooDeep),
+            "expected SubpavingNestingTooDeep, got {err:?}"
         );
     }
 }
