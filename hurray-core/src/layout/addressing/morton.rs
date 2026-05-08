@@ -141,7 +141,7 @@ mod tests {
         let layout = MortonLayout::new(vec![33, 33]).unwrap();
         // Shape must accommodate 2^33 per dimension; use DYNAMIC to avoid
         // a shape-construction overflow.
-        let shape = Shape::new(vec![crate::DYNAMIC, crate::DYNAMIC]).unwrap();
+        let _shape = Shape::new(vec![crate::DYNAMIC, crate::DYNAMIC]).unwrap();
         // validate_index will reject DYNAMIC before the overflow check; use a
         // shape whose dims are within index range but trigger the overflow path.
         // Since validate_index fires first on DYNAMIC, construct with large static dims.
