@@ -1,0 +1,777 @@
+//! Tensor descriptor — binary encoding and decoding.
+//!
+//! The [`TensorDescriptor`] type is the top-level carrier for all metadata
+//! required to interpret a tensor's data buffer: element type, rank, shape,
+//! memory layout, buffer handles, and optional quantization, shard, statistics,
+//! and extension-type annotations.
+//!
+//! # Wire format
+//!
+//! Defined in `docs/spec/metadata.md`. Fixed header (20 bytes) followed by
+//! variable-length core fields, layout-specific payload, buffer table, and
+//! up to four optional sections selected by the `flags` bitmask.
+//!
+//! # Examples
+//!
+//! ```
+//! use hurray_core::{
+//!     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+//!     descriptor::TensorDescriptor,
+//!     layout::LayoutDescriptor,
+//! };
+//!
+//! // Build a float32 [3, 4] row-major tensor descriptor (the spec's worked example).
+//! let shape = Shape::new(vec![3, 4]).unwrap();
+//! let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+//! let desc = TensorDescriptor::new(
+//!     1, 0,
+//!     ElementType::Float32,
+//!     shape,
+//!     0,
+//!     LayoutDescriptor::RowMajor,
+//!     vec![buffer],
+//!     None, None, None, None,
+//! ).unwrap();
+//!
+//! let encoded = desc.encode().unwrap();
+//! assert_eq!(encoded.len(), 61); // spec worked example is 61 bytes
+//!
+//! let decoded = TensorDescriptor::decode(&encoded).unwrap();
+//! assert_eq!(decoded, desc);
+//! ```
+
+// ── Sub-modules ───────────────────────────────────────────────────────────────
+
+pub(crate) mod cursor;
+mod decode;
+mod encode;
+pub mod ext_type;
+pub mod layout_codec;
+pub mod shard;
+pub mod statistics;
+
+// Internal type alias used by encode.rs / decode.rs to import TensorDescriptor
+// without a circular path.
+pub(crate) mod mod_types {
+    pub(crate) use super::{DescriptorFlags, TensorDescriptor, RESERVED_FLAGS_MASK};
+}
+
+// ── Public re-exports ─────────────────────────────────────────────────────────
+
+pub use ext_type::ExtensionTypeDescriptor;
+pub use shard::ShardDescriptor;
+pub use statistics::{Statistics, StatisticsMask};
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+/// Magic bytes that open every Hurray tensor descriptor: ASCII `"HRRY"`.
+///
+/// ```
+/// use hurray_core::descriptor::MAGIC;
+/// assert_eq!(&MAGIC, b"HRRY");
+/// ```
+pub const MAGIC: [u8; 4] = *b"HRRY";
+
+/// Current major version of the descriptor format.
+pub const DESCRIPTOR_VERSION_MAJOR: u8 = 1;
+
+/// Current minor version of the descriptor format.
+pub const DESCRIPTOR_VERSION_MINOR: u8 = 0;
+
+/// Minimum valid value for the `descriptor_length` field (= fixed header size).
+pub(crate) const MIN_DESCRIPTOR_LEN: u32 = 20;
+
+/// Bitmask of all reserved flag bits (bits 4–31). Readers MUST reject descriptors
+/// with any reserved bit set.
+pub(crate) const RESERVED_FLAGS_MASK: u32 = !0x0F;
+
+// ── DescriptorFlags ───────────────────────────────────────────────────────────
+
+/// Descriptor flags bitmask (wire field `flags`, offset 10 in the fixed header).
+///
+/// Each bit selects an optional section that follows the buffer table. Bits 4–31
+/// are reserved and MUST be `0`.
+///
+/// # Examples
+///
+/// ```
+/// use hurray_core::descriptor::DescriptorFlags;
+///
+/// let f = DescriptorFlags(DescriptorFlags::HAS_QUANTIZATION | DescriptorFlags::HAS_SHARD);
+/// assert!(f.has_quantization());
+/// assert!(f.has_shard());
+/// assert!(!f.has_statistics());
+/// assert!(!f.has_extension_type());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DescriptorFlags(pub u32);
+
+impl DescriptorFlags {
+    /// Bit 0: quantization section is present.
+    pub const HAS_QUANTIZATION: u32 = 1 << 0;
+    /// Bit 1: shard section is present.
+    pub const HAS_SHARD: u32 = 1 << 1;
+    /// Bit 2: extension type section is present.
+    pub const HAS_EXTENSION_TYPE: u32 = 1 << 2;
+    /// Bit 3: statistics section is present.
+    pub const HAS_STATISTICS: u32 = 1 << 3;
+
+    /// Returns `true` if the `HAS_QUANTIZATION` bit is set.
+    #[inline]
+    pub fn has_quantization(self) -> bool {
+        self.0 & Self::HAS_QUANTIZATION != 0
+    }
+
+    /// Returns `true` if the `HAS_SHARD` bit is set.
+    #[inline]
+    pub fn has_shard(self) -> bool {
+        self.0 & Self::HAS_SHARD != 0
+    }
+
+    /// Returns `true` if the `HAS_EXTENSION_TYPE` bit is set.
+    #[inline]
+    pub fn has_extension_type(self) -> bool {
+        self.0 & Self::HAS_EXTENSION_TYPE != 0
+    }
+
+    /// Returns `true` if the `HAS_STATISTICS` bit is set.
+    #[inline]
+    pub fn has_statistics(self) -> bool {
+        self.0 & Self::HAS_STATISTICS != 0
+    }
+}
+
+// ── TensorDescriptor ──────────────────────────────────────────────────────────
+
+use crate::descriptor::ext_type::ExtensionTypeDescriptor as ExtDesc;
+use crate::descriptor::shard::ShardDescriptor as ShardDesc;
+use crate::descriptor::statistics::Statistics as Stats;
+use crate::{BufferHandle, ElementType, Error, LayoutDescriptor, Result, Shape};
+
+/// The top-level tensor descriptor carrying all metadata required to interpret
+/// a tensor's data buffer.
+///
+/// Construct via [`TensorDescriptor::new`], encode to bytes with
+/// [`TensorDescriptor::encode`], and decode from bytes with
+/// [`TensorDescriptor::decode`].
+///
+/// Derives `PartialEq` but NOT `Eq` — the `statistics` field may contain `f64`
+/// values, and NaN semantics make `Eq` unsound for those fields.
+///
+/// # Examples
+///
+/// ```
+/// use hurray_core::{
+///     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+///     descriptor::TensorDescriptor,
+///     layout::LayoutDescriptor,
+/// };
+///
+/// let shape  = Shape::new(vec![3u64, 4]).unwrap();
+/// let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+/// let desc   = TensorDescriptor::new(
+///     1, 0,
+///     ElementType::Float32,
+///     shape,
+///     0,
+///     LayoutDescriptor::RowMajor,
+///     vec![buffer],
+///     None, None, None, None,
+/// ).unwrap();
+///
+/// assert_eq!(desc.version_major, 1);
+/// assert_eq!(desc.element_type, ElementType::Float32);
+/// assert_eq!(desc.shape.rank(), 2);
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+pub struct TensorDescriptor {
+    /// Major format version stored in the wire header.
+    pub version_major: u8,
+    /// Minor format version stored in the wire header.
+    pub version_minor: u8,
+    /// Element type tag for this tensor's data.
+    pub element_type: ElementType,
+    /// Tensor shape (rank and dimension sizes).
+    pub shape: Shape,
+    /// Byte offset from the start of buffer 0 to logical element `[0,…,0]`.
+    pub byte_offset: u64,
+    /// Memory layout descriptor.
+    pub layout: LayoutDescriptor,
+    /// Buffer handles (at least one required).
+    pub buffers: Vec<BufferHandle>,
+    /// Raw quantization payload (opaque `quantization_descriptor` bytes).
+    ///
+    /// When present the bytes are stored verbatim; typed decode is not performed
+    /// in this layer (design decision: typed quantization decode is deferred to
+    /// a higher layer that has schema context).
+    pub quantization: Option<Vec<u8>>,
+    /// Shard annotation (this tensor is a sub-region of a larger parent).
+    pub shard: Option<ShardDesc>,
+    /// Advisory statistics about the tensor's data buffer.
+    pub statistics: Option<Stats>,
+    /// Extension type descriptor (present iff `type_tag` is in `0xF0`–`0xFE`).
+    pub extension_type: Option<ExtDesc>,
+}
+
+impl TensorDescriptor {
+    /// Creates a new [`TensorDescriptor`], validating invariants.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::EmptyBufferTable`] — `buffers` is empty.
+    /// - [`Error::ExtensionTypeFlagMismatch`] — `extension_type` is `Some` but
+    ///   `element_type.tag()` is not in `0xF0`–`0xFE`, or vice-versa.
+    /// - [`Error::InvalidShape`] — `shard.parent_shape.len() != shape.rank()`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::{
+    ///     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    ///     descriptor::TensorDescriptor,
+    ///     layout::LayoutDescriptor,
+    /// };
+    ///
+    /// let shape  = Shape::new(vec![2u64, 3]).unwrap();
+    /// let buffer = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+    /// let desc   = TensorDescriptor::new(
+    ///     1, 0, ElementType::Float32, shape, 0,
+    ///     LayoutDescriptor::RowMajor, vec![buffer],
+    ///     None, None, None, None,
+    /// ).unwrap();
+    /// assert_eq!(desc.buffers.len(), 1);
+    /// ```
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        version_major: u8,
+        version_minor: u8,
+        element_type: ElementType,
+        shape: Shape,
+        byte_offset: u64,
+        layout: LayoutDescriptor,
+        buffers: Vec<BufferHandle>,
+        quantization: Option<Vec<u8>>,
+        shard: Option<ShardDesc>,
+        statistics: Option<Stats>,
+        extension_type: Option<ExtDesc>,
+    ) -> Result<Self> {
+        // Invariant: at least one buffer.
+        if buffers.is_empty() {
+            return Err(Error::EmptyBufferTable);
+        }
+
+        // Invariant: HAS_EXTENSION_TYPE ↔ type_tag in 0xF0–0xFE.
+        let is_ext_tag = matches!(element_type.tag(), 0xF0..=0xFE);
+        let has_ext = extension_type.is_some();
+        if is_ext_tag != has_ext {
+            return Err(Error::ExtensionTypeFlagMismatch {
+                flag_set: has_ext,
+                type_tag: element_type.tag(),
+                type_tag_in_range: if is_ext_tag {
+                    "in 0xF0-0xFE"
+                } else {
+                    "not in 0xF0-0xFE"
+                },
+            });
+        }
+
+        // Invariant: shard rank matches tensor rank.
+        if let Some(s) = &shard {
+            if s.parent_shape.len() != shape.rank() {
+                return Err(Error::InvalidShape(format!(
+                    "shard.parent_shape.len() ({}) != shape.rank() ({})",
+                    s.parent_shape.len(),
+                    shape.rank()
+                )));
+            }
+        }
+
+        Ok(Self {
+            version_major,
+            version_minor,
+            element_type,
+            shape,
+            byte_offset,
+            layout,
+            buffers,
+            quantization,
+            shard,
+            statistics,
+            extension_type,
+        })
+    }
+
+    /// Derives the [`DescriptorFlags`] bitmask from which optional sections are present.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::{
+    ///     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    ///     descriptor::{TensorDescriptor, DescriptorFlags},
+    ///     layout::LayoutDescriptor,
+    /// };
+    ///
+    /// let shape  = Shape::new(vec![4u64]).unwrap();
+    /// let buffer = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+    /// let desc   = TensorDescriptor::new(
+    ///     1, 0, ElementType::Float32, shape, 0,
+    ///     LayoutDescriptor::RowMajor, vec![buffer],
+    ///     None, None, None, None,
+    /// ).unwrap();
+    /// assert_eq!(desc.flags().0, 0);
+    /// ```
+    pub fn flags(&self) -> DescriptorFlags {
+        let mut flags = 0u32;
+        if self.quantization.is_some() {
+            flags |= DescriptorFlags::HAS_QUANTIZATION;
+        }
+        if self.shard.is_some() {
+            flags |= DescriptorFlags::HAS_SHARD;
+        }
+        if self.extension_type.is_some() {
+            flags |= DescriptorFlags::HAS_EXTENSION_TYPE;
+        }
+        if self.statistics.is_some() {
+            flags |= DescriptorFlags::HAS_STATISTICS;
+        }
+        DescriptorFlags(flags)
+    }
+
+    /// Encodes this descriptor to its wire representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::DescriptorLengthMismatch`] if the encoded length exceeds
+    /// `u32::MAX` (practically impossible for well-formed descriptors).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::{
+    ///     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    ///     descriptor::TensorDescriptor,
+    ///     layout::LayoutDescriptor,
+    /// };
+    ///
+    /// let shape  = Shape::new(vec![3u64, 4]).unwrap();
+    /// let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+    /// let desc   = TensorDescriptor::new(
+    ///     1, 0, ElementType::Float32, shape, 0,
+    ///     LayoutDescriptor::RowMajor, vec![buffer],
+    ///     None, None, None, None,
+    /// ).unwrap();
+    ///
+    /// let bytes = desc.encode().unwrap();
+    /// assert_eq!(bytes.len(), 61); // spec § Worked Example
+    /// ```
+    pub fn encode(&self) -> Result<Vec<u8>> {
+        encode::encode(self)
+    }
+
+    /// Decodes a [`TensorDescriptor`] from its wire representation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a variant of [`Error`] for any malformed field:
+    /// - [`Error::InvalidMagic`] — magic bytes are not `"HRRY"`.
+    /// - [`Error::UnsupportedDescriptorVersion`] — `version_major > 1`.
+    /// - [`Error::DescriptorTooShort`] — `descriptor_length < 20`.
+    /// - [`Error::DescriptorTruncated`] — byte slice ends before a field is complete.
+    /// - [`Error::ReservedDescriptorFlagBitsSet`] — reserved flag bits are set.
+    /// - [`Error::EmptyBufferTable`] — `buffer_count == 0`.
+    /// - [`Error::DescriptorLengthMismatch`] — consumed bytes ≠ `descriptor_length`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::{
+    ///     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    ///     descriptor::TensorDescriptor,
+    ///     layout::LayoutDescriptor,
+    /// };
+    ///
+    /// let shape  = Shape::new(vec![3u64, 4]).unwrap();
+    /// let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+    /// let desc   = TensorDescriptor::new(
+    ///     1, 0, ElementType::Float32, shape, 0,
+    ///     LayoutDescriptor::RowMajor, vec![buffer],
+    ///     None, None, None, None,
+    /// ).unwrap();
+    ///
+    /// let bytes   = desc.encode().unwrap();
+    /// let decoded = TensorDescriptor::decode(&bytes).unwrap();
+    /// assert_eq!(decoded, desc);
+    /// ```
+    pub fn decode(bytes: &[u8]) -> Result<Self> {
+        decode::decode(bytes)
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::layout::LayoutDescriptor;
+    use crate::{BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT};
+
+    // Helper: build the spec's worked example (float32, [3,4], row-major, 1 buffer).
+    fn worked_example() -> TensorDescriptor {
+        let shape = Shape::new(vec![3u64, 4]).unwrap();
+        let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            shape,
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![buffer],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// Spec § Worked Example: the exact 61-byte encoding.
+    #[rustfmt::skip]
+    const WORKED_EXAMPLE_BYTES: [u8; 61] = [
+        // magic
+        0x48, 0x52, 0x52, 0x59,
+        // version 1.0
+        0x01, 0x00,
+        // descriptor_length = 61 (0x3D)
+        0x3D, 0x00, 0x00, 0x00,
+        // flags = 0
+        0x00, 0x00, 0x00, 0x00,
+        // type_tag = 0x03 (float32)
+        0x03,
+        // layout_tag = 0x01 (row-major)
+        0x01,
+        // rank = 2
+        0x02, 0x00, 0x00, 0x00,
+        // shape[0] = 3
+        0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // shape[1] = 4
+        0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // byte_offset = 0
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // buffer_count = 1
+        0x01,
+        // buffer[0].byte_size = 192 (0xC0)
+        0xC0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // buffer[0].alignment = 64 (0x40)
+        0x40, 0x00, 0x00, 0x00,
+        // buffer[0].device_tag = 0x00 (CPU)
+        0x00,
+        // buffer[0]._reserved
+        0x00, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn worked_example_encode_exact_bytes() {
+        let desc = worked_example();
+        let encoded = desc.encode().unwrap();
+        assert_eq!(
+            encoded.len(),
+            61,
+            "expected 61 bytes per spec worked example, got {}",
+            encoded.len()
+        );
+        assert_eq!(
+            encoded.as_slice(),
+            &WORKED_EXAMPLE_BYTES,
+            "encoded bytes do not match spec worked example"
+        );
+    }
+
+    #[test]
+    fn worked_example_decode_round_trip() {
+        let desc = worked_example();
+        let encoded = desc.encode().unwrap();
+        let decoded = TensorDescriptor::decode(&encoded).unwrap();
+        assert_eq!(decoded, desc);
+    }
+
+    #[test]
+    fn worked_example_decode_from_spec_bytes() {
+        let decoded = TensorDescriptor::decode(&WORKED_EXAMPLE_BYTES).unwrap();
+        assert_eq!(decoded, worked_example());
+    }
+
+    // ── Negative tests ────────────────────────────────────────────────────────
+
+    #[test]
+    fn decode_bad_magic() {
+        let mut bytes = WORKED_EXAMPLE_BYTES;
+        bytes[0] = 0xFF;
+        let err = TensorDescriptor::decode(&bytes).unwrap_err();
+        assert!(matches!(err, Error::InvalidMagic { .. }));
+    }
+
+    #[test]
+    fn decode_version_major_too_high() {
+        let mut bytes = WORKED_EXAMPLE_BYTES;
+        bytes[4] = 2; // version_major = 2 > DESCRIPTOR_VERSION_MAJOR
+        let err = TensorDescriptor::decode(&bytes).unwrap_err();
+        assert!(matches!(
+            err,
+            Error::UnsupportedDescriptorVersion { major: 2, .. }
+        ));
+    }
+
+    #[test]
+    fn decode_descriptor_too_short() {
+        let mut bytes = WORKED_EXAMPLE_BYTES;
+        // descriptor_length = 10 < MIN_DESCRIPTOR_LEN (20)
+        bytes[6] = 10;
+        bytes[7] = 0;
+        bytes[8] = 0;
+        bytes[9] = 0;
+        let err = TensorDescriptor::decode(&bytes).unwrap_err();
+        assert!(matches!(err, Error::DescriptorTooShort { length: 10 }));
+    }
+
+    #[test]
+    fn decode_reserved_flag_bit_set() {
+        let mut bytes = WORKED_EXAMPLE_BYTES;
+        // Set bit 4 (first reserved flag bit) at offset 10.
+        bytes[10] = 0x10;
+        let err = TensorDescriptor::decode(&bytes).unwrap_err();
+        assert!(matches!(err, Error::ReservedDescriptorFlagBitsSet { .. }));
+    }
+
+    #[test]
+    fn decode_empty_buffer_table() {
+        // Build a valid descriptor, then patch buffer_count to 0.
+        let desc = worked_example();
+        let mut bytes = desc.encode().unwrap();
+        // buffer_count is at offset 44 in the worked example.
+        bytes[44] = 0;
+        let err = TensorDescriptor::decode(&bytes).unwrap_err();
+        assert!(matches!(err, Error::EmptyBufferTable));
+    }
+
+    #[test]
+    fn decode_truncated() {
+        // Fewer than 10 bytes — cannot even read the header.
+        let bytes = &[0x48u8, 0x52, 0x52];
+        let err = TensorDescriptor::decode(bytes).unwrap_err();
+        assert!(matches!(err, Error::DescriptorTruncated { .. }));
+    }
+
+    // ── flags() helper ────────────────────────────────────────────────────────
+
+    #[test]
+    fn flags_none_set() {
+        assert_eq!(worked_example().flags().0, 0);
+    }
+
+    #[test]
+    fn flags_quantization_set() {
+        let shape = Shape::new(vec![4u64]).unwrap();
+        let buf = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let desc = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Int8,
+            shape,
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![buf],
+            Some(vec![0x01, 0x00, 0x00, 0x00]),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(desc.flags().has_quantization());
+        assert!(!desc.flags().has_shard());
+    }
+
+    // ── constructor validation ────────────────────────────────────────────────
+
+    #[test]
+    fn new_rejects_empty_buffers() {
+        let shape = Shape::new(vec![4u64]).unwrap();
+        let err = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            shape,
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::EmptyBufferTable));
+    }
+
+    #[test]
+    fn new_rejects_shard_rank_mismatch() {
+        let shape = Shape::new(vec![4u64, 4]).unwrap(); // rank 2
+        let buf = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        // shard with rank 1 (mismatch)
+        let shard = ShardDescriptor::new(vec![10u64], vec![0u64]).unwrap();
+        let err = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            shape,
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![buf],
+            None,
+            Some(shard),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidShape(_)));
+    }
+
+    // ── round-trip with optional sections ────────────────────────────────────
+
+    #[test]
+    fn round_trip_with_shard() {
+        use crate::layout::LayoutDescriptor;
+        let shape = Shape::new(vec![4u64, 8]).unwrap();
+        let buf = BufferHandle::new(128, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let shard = ShardDescriptor::new(vec![10u64, 20], vec![0u64, 4]).unwrap();
+        let desc = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            shape,
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![buf],
+            None,
+            Some(shard),
+            None,
+            None,
+        )
+        .unwrap();
+        let decoded = TensorDescriptor::decode(&desc.encode().unwrap()).unwrap();
+        assert_eq!(decoded, desc);
+    }
+
+    #[test]
+    fn round_trip_with_quantization_payload() {
+        let shape = Shape::new(vec![8u64]).unwrap();
+        let buf = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let quant_bytes = vec![0x01u8, 0x00, 0x00, 0x00, 0xAB, 0xCD];
+        let desc = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Int8,
+            shape,
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![buf],
+            Some(quant_bytes),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let decoded = TensorDescriptor::decode(&desc.encode().unwrap()).unwrap();
+        assert_eq!(decoded, desc);
+    }
+
+    #[test]
+    fn round_trip_with_statistics() {
+        use crate::descriptor::statistics::{Statistics, StatisticsMask};
+        let shape = Shape::new(vec![16u64]).unwrap();
+        let buf = BufferHandle::new(128, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let stats = Statistics {
+            computed_mask: StatisticsMask(StatisticsMask::NNZ_VALID),
+            nnz: 10,
+            sparsity_ratio: 0.0,
+            value_min: 0.0,
+            value_max: 0.0,
+            value_abs_max: 0.0,
+            value_mean: 0.0,
+            value_stddev: 0.0,
+            nm_n: 0,
+            nm_m: 0,
+            has_nan: false,
+            has_inf: false,
+        };
+        let desc = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            shape,
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![buf],
+            None,
+            None,
+            Some(stats),
+            None,
+        )
+        .unwrap();
+        let encoded = desc.encode().unwrap();
+        let decoded = TensorDescriptor::decode(&encoded).unwrap();
+        assert_eq!(decoded.statistics.as_ref().unwrap().nnz, 10);
+        assert!(decoded.flags().has_statistics());
+    }
+
+    #[test]
+    fn round_trip_strided_layout() {
+        use crate::layout::StridedLayout;
+        let shape = Shape::new(vec![3u64, 4]).unwrap();
+        let buf = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let layout = LayoutDescriptor::Strided(StridedLayout::new(vec![8i64, 1]));
+        let desc = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            shape,
+            0,
+            layout,
+            vec![buf],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let decoded = TensorDescriptor::decode(&desc.encode().unwrap()).unwrap();
+        assert_eq!(decoded, desc);
+    }
+
+    #[test]
+    fn round_trip_coo_layout() {
+        use crate::layout::CooLayout;
+        let shape = Shape::new(vec![10u64, 10]).unwrap();
+        // COO requires 2 buffers (values + indices)
+        let buf0 = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let buf1 = BufferHandle::new(128, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let layout = LayoutDescriptor::Coo(CooLayout::new(5, true));
+        let desc = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            shape,
+            0,
+            layout,
+            vec![buf0, buf1],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let decoded = TensorDescriptor::decode(&desc.encode().unwrap()).unwrap();
+        assert_eq!(decoded, desc);
+    }
+}

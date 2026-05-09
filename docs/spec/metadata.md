@@ -186,6 +186,37 @@ Followed by `region_count` **region descriptors**, each encoded as:
 Recursive subpaving (`region_layout_tag = 0x06`) is permitted. A reader MUST
 reject any descriptor where the subpaving nesting depth exceeds 8 levels.
 
+### COO (`0x07`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `nnz` | `uint64` | Number of stored (non-zero) elements. MAY be 0 for an empty sparse tensor. |
+| `is_sorted` | `uint8` | `0x01` if the non-zeros are sorted in lexicographic index order (dimension 0 major); `0x00` otherwise. |
+| `_reserved` | `uint8[7]` | MUST be `0x00`. |
+
+See `layouts/coo.md` for buffer table composition, storage order, and validity
+constraints.
+
+### CSR (`0x08`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `nnz` | `uint64` | Number of stored (non-zero) elements. MAY be 0 for an empty sparse matrix. |
+| `_reserved` | `uint8[8]` | MUST be `0x00`. |
+
+See `layouts/csr.md` for buffer table composition, storage invariants, and
+rank-2 restriction.
+
+### CSC (`0x09`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `nnz` | `uint64` | Number of stored (non-zero) elements. MAY be 0 for an empty sparse matrix. |
+| `_reserved` | `uint8[8]` | MUST be `0x00`. |
+
+See `layouts/csc.md` for buffer table composition, storage invariants, and
+rank-2 restriction.
+
 ### Hilbert Curve (`0x40`)
 
 | Field | Type | Description |
@@ -214,6 +245,10 @@ Immediately following the layout-specific fields, the buffer table is encoded.
 |-------|------|-------------|
 | `buffer_count` | `uint8` | Number of buffer handles. MUST be at least 1. For dense layout tags (`0x01`–`0x06`, `0x40`) without quantization, MUST be exactly `0x01`. For quantized dense tensors, MUST equal `0x01` plus the number of quantization-parameter buffers required by the active scheme (see `quantization.md` § Buffer Table Placement Rules). |
 
+The maximum value is `255`, imposed by the `uint8` wire type. This limit applies
+to the sum of data and quantization-parameter buffers. Implementations that
+require more than 255 buffers MUST use multiple tensor descriptors.
+
 Followed by `buffer_count` **buffer handles**, each encoded as 16 bytes:
 
 | Offset | Field | Type | Description |
@@ -222,6 +257,10 @@ Followed by `buffer_count` **buffer handles**, each encoded as 16 bytes:
 | 8 | `alignment` | `uint32` | Minimum buffer alignment in bytes. MUST be a power of two and MUST be at least 64. |
 | 12 | `device_tag` | `uint8` | Device where this buffer resides (see `buffer-protocol.md` and Device Tags in `interchange.md`). |
 | 13 | `_reserved` | `uint8[3]` | MUST be `0x00`. |
+
+The `_reserved` bytes MUST be `0x00`. A conforming reader in strict mode MUST
+reject a descriptor containing any buffer handle whose `_reserved` bytes are not
+all `0x00`.
 
 > **Note (non-normative):** For sparse layout tags (COO `0x07`, CSR `0x08`, CSC `0x09`), `buffer_count` exceeds 1 — each entry holds a distinct component array (values, indices, pointers). For quantized dense tensors, quantization-parameter buffers (scales, zero-points) extend the buffer table beyond the layout baseline. The layout-defined minimum is always `0x01` for dense layouts; quantization schemes append their parameter buffers on top.
 
@@ -287,6 +326,10 @@ regardless of their encoded value.
 | 4 | `NM_SPARSITY_VALID` | `nm_n`, `nm_m` |
 | 5 | `NAN_INF_VALID` | `has_nan`, `has_inf` |
 | 6–31 | (reserved) | MUST be `0`. |
+
+A conforming reader MUST reject a descriptor whose `computed_mask` has any
+reserved bit set (any bit greater than or equal to 6, given the six defined
+statistics fields above).
 
 ### Field Encoding
 

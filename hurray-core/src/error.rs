@@ -348,6 +348,114 @@ pub enum Error {
     /// Arithmetic overflow in Morton or Hilbert index computation.
     #[error("index arithmetic overflow in space-filling curve computation")]
     IndexArithmeticOverflow,
+
+    // ── Descriptor (Layer 4) errors ───────────────────────────────────────────
+    /// Magic bytes are not `"HRRY"` (`0x48 0x52 0x52 0x59`).
+    #[error("invalid magic: expected 48 52 52 59, got {got:02X?}")]
+    InvalidMagic {
+        /// The four bytes actually found at offset 0.
+        got: [u8; 4],
+    },
+
+    /// `version_major` exceeds the supported major version (`1`).
+    #[error("unsupported descriptor version {major}.{minor}")]
+    UnsupportedDescriptorVersion {
+        /// The major version found on the wire.
+        major: u8,
+        /// The minor version found on the wire.
+        minor: u8,
+    },
+
+    /// `descriptor_length` is less than the minimum valid size (`20`).
+    #[error("descriptor_length {length} is below the minimum of 20 bytes")]
+    DescriptorTooShort {
+        /// The `descriptor_length` value found on the wire.
+        length: u32,
+    },
+
+    /// Cursor ran out of bytes before a field could be read.
+    #[error("descriptor truncated: need {needed} bytes at offset {offset}, have {available}")]
+    DescriptorTruncated {
+        /// Byte offset at which the read was attempted.
+        offset: usize,
+        /// Number of bytes needed.
+        needed: usize,
+        /// Number of bytes actually available.
+        available: usize,
+    },
+
+    /// A reserved flag bit is set.
+    #[error("reserved flag bits set: 0x{flags:08X} (reserved mask: 0x{mask:08X})")]
+    ReservedDescriptorFlagBitsSet {
+        /// The full flags value found on the wire.
+        flags: u32,
+        /// The bitmask of bits that must be zero.
+        mask: u32,
+    },
+
+    /// A reserved field that MUST be `0x00` contains a non-zero byte.
+    #[error("reserved field '{field}' must be 0x00")]
+    ReservedBytesNonZero {
+        /// Human-readable name of the reserved field.
+        field: &'static str,
+    },
+
+    /// `buffer_count` is `0` (minimum is `1`).
+    #[error("buffer_count is 0; at least one buffer handle is required")]
+    EmptyBufferTable,
+
+    /// `HAS_EXTENSION_TYPE` flag ↔ `type_tag` range disagree.
+    #[error(
+        "HAS_EXTENSION_TYPE flag is {flag_set} but type_tag 0x{type_tag:02X} is {type_tag_in_range}"
+    )]
+    ExtensionTypeFlagMismatch {
+        /// Whether the `HAS_EXTENSION_TYPE` flag was set.
+        flag_set: bool,
+        /// The `type_tag` byte found on the wire.
+        type_tag: u8,
+        /// Human-readable range description.
+        type_tag_in_range: &'static str,
+    },
+
+    /// Extension type `bit_width` / `packing_factor` is invalid.
+    #[error(
+        "extension type packing invalid: bit_width={bit_width}, packing_factor={packing_factor}"
+    )]
+    ExtensionTypePackingInvalid {
+        /// The `bit_width` value from the extension type descriptor.
+        bit_width: u32,
+        /// The `packing_factor` value from the extension type descriptor.
+        packing_factor: u8,
+    },
+
+    /// `shard_offset[k] + shape[k] > parent_shape[k]`.
+    #[error("shard out of bounds on dim {dim}: offset {offset} + size {size} > parent {parent}")]
+    ShardOutOfBounds {
+        /// The dimension index where the constraint was violated.
+        dim: usize,
+        /// The `shard_offset` value for that dimension.
+        offset: u64,
+        /// The tensor `shape` value for that dimension.
+        size: u64,
+        /// The `parent_shape` value for that dimension.
+        parent: u64,
+    },
+
+    /// `computed_mask` has reserved bits set (bits ≥ 6).
+    #[error("statistics computed_mask 0x{mask:08X} has reserved bits set")]
+    StatisticsReservedMaskBitsSet {
+        /// The full `computed_mask` value found on the wire.
+        mask: u32,
+    },
+
+    /// `descriptor_length` declared in the header does not match the actual encoded length.
+    #[error("descriptor_length mismatch: declared {declared}, actual {actual}")]
+    DescriptorLengthMismatch {
+        /// The `descriptor_length` value declared in the header.
+        declared: u32,
+        /// The actual number of bytes consumed when parsing.
+        actual: usize,
+    },
 }
 
 /// Convenience alias for `Result` with [`Error`].
