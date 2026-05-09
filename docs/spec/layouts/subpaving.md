@@ -53,11 +53,18 @@ The union of all regions MUST exactly cover every element in the tensor's index
 space: for every valid index `[i_0, i_1, ..., i_{r-1}]` (where `0 <= i_k < shape[k]`
 for all `k`), there MUST be exactly one region whose bounding box contains that index.
 
-> **Note (non-normative):** The order of regions in the `regions` array is not
-> specified. A conforming reader MUST NOT assume any particular ordering.
-> Implementations that need fast lookup MAY sort regions by lower-corner index at
-> read time or use a spatial index, but this is an implementation concern and not
-> part of the format.
+## Region Order
+
+Writers SHOULD emit regions in ascending lexicographic order of `origin`,
+comparing dimensions from index `0` to `rank-1`. Readers MUST NOT rely on
+this order for correctness; a conforming reader MUST accept regions in any order.
+
+> **Note (non-normative):** Writers that already produce regions in scan order
+> (row-major, column-major, or tile-traversal order) satisfy this SHOULD without
+> extra work. Readers MAY check whether the region array is already sorted on
+> input; if so, lookup MAY use binary search on `origin`. Otherwise the reader
+> MAY sort once at parse time or fall back to a linear scan. None of these
+> acceleration strategies are part of the format.
 
 ## Non-Overlap Constraint
 
