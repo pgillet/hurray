@@ -39,6 +39,9 @@ use hurray_core::{
 };
 
 let shape  = Shape::new(vec![3u64, 4]).unwrap();
+// 192 = 3 × 64 bytes (one cache line per row) — the spec's worked example allocation.
+// The tensor data itself needs only 3×4×4 = 48 bytes; byte_size records the physical
+// allocation which may exceed the data footprint. In real code use buffer_size_bytes().
 let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
 
 let desc = TensorDescriptor::new(

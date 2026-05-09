@@ -49,6 +49,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // float32 [3, 4] row-major — spec §metadata "Worked Example" (61 bytes).
 
     let shape = Shape::new(vec![3u64, 4]).unwrap();
+    // 192 = 3×64 bytes — the spec's worked example allocation (one cache line per row).
+    // The tensor data needs only 48 bytes; byte_size may exceed the data footprint.
     let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu)?;
     let desc = TensorDescriptor::new(
         1,
