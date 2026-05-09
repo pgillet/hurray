@@ -75,16 +75,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<TensorDescriptor> {
 
     // ── Step 7: type_tag ──────────────────────────────────────────────────────
     let type_tag = cursor.read_u8()?;
-    // For extension types (0xF0–0xFE), from_tag returns UnknownTypeTag. We allow
-    // those through here and validate the flag consistency below.
-    let element_type = if matches!(type_tag, 0xF0..=0xFE) {
-        // Extension type — validated by flag consistency check; no named variant.
-        // We store a placeholder that cannot be constructed via from_tag.
-        // Instead we defer: if the flag is not set this is an error.
-        None
-    } else {
-        Some(ElementType::from_tag(type_tag)?)
-    };
+    // from_tag now returns Ok(Extension(tag)) for 0xF0–0xFE; flag consistency
+    // is checked in Step 13 below.
+    let element_type = ElementType::from_tag(type_tag)?;
 
     // ── Step 8: layout_tag ────────────────────────────────────────────────────
     let layout_tag = cursor.read_u8()?;
@@ -113,7 +106,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<TensorDescriptor> {
     let layout = decode_layout_payload(layout_tag, rank, &mut cursor, 0)?;
 
     // ── Step 13: HAS_EXTENSION_TYPE ↔ type_tag range consistency ─────────────
-    let is_extension_tag = matches!(type_tag, 0xF0..=0xFE);
+    // ElementType::Extension(tag) is returned for 0xF0–0xFE; non-extension tags
+    // yield a named variant. Both cases must agree with the HAS_EXTENSION_TYPE flag.
+    let is_extension_tag = matches!(element_type, ElementType::Extension(_));
     if is_extension_tag != flags.has_extension_type() {
         return Err(Error::ExtensionTypeFlagMismatch {
             flag_set: flags.has_extension_type(),
@@ -125,48 +120,6 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<TensorDescriptor> {
             },
         });
     }
-
-    // Resolve the element_type — for extension tags we need a placeholder.
-    // Since ElementType has no variant for 0xF0–0xFE, we use a special path:
-    // the caller is expected to use the ExtensionTypeDescriptor for semantics.
-    // However, our TensorDescriptor stores ElementType, so we cannot represent
-    // an extension type as an ElementType variant. We treat this as UnknownTypeTag
-    // and the caller must inspect extension_type for details.
-    //
-    // Decision: element_type is not stored directly for extension types —
-    // the decode fails at from_tag above unless HAS_EXTENSION_TYPE is set.
-    // For extension types we need a workaround: we call from_tag which returns
-    // UnknownTypeTag. Since TensorDescriptor::new validates via ElementType,
-    // we need to skip the standard from_tag path for extension types.
-    //
-    // Practical solution: for extension type tags the ElementType field is
-    // meaningless (callers use extension_type for semantics). We store a sentinel.
-    // But ElementType has no Unknown variant. Instead, we handle this in new():
-    // the extension_type flag allows bypassing element_type validation for 0xF0–0xFE.
-    //
-    // For the decode path, we return an error if the type_tag is an extension tag
-    // without the flag being set (checked above). When the flag IS set and the
-    // tag is in range, we need some ElementType to store. Since there is no Unknown
-    // variant, this is a gap — we surface it as UnknownTypeTag for now so callers
-    // know they need to inspect extension_type.
-    //
-    // This is intentional: the spec says extension types are identified by the
-    // extension_type section; the element_type field in TensorDescriptor is
-    // informational for the 0xF0–0xFE range (the tag IS the identifier).
-    // We re-parse with from_tag which yields UnknownTypeTag — which is the
-    // correct crate-level signal for "this is an extension type".
-    let element_type = match element_type {
-        Some(et) => et,
-        None => {
-            // We already verified HAS_EXTENSION_TYPE is set. Return the error
-            // so callers know this descriptor uses an extension element type
-            // and must be processed via the extension_type section.
-            // The type_tag raw byte is preserved in the ExtensionTypeDescriptor.
-            // For now, propagate the UnknownTypeTag error — callers that need
-            // extension type support should intercept it.
-            return Err(Error::UnknownTypeTag(type_tag));
-        }
-    };
 
     // ── Step 14: buffer table ─────────────────────────────────────────────────
     let buffer_count = cursor.read_u8()?;

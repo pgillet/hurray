@@ -51,7 +51,13 @@ pub(crate) fn encode(d: &TensorDescriptor) -> Result<Vec<u8>> {
     encode_layout_payload(&d.layout, rank, &mut w)?;
 
     // ── Buffer table ──────────────────────────────────────────────────────────
-    // buffer_count: uint8
+    // buffer_count: uint8 (max 255)
+    if d.buffers.len() > 255 {
+        return Err(Error::InvalidLayout(format!(
+            "buffer_count {} exceeds the maximum of 255 (uint8 ceiling)",
+            d.buffers.len()
+        )));
+    }
     w.write_u8(d.buffers.len() as u8);
     // Per-handle: byte_size u64, alignment u32, device_tag u8, _reserved u8[3]
     for handle in &d.buffers {

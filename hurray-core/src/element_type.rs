@@ -29,82 +29,98 @@ use crate::Error;
 /// assert!(ty.is_float());
 /// assert!(!ty.is_integer());
 /// ```
+// Cannot use #[repr(u8)] because Extension(u8) carries a payload — the tag()
+// method encodes the discriminant explicitly for all variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[repr(u8)]
 pub enum ElementType {
     // ── Tier 1 ── floating-point ─────────────────────────────────────────────
     /// IEEE 754 binary16 (half precision). Tag `0x01`.
-    Float16 = 0x01,
+    Float16,
     /// Brain floating point (1 sign, 8 exponent, 7 mantissa bits). Tag `0x02`.
-    BFloat16 = 0x02,
+    BFloat16,
     /// IEEE 754 binary32 (single precision). Tag `0x03`.
-    Float32 = 0x03,
+    Float32,
     /// IEEE 754 binary64 (double precision). Tag `0x04`.
-    Float64 = 0x04,
+    Float64,
 
     // ── Tier 1 ── integer ────────────────────────────────────────────────────
     /// 8-bit signed integer (two's complement). Tag `0x10`.
-    Int8 = 0x10,
+    Int8,
     /// 8-bit unsigned integer. Tag `0x11`.
-    Uint8 = 0x11,
+    Uint8,
     /// 16-bit signed integer (little-endian). Tag `0x12`.
-    Int16 = 0x12,
+    Int16,
     /// 16-bit unsigned integer (little-endian). Tag `0x13`.
-    Uint16 = 0x13,
+    Uint16,
     /// 32-bit signed integer (little-endian). Tag `0x14`.
-    Int32 = 0x14,
+    Int32,
     /// 32-bit unsigned integer (little-endian). Tag `0x15`.
-    Uint32 = 0x15,
+    Uint32,
     /// 64-bit signed integer (little-endian). Tag `0x16`.
-    Int64 = 0x16,
+    Int64,
     /// 64-bit unsigned integer (little-endian). Tag `0x17`.
-    Uint64 = 0x17,
+    Uint64,
 
     // ── Tier 1 ── boolean ────────────────────────────────────────────────────
     /// Boolean, packed 8 per byte, LSB-first. Tag `0x20`.
-    Bool = 0x20,
+    Bool,
 
     // ── Tier 2 ── float8 variants ────────────────────────────────────────────
     /// OFP8 float8 (1 sign, 4 exponent, 3 mantissa, bias 7). Tag `0x40`.
-    Float8E4M3 = 0x40,
+    Float8E4M3,
     /// OFP8 float8 (1 sign, 5 exponent, 2 mantissa, bias 15). Tag `0x41`.
-    Float8E5M2 = 0x41,
+    Float8E5M2,
     /// OCP MX exponent-only float8 (8 exponent bits, no sign, no mantissa). Tag `0x42`.
-    Float8E8M0 = 0x42,
+    Float8E8M0,
 
     // ── Tier 2 ── sub-byte floating-point ────────────────────────────────────
     /// OCP MXFP4 (1 sign, 2 exponent, 1 mantissa, bias 1). Tag `0x43`.
-    Float4E2M1 = 0x43,
+    Float4E2M1,
     /// OCP MX float6 (1 sign, 2 exponent, 3 mantissa, bias 1). Tag `0x44`.
-    Float6E2M3 = 0x44,
+    Float6E2M3,
     /// OCP MX float6 (1 sign, 3 exponent, 2 mantissa, bias 3). Tag `0x45`.
-    Float6E3M2 = 0x45,
+    Float6E3M2,
 
     // ── Tier 2 ── extended floating-point ────────────────────────────────────
     /// IEEE 754 binary128 (quad precision). Tag `0x46`.
-    Float128 = 0x46,
+    Float128,
     // 0x47 is reserved — no variant.
 
     // ── Tier 2 ── sub-byte integer ───────────────────────────────────────────
     /// 4-bit signed integer (two's complement, LSB-first). Tag `0x48`.
-    Int4 = 0x48,
+    Int4,
     /// 4-bit unsigned integer (LSB-first). Tag `0x49`.
-    Uint4 = 0x49,
+    Uint4,
     /// 2-bit signed integer (two's complement, LSB-first). Tag `0x4A`.
-    Int2 = 0x4A,
+    Int2,
     /// 2-bit unsigned integer (LSB-first). Tag `0x4B`.
-    Uint2 = 0x4B,
+    Uint2,
 
     // ── Tier 2 ── complex ────────────────────────────────────────────────────
     /// Two consecutive `float32` values (real, imaginary). Tag `0x50`.
-    Complex64 = 0x50,
+    Complex64,
     /// Two consecutive `float64` values (real, imaginary). Tag `0x51`.
-    Complex128 = 0x51,
+    Complex128,
+
+    // ── Private-extension range ───────────────────────────────────────────────
+    /// Implementation-private extension type. The inner `u8` is the raw wire
+    /// tag in the range `0xF0`–`0xFE`.
+    ///
+    /// The actual bit-width and packing rules are carried by the
+    /// [`ExtensionTypeDescriptor`][crate::descriptor::ExtensionTypeDescriptor]
+    /// section in the binary descriptor (flag `HAS_EXTENSION_TYPE`).
+    ///
+    /// `bit_width()` returns `0` for this variant — a sentinel meaning "consult
+    /// the extension type descriptor for sizing".
+    Extension(u8),
 }
 
 impl ElementType {
     /// Returns the one-byte wire tag stored in the binary tensor descriptor.
+    ///
+    /// For [`ElementType::Extension`], returns the inner tag byte directly
+    /// (always in `0xF0`–`0xFE`).
     ///
     /// # Examples
     ///
@@ -114,13 +130,47 @@ impl ElementType {
     /// assert_eq!(ElementType::Float32.tag(), 0x03);
     /// assert_eq!(ElementType::Int4.tag(), 0x48);
     /// assert_eq!(ElementType::Complex128.tag(), 0x51);
+    /// assert_eq!(ElementType::Extension(0xF1).tag(), 0xF1);
     /// ```
     #[inline]
     pub fn tag(self) -> u8 {
-        self as u8
+        match self {
+            Self::Float16 => 0x01,
+            Self::BFloat16 => 0x02,
+            Self::Float32 => 0x03,
+            Self::Float64 => 0x04,
+            Self::Int8 => 0x10,
+            Self::Uint8 => 0x11,
+            Self::Int16 => 0x12,
+            Self::Uint16 => 0x13,
+            Self::Int32 => 0x14,
+            Self::Uint32 => 0x15,
+            Self::Int64 => 0x16,
+            Self::Uint64 => 0x17,
+            Self::Bool => 0x20,
+            Self::Float8E4M3 => 0x40,
+            Self::Float8E5M2 => 0x41,
+            Self::Float8E8M0 => 0x42,
+            Self::Float4E2M1 => 0x43,
+            Self::Float6E2M3 => 0x44,
+            Self::Float6E3M2 => 0x45,
+            Self::Float128 => 0x46,
+            Self::Int4 => 0x48,
+            Self::Uint4 => 0x49,
+            Self::Int2 => 0x4A,
+            Self::Uint2 => 0x4B,
+            Self::Complex64 => 0x50,
+            Self::Complex128 => 0x51,
+            // Extension: inner byte IS the wire tag (0xF0–0xFE).
+            Self::Extension(t) => t,
+        }
     }
 
     /// Parses an [`ElementType`] from its one-byte wire tag.
+    ///
+    /// Tags in the private-extension range `0xF0`–`0xFE` are accepted and
+    /// returned as [`ElementType::Extension`]. The actual numeric semantics
+    /// are carried by the `ExtensionTypeDescriptor` section in the descriptor.
     ///
     /// # Errors
     ///
@@ -128,8 +178,8 @@ impl ElementType {
     ///   reserved sentinels).
     /// - [`Error::ReservedTypeTag`] — tag is `0x47` or in `0x80`–`0xEF`
     ///   (reserved for future specification versions).
-    /// - [`Error::UnknownTypeTag`] — tag is in the private-extension range
-    ///   `0xF0`–`0xFE` or any other unrecognised value.
+    /// - [`Error::UnknownTypeTag`] — tag is any other unrecognised value not
+    ///   in the above categories.
     ///
     /// # Examples
     ///
@@ -137,11 +187,11 @@ impl ElementType {
     /// use hurray_core::{ElementType, Error};
     ///
     /// assert_eq!(ElementType::from_tag(0x03).unwrap(), ElementType::Float32);
+    /// assert_eq!(ElementType::from_tag(0xF1).unwrap(), ElementType::Extension(0xF1));
     /// assert!(matches!(ElementType::from_tag(0x00), Err(Error::InvalidTypeTag(0x00))));
     /// assert!(matches!(ElementType::from_tag(0xFF), Err(Error::InvalidTypeTag(0xFF))));
     /// assert!(matches!(ElementType::from_tag(0x47), Err(Error::ReservedTypeTag(0x47))));
     /// assert!(matches!(ElementType::from_tag(0x80), Err(Error::ReservedTypeTag(0x80))));
-    /// assert!(matches!(ElementType::from_tag(0xF0), Err(Error::UnknownTypeTag(0xF0))));
     /// ```
     pub fn from_tag(tag: u8) -> crate::Result<Self> {
         match tag {
@@ -196,8 +246,11 @@ impl ElementType {
             // 0x80–0xEF — reserved for future spec versions.
             0x80..=0xEF => Err(Error::ReservedTypeTag(tag)),
 
-            // 0xF0–0xFE — private-extension range (unknown to this impl).
-            // Everything else unrecognised also falls here.
+            // 0xF0–0xFE — private-extension range. Accepted; semantics are
+            // carried by the ExtensionTypeDescriptor section in the descriptor.
+            0xF0..=0xFE => Ok(Self::Extension(tag)),
+
+            // Everything else unrecognised.
             _ => Err(Error::UnknownTypeTag(tag)),
         }
     }
@@ -220,7 +273,7 @@ impl ElementType {
     /// ```
     #[inline]
     pub fn tier(self) -> u8 {
-        if (self as u8) < 0x40 {
+        if self.tag() < 0x40 {
             1
         } else {
             2
@@ -262,6 +315,10 @@ impl ElementType {
             Self::Float64 | Self::Int64 | Self::Uint64 | Self::Complex64 => 64,
 
             Self::Float128 | Self::Complex128 => 128,
+
+            // Extension types declare their bit_width via ExtensionTypeDescriptor;
+            // 0 is a sentinel meaning "consult the extension type descriptor".
+            Self::Extension(_) => 0,
         }
     }
 
@@ -283,6 +340,11 @@ impl ElementType {
     /// ```
     #[inline]
     pub fn is_sub_byte(self) -> bool {
+        // Extension types have unknown width (bit_width() == 0); treat as
+        // non-sub-byte here — callers must use ExtensionTypeDescriptor for sizing.
+        if matches!(self, Self::Extension(_)) {
+            return false;
+        }
         self.bit_width() < 8
     }
 
@@ -379,6 +441,11 @@ impl ElementType {
     /// ```
     #[inline]
     pub fn is_signed(self) -> bool {
+        // Extension types carry their sign semantics in ExtensionTypeDescriptor;
+        // return false here to avoid false positives on unknown types.
+        if matches!(self, Self::Extension(_)) {
+            return false;
+        }
         !matches!(
             self,
             Self::Uint8
@@ -445,6 +512,10 @@ impl ElementType {
 
             // 128-bit type.
             Self::Float128 => 16,
+
+            // Extension types: alignment is unknown without ExtensionTypeDescriptor;
+            // return 1 (byte granularity) as a safe, conservative default.
+            Self::Extension(_) => 1,
         }
     }
 }
@@ -541,17 +612,18 @@ mod tests {
     }
 
     /// Tags 0xF0–0xFE are the private-extension range and must yield
-    /// `UnknownTypeTag`.
+    /// `Extension(tag)` — they are now valid and round-trip through the variant.
     #[test]
-    fn from_tag_unknown_range_0xf0_to_0xfe() {
+    fn from_tag_extension_range_0xf0_to_0xfe() {
         for tag in 0xF0u8..=0xFE {
-            assert!(
-                matches!(
-                    ElementType::from_tag(tag),
-                    Err(Error::UnknownTypeTag(t)) if t == tag
-                ),
-                "expected UnknownTypeTag for 0x{tag:02X}"
+            let result = ElementType::from_tag(tag)
+                .unwrap_or_else(|e| panic!("from_tag(0x{tag:02X}) should succeed, got {e:?}"));
+            assert_eq!(
+                result,
+                ElementType::Extension(tag),
+                "expected Extension(0x{tag:02X})"
             );
+            assert_eq!(result.tag(), tag, "tag() round-trip failed for 0x{tag:02X}");
         }
     }
 
@@ -1073,34 +1145,34 @@ impl fmt::Display for ElementType {
     /// assert_eq!(ElementType::Complex64.to_string(), "complex64");
     /// ```
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            Self::Float16 => "float16",
-            Self::BFloat16 => "bfloat16",
-            Self::Float32 => "float32",
-            Self::Float64 => "float64",
-            Self::Int8 => "int8",
-            Self::Uint8 => "uint8",
-            Self::Int16 => "int16",
-            Self::Uint16 => "uint16",
-            Self::Int32 => "int32",
-            Self::Uint32 => "uint32",
-            Self::Int64 => "int64",
-            Self::Uint64 => "uint64",
-            Self::Bool => "bool",
-            Self::Float8E4M3 => "float8_e4m3",
-            Self::Float8E5M2 => "float8_e5m2",
-            Self::Float8E8M0 => "float8_e8m0",
-            Self::Float4E2M1 => "float4_e2m1",
-            Self::Float6E2M3 => "float6_e2m3",
-            Self::Float6E3M2 => "float6_e3m2",
-            Self::Float128 => "float128",
-            Self::Int4 => "int4",
-            Self::Uint4 => "uint4",
-            Self::Int2 => "int2",
-            Self::Uint2 => "uint2",
-            Self::Complex64 => "complex64",
-            Self::Complex128 => "complex128",
-        };
-        f.write_str(name)
+        match self {
+            Self::Float16 => f.write_str("float16"),
+            Self::BFloat16 => f.write_str("bfloat16"),
+            Self::Float32 => f.write_str("float32"),
+            Self::Float64 => f.write_str("float64"),
+            Self::Int8 => f.write_str("int8"),
+            Self::Uint8 => f.write_str("uint8"),
+            Self::Int16 => f.write_str("int16"),
+            Self::Uint16 => f.write_str("uint16"),
+            Self::Int32 => f.write_str("int32"),
+            Self::Uint32 => f.write_str("uint32"),
+            Self::Int64 => f.write_str("int64"),
+            Self::Uint64 => f.write_str("uint64"),
+            Self::Bool => f.write_str("bool"),
+            Self::Float8E4M3 => f.write_str("float8_e4m3"),
+            Self::Float8E5M2 => f.write_str("float8_e5m2"),
+            Self::Float8E8M0 => f.write_str("float8_e8m0"),
+            Self::Float4E2M1 => f.write_str("float4_e2m1"),
+            Self::Float6E2M3 => f.write_str("float6_e2m3"),
+            Self::Float6E3M2 => f.write_str("float6_e3m2"),
+            Self::Float128 => f.write_str("float128"),
+            Self::Int4 => f.write_str("int4"),
+            Self::Uint4 => f.write_str("uint4"),
+            Self::Int2 => f.write_str("int2"),
+            Self::Uint2 => f.write_str("uint2"),
+            Self::Complex64 => f.write_str("complex64"),
+            Self::Complex128 => f.write_str("complex128"),
+            Self::Extension(t) => write!(f, "extension(0x{t:02x})"),
+        }
     }
 }

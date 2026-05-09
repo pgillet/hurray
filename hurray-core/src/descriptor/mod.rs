@@ -260,6 +260,14 @@ impl TensorDescriptor {
             return Err(Error::EmptyBufferTable);
         }
 
+        // Invariant: buffer_count fits in uint8 (wire field ceiling is 255).
+        if buffers.len() > 255 {
+            return Err(Error::InvalidLayout(format!(
+                "buffer_count {} exceeds the maximum of 255 (uint8 ceiling)",
+                buffers.len()
+            )));
+        }
+
         // Invariant: HAS_EXTENSION_TYPE ↔ type_tag in 0xF0–0xFE.
         let is_ext_tag = matches!(element_type.tag(), 0xF0..=0xFE);
         let has_ext = extension_type.is_some();
@@ -773,5 +781,169 @@ mod tests {
         .unwrap();
         let decoded = TensorDescriptor::decode(&desc.encode().unwrap()).unwrap();
         assert_eq!(decoded, desc);
+    }
+
+    // ── C-1: Extension type round-trip ────────────────────────────────────────
+
+    /// A descriptor with ElementType::Extension(0xF1) and a populated
+    /// ExtensionTypeDescriptor must round-trip through encode/decode unchanged.
+    #[test]
+    fn round_trip_extension_element_type() {
+        use crate::descriptor::ExtensionTypeDescriptor;
+        let shape = Shape::new(vec![4u64]).unwrap();
+        let buf = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        // 8-bit integer extension type, packing_factor=1.
+        let ext =
+            ExtensionTypeDescriptor::new(8, 1, false, true, 0, 0, 0, 0, false, false).unwrap();
+        let desc = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Extension(0xF1),
+            shape,
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![buf],
+            None,
+            None,
+            None,
+            Some(ext.clone()),
+        )
+        .unwrap();
+        let encoded = desc.encode().unwrap();
+        let decoded = TensorDescriptor::decode(&encoded).unwrap();
+        assert_eq!(decoded.element_type, ElementType::Extension(0xF1));
+        assert_eq!(decoded.extension_type.as_ref().unwrap().bit_width, 8);
+        assert_eq!(decoded, desc);
+    }
+
+    // ── H-1: Buffer count ceiling ─────────────────────────────────────────────
+
+    /// Constructing a TensorDescriptor with 256 buffers must be rejected at
+    /// new() with InvalidLayout, not silently truncated.
+    #[test]
+    fn new_rejects_buffer_count_exceeding_255() {
+        let shape = Shape::new(vec![4u64]).unwrap();
+        let buffers: Vec<BufferHandle> = (0..256)
+            .map(|_| BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap())
+            .collect();
+        let err = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            shape,
+            0,
+            LayoutDescriptor::RowMajor,
+            buffers,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidLayout(_)),
+            "expected InvalidLayout, got {err:?}"
+        );
+    }
+
+    // ── M-2: descriptor_length mismatch ───────────────────────────────────────
+
+    /// Patching descriptor_length to declared+1 (without adding a real byte)
+    /// must produce DescriptorLengthMismatch on decode.
+    #[test]
+    fn decode_descriptor_length_mismatch() {
+        let desc = worked_example();
+        let mut bytes = desc.encode().unwrap();
+        // descriptor_length is a little-endian u32 at bytes[6..10].
+        let declared = u32::from_le_bytes([bytes[6], bytes[7], bytes[8], bytes[9]]);
+        let patched = declared + 1;
+        bytes[6..10].copy_from_slice(&patched.to_le_bytes());
+        let err = TensorDescriptor::decode(&bytes).unwrap_err();
+        assert!(
+            matches!(err, Error::DescriptorLengthMismatch { .. }),
+            "expected DescriptorLengthMismatch, got {err:?}"
+        );
+    }
+
+    // ── M-3: tiled nesting too deep ───────────────────────────────────────────
+
+    /// A tiled descriptor nested 9 levels deep (exceeding MAX_RECURSION_DEPTH=8)
+    /// must be rejected with SubpavingNestingTooDeep on decode.
+    ///
+    /// The layout bytes are hand-crafted to bypass TiledLayout::new's own depth
+    /// guard (which fires at construction), producing wire bytes that the decoder
+    /// must reject at the depth limit.
+    #[test]
+    fn decode_tiled_nesting_too_deep() {
+        // Hand-craft 9-level nested tiled layout bytes for rank=1.
+        // Each tiled level for rank=1 with inner_layout=TAG_TILED (0x04):
+        //   tile_shape u64[1] = 8 bytes
+        //   outer_layout u8   = 0x01 (row-major)
+        //   inner_layout u8   = 0x04 (tiled, recurse) OR 0x01 (innermost)
+        //   _reserved u16     = 0x0000
+        // Total per level: 12 bytes.
+        // 9 levels (0..=8): 9 × 12 = 108 bytes of layout payload.
+        let mut layout_bytes: Vec<u8> = Vec::new();
+        for level in 0..9u32 {
+            // tile_shape[0] = 2 (LE u64)
+            layout_bytes.extend_from_slice(&2u64.to_le_bytes());
+            // outer_layout = 0x01 (row-major)
+            layout_bytes.push(0x01);
+            // inner_layout: 0x04 (nested tiled) for levels 0..8, 0x01 (row-major) for level 8
+            if level < 8 {
+                layout_bytes.push(0x04); // TAG_TILED — recurse
+            } else {
+                layout_bytes.push(0x01); // innermost — row-major
+            }
+            // _reserved[2]
+            layout_bytes.extend_from_slice(&[0x00, 0x00]);
+        }
+
+        // Build a minimal valid descriptor for a rank-1 float32 tensor with a
+        // shallow (1-level) tiled layout, then splice in the 9-level bytes.
+        use crate::layout::TiledLayout;
+        let shape = Shape::new(vec![2u64]).unwrap();
+        let buf = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let shallow = LayoutDescriptor::Tiled(Box::new(
+            TiledLayout::new(vec![2u64], 0x01, 0x01, None, None, None).unwrap(),
+        ));
+        let desc = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            shape,
+            0,
+            shallow,
+            vec![buf],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let mut encoded = desc.encode().unwrap();
+
+        // Splice: layout payload starts at offset 36
+        // (fixed header 20 + shape u64[1] 8 + byte_offset u64 8).
+        // The shallow 1-level tiled layout for rank=1: 12 bytes.
+        let layout_start = 36usize;
+        let shallow_layout_len = 12usize;
+        let after_layout = layout_start + shallow_layout_len;
+
+        let rest = encoded[after_layout..].to_vec();
+        encoded.truncate(layout_start);
+        encoded.extend_from_slice(&layout_bytes);
+        encoded.extend_from_slice(&rest);
+
+        // Back-patch descriptor_length (bytes 6..10).
+        let new_len = encoded.len() as u32;
+        encoded[6..10].copy_from_slice(&new_len.to_le_bytes());
+
+        // Decoding must fail at the depth guard (MAX_RECURSION_DEPTH = 8).
+        let err = TensorDescriptor::decode(&encoded).unwrap_err();
+        assert!(
+            matches!(err, Error::SubpavingNestingTooDeep),
+            "expected SubpavingNestingTooDeep, got {err:?}"
+        );
     }
 }
