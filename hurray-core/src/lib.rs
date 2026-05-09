@@ -13,6 +13,7 @@
 //! | `serde` | Derives `serde::Serialize` / `serde::Deserialize` for all public types |
 
 pub mod buffer;
+pub mod descriptor;
 pub mod element_type;
 pub mod error;
 pub mod layout;
@@ -21,6 +22,10 @@ pub mod shape;
 
 pub use buffer::{
     validate_colocation, BufferHandle, DeviceTag, PrivateTag, MIN_BUFFER_ALIGNMENT, PAGE_ALIGNMENT,
+};
+pub use descriptor::{
+    DescriptorFlags, ExtensionTypeDescriptor, ShardDescriptor, Statistics, StatisticsMask,
+    TensorDescriptor, DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR, MAGIC,
 };
 pub use element_type::ElementType;
 pub use error::{Error, Result};
