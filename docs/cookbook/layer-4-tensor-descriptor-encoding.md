@@ -218,8 +218,8 @@ Offset  Size  Field
               ── layout payload: RowMajor has no additional bytes ──
 0x2C    1     buffer_count = 1
 0x2D    8     buffer[0].size_bytes = 192
-0x35    1     buffer[0].log2_alignment = 6  (2^6 = 64 bytes)
-0x36    2     buffer[0].device_tag = 0x0000 (CPU)
-0x38    8     buffer[0]._reserved = 0
+0x35    4     buffer[0].alignment = 64 (0x40 0x00 0x00 0x00, little-endian uint32)
+0x39    1     buffer[0].device_tag = 0x00 (CPU)
+0x3A    3     buffer[0]._reserved = 0 0 0
               ── no optional sections (flags == 0) ──
 ```
