@@ -24,8 +24,7 @@ use crate::descriptor::cursor::{ByteCursor, ByteWriter};
 use crate::{Error, Result};
 
 /// Total byte length of the encoded extension type section.
-#[cfg(test)]
-const EXT_TYPE_BYTE_LEN: usize = 20;
+pub(crate) const EXT_TYPE_BYTE_LEN: usize = 20;
 
 /// Inline descriptor for an implementation-private extension element type.
 ///
@@ -129,8 +128,9 @@ impl ExtensionTypeDescriptor {
         })
     }
 
-    /// Encodes this descriptor into `w` as an exact 20-byte block.
+    /// Encodes this descriptor into `w` as an exact [`EXT_TYPE_BYTE_LEN`]-byte block.
     pub(crate) fn encode_into(&self, w: &mut ByteWriter) {
+        let start = w.len();
         w.write_u32_le(self.bit_width); // offset  0
         w.write_u8(self.packing_factor); // offset  4
         w.write_u8(u8::from(self.is_float)); // offset  5
@@ -143,15 +143,20 @@ impl ExtensionTypeDescriptor {
         w.write_u8(u8::from(self.has_nan)); // offset 16
         w.write_u8(u8::from(self.has_inf)); // offset 17
         w.write_zeros(2); // offset 18 — _reserved2
+        debug_assert_eq!(
+            w.len() - start,
+            EXT_TYPE_BYTE_LEN,
+            "ext_type encoded size invariant violated"
+        );
     }
 
-    /// Decodes a 20-byte extension type block from `cursor`.
+    /// Decodes a [`EXT_TYPE_BYTE_LEN`]-byte extension type block from `cursor`.
     ///
     /// # Errors
     ///
     /// - [`Error::ExtensionTypePackingInvalid`] if the packing rule is violated.
     /// - [`Error::ReservedBytesNonZero`] if any `_reserved` field is non-zero.
-    /// - [`Error::DescriptorTruncated`] if fewer than 20 bytes remain.
+    /// - [`Error::DescriptorTruncated`] if fewer than `EXT_TYPE_BYTE_LEN` bytes remain.
     pub(crate) fn decode_from(cursor: &mut ByteCursor<'_>) -> Result<Self> {
         let bit_width = cursor.read_u32_le()?; // offset  0
         let packing_factor = cursor.read_u8()?; // offset  4

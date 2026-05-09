@@ -72,6 +72,11 @@ pub use shape::{Shape, DYNAMIC, MAX_RANK};
 /// ```
 pub fn buffer_size_bytes(ty: ElementType, element_count: u64) -> u64 {
     let bits = ty.bit_width() as u64;
+    // Extension types declare bit_width == 0 (sentinel); caller must use
+    // ExtensionTypeDescriptor for buffer sizing — return 0 here.
+    if bits == 0 {
+        return 0;
+    }
     if bits >= 8 {
         // Whole-byte type: exact multiplication, no rounding needed.
         element_count * (bits / 8)

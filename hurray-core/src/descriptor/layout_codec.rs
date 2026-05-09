@@ -76,7 +76,9 @@ pub(crate) fn decode_layout_payload(
         TAG_ROW_MAJOR => Ok(LayoutDescriptor::RowMajor),
         TAG_COL_MAJOR => Ok(LayoutDescriptor::ColMajor),
         TAG_STRIDED => decode_strided(cursor, rank),
-        TAG_TILED => decode_tiled(cursor, rank, depth),
+        TAG_TILED => Ok(LayoutDescriptor::Tiled(Box::new(decode_tiled(
+            cursor, rank, depth,
+        )?))),
         TAG_MORTON => decode_morton(cursor, rank),
         TAG_SUBPAVING => decode_subpaving(cursor, rank, depth),
         TAG_COO => decode_coo(cursor),
@@ -152,7 +154,9 @@ fn encode_tiled(layout: &TiledLayout, rank: u32, w: &mut ByteWriter, depth: u8) 
     Ok(())
 }
 
-fn decode_tiled(cursor: &mut ByteCursor<'_>, rank: u32, depth: u8) -> Result<LayoutDescriptor> {
+// Returns TiledLayout directly so call sites can wrap it without an unreachable!()
+// match arm on the LayoutDescriptor::Tiled variant.
+fn decode_tiled(cursor: &mut ByteCursor<'_>, rank: u32, depth: u8) -> Result<TiledLayout> {
     if depth >= MAX_RECURSION_DEPTH {
         return Err(Error::SubpavingNestingTooDeep);
     }
@@ -196,24 +200,19 @@ fn decode_tiled(cursor: &mut ByteCursor<'_>, rank: u32, depth: u8) -> Result<Lay
 
     // Conditional: recursive inner tiled if inner_layout == tiled
     let inner_tiled: Option<Box<TiledLayout>> = if inner_layout == TAG_TILED {
-        match decode_tiled(cursor, rank, depth + 1)? {
-            LayoutDescriptor::Tiled(inner) => Some(inner),
-            _ => unreachable!("decode_tiled always returns Tiled variant"),
-        }
+        Some(Box::new(decode_tiled(cursor, rank, depth + 1)?))
     } else {
         None
     };
 
-    let layout = TiledLayout::new(
+    TiledLayout::new(
         tile_shape,
         outer_layout,
         inner_layout,
         outer_strides,
         inner_strides,
         inner_tiled,
-    )?;
-
-    Ok(LayoutDescriptor::Tiled(Box::new(layout)))
+    )
 }
 
 // ── Morton ────────────────────────────────────────────────────────────────────
@@ -322,22 +321,33 @@ fn decode_region(cursor: &mut ByteCursor<'_>, rank: u32, depth: u8) -> Result<Re
     let region_byte_offset = cursor.read_u64_le()?;
     let region_layout_length = cursor.read_u32_le()?;
 
-    // Consume the inner layout payload bytes. This worktree's RegionDescriptor
-    // does not have an inner_layout field, so the payload is consumed and
-    // discarded for forward compatibility. The layout tag alone is preserved.
-    // Callers that need the full inner layout must use a newer RegionDescriptor.
-    if region_layout_length > 0 {
-        cursor.read_bytes(region_layout_length as usize)?;
-    }
-    let _ = depth; // depth consumed at decode_subpaving level.
-
-    RegionDescriptor::new(
+    // Decode the inner layout payload if present.
+    // Row-major (0x01) and col-major (0x02) have no additional fields; all other
+    // tags require recursive decode. Recursive subpaving (0x06) increments depth
+    // so the MAX_RECURSION_DEPTH guard in decode_layout_payload fires correctly.
+    let base = RegionDescriptor::new(
         origin,
         region_shape,
         region_layout_tag,
         buffer_index,
         region_byte_offset,
-    )
+    )?;
+
+    if region_layout_length == 0 || matches!(region_layout_tag, TAG_ROW_MAJOR | TAG_COL_MAJOR) {
+        // No inner layout payload to decode.
+        Ok(base)
+    } else {
+        let payload = cursor.read_bytes(region_layout_length as usize)?.to_vec();
+        let mut sub = ByteCursor::new(&payload, payload.len());
+        // Subpaving regions that are themselves subpavings increment depth.
+        let inner_depth = if region_layout_tag == TAG_SUBPAVING {
+            depth + 1
+        } else {
+            depth
+        };
+        let inner_layout = decode_layout_payload(region_layout_tag, rank, &mut sub, inner_depth)?;
+        base.with_inner_layout(inner_layout)
+    }
 }
 
 // ── COO ───────────────────────────────────────────────────────────────────────

@@ -114,9 +114,14 @@ pub(crate) struct ByteWriter {
 }
 
 impl ByteWriter {
-    /// Creates a new, empty writer.
+    /// Creates a new writer pre-allocated for 128 bytes.
+    ///
+    /// 128 bytes covers all minimal descriptors (fixed header + small shape +
+    /// one buffer handle) without excessive waste on the heap.
     pub(crate) fn new() -> Self {
-        Self { buf: Vec::new() }
+        Self {
+            buf: Vec::with_capacity(128),
+        }
     }
 
     /// Consumes the writer and returns the accumulated bytes.
