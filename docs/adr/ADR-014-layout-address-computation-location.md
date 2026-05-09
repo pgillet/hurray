@@ -112,8 +112,11 @@ consumer that needs addressing would write its own copy, multiplying drift risk.
 - **OQ-014.1:** Promote `SparseElementAddress` to `pub` after Layer 4 validation? (Defer.)
 - **OQ-014.2:** Should `byte_address_from_element_offset` return a single struct with
   `bit_offset: 0` for whole-byte types, or a sum type? (Defer to first FFI consumer.)
-- **OQ-014.3:** Subpaving region lookup — are regions pre-sorted? Route to `format-spec-writer`
-  before the `SubpavingLayout` impl is written.
+- **OQ-014.3:** ~~Subpaving region lookup — are regions pre-sorted?~~ **Resolved.**
+  Writers SHOULD emit regions in lexicographic order of `origin`; readers MUST NOT
+  rely on it. See `docs/spec/layouts/subpaving.md` § Region Order. The linear scan
+  in `SubpavingLayout::locate_element` remains conformant; a binary-search fast-path
+  is deferred to a benchmark-gated ADR (see `// TODO(OQ-014.3)` in addressing code).
 
 ## Layer 4 Impact
 
