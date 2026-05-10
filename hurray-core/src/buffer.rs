@@ -116,7 +116,12 @@ pub const PAGE_ALIGNMENT: u32 = 4096;
 /// | `0x01` | [`Cuda`][DeviceTag::Cuda] |
 /// | `0x02` | [`Rocm`][DeviceTag::Rocm] |
 /// | `0x03` | [`Metal`][DeviceTag::Metal] |
-/// | `0x04`–`0xEF` | reserved — yields [`Error::ReservedDeviceTag`] |
+/// | `0x04` | [`Vulkan`][DeviceTag::Vulkan] |
+/// | `0x05` | [`WebGpu`][DeviceTag::WebGpu] |
+/// | `0x06` | [`Hexagon`][DeviceTag::Hexagon] |
+/// | `0x07` | [`LevelZero`][DeviceTag::LevelZero] |
+/// | `0x08` | [`OpenCl`][DeviceTag::OpenCl] |
+/// | `0x09`–`0xEF` | reserved — yields [`Error::ReservedDeviceTag`] |
 /// | `0xF0`–`0xFE` | [`Private(b)`][DeviceTag::Private] |
 /// | `0xFF` | permanently invalid — yields [`Error::InvalidDeviceTag`] |
 ///
@@ -147,6 +152,71 @@ pub enum DeviceTag {
     Rocm,
     /// Metal device memory (Apple Silicon unified memory). Wire byte `0x03`.
     Metal,
+    /// Vulkan device memory (cross-vendor GPU API). Wire byte `0x04`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::DeviceTag;
+    ///
+    /// let tag = DeviceTag::from_byte(0x04).unwrap();
+    /// assert_eq!(tag, DeviceTag::Vulkan);
+    /// assert_eq!(tag.to_byte(), 0x04);
+    /// assert_eq!(tag.to_string(), "vulkan");
+    /// ```
+    Vulkan,
+    /// WebGPU device memory (browser and native WebGPU API). Wire byte `0x05`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::DeviceTag;
+    ///
+    /// let tag = DeviceTag::from_byte(0x05).unwrap();
+    /// assert_eq!(tag, DeviceTag::WebGpu);
+    /// assert_eq!(tag.to_byte(), 0x05);
+    /// assert_eq!(tag.to_string(), "webgpu");
+    /// ```
+    WebGpu,
+    /// Qualcomm Hexagon DSP memory. Wire byte `0x06`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::DeviceTag;
+    ///
+    /// let tag = DeviceTag::from_byte(0x06).unwrap();
+    /// assert_eq!(tag, DeviceTag::Hexagon);
+    /// assert_eq!(tag.to_byte(), 0x06);
+    /// assert_eq!(tag.to_string(), "hexagon");
+    /// ```
+    Hexagon,
+    /// Intel oneAPI Level Zero device memory. Wire byte `0x07`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::DeviceTag;
+    ///
+    /// let tag = DeviceTag::from_byte(0x07).unwrap();
+    /// assert_eq!(tag, DeviceTag::LevelZero);
+    /// assert_eq!(tag.to_byte(), 0x07);
+    /// assert_eq!(tag.to_string(), "level_zero");
+    /// ```
+    LevelZero,
+    /// OpenCL device memory (cross-vendor compute API). Wire byte `0x08`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::DeviceTag;
+    ///
+    /// let tag = DeviceTag::from_byte(0x08).unwrap();
+    /// assert_eq!(tag, DeviceTag::OpenCl);
+    /// assert_eq!(tag.to_byte(), 0x08);
+    /// assert_eq!(tag.to_string(), "opencl");
+    /// ```
+    OpenCl,
     /// Implementation-private device type. Wire byte in `0xF0`–`0xFE`.
     ///
     /// Descriptors carrying private device tags MUST NOT be exchanged between
@@ -164,7 +234,7 @@ impl DeviceTag {
     /// # Errors
     ///
     /// - [`Error::InvalidDeviceTag`] — byte is `0xFF` (permanently reserved).
-    /// - [`Error::ReservedDeviceTag`] — byte is in `0x04`–`0xEF` (reserved for
+    /// - [`Error::ReservedDeviceTag`] — byte is in `0x09`–`0xEF` (reserved for
     ///   future specification versions).
     ///
     /// # Examples
@@ -176,10 +246,15 @@ impl DeviceTag {
     /// assert_eq!(DeviceTag::from_byte(0x01).unwrap(), DeviceTag::Cuda);
     /// assert_eq!(DeviceTag::from_byte(0x02).unwrap(), DeviceTag::Rocm);
     /// assert_eq!(DeviceTag::from_byte(0x03).unwrap(), DeviceTag::Metal);
+    /// assert_eq!(DeviceTag::from_byte(0x04).unwrap(), DeviceTag::Vulkan);
+    /// assert_eq!(DeviceTag::from_byte(0x05).unwrap(), DeviceTag::WebGpu);
+    /// assert_eq!(DeviceTag::from_byte(0x06).unwrap(), DeviceTag::Hexagon);
+    /// assert_eq!(DeviceTag::from_byte(0x07).unwrap(), DeviceTag::LevelZero);
+    /// assert_eq!(DeviceTag::from_byte(0x08).unwrap(), DeviceTag::OpenCl);
     /// assert!(DeviceTag::from_byte(0xF0).unwrap().is_private());
     /// assert_eq!(DeviceTag::from_byte(0xF0).unwrap().to_byte(), 0xF0);
     /// assert_eq!(DeviceTag::from_byte(0xFE).unwrap().to_byte(), 0xFE);
-    /// assert!(matches!(DeviceTag::from_byte(0x04), Err(Error::ReservedDeviceTag(0x04))));
+    /// assert!(matches!(DeviceTag::from_byte(0x09), Err(Error::ReservedDeviceTag(0x09))));
     /// assert!(matches!(DeviceTag::from_byte(0xEF), Err(Error::ReservedDeviceTag(0xEF))));
     /// assert!(matches!(DeviceTag::from_byte(0xFF), Err(Error::InvalidDeviceTag(0xFF))));
     /// ```
@@ -189,7 +264,12 @@ impl DeviceTag {
             0x01 => Ok(Self::Cuda),
             0x02 => Ok(Self::Rocm),
             0x03 => Ok(Self::Metal),
-            0x04..=0xEF => Err(Error::ReservedDeviceTag(b)),
+            0x04 => Ok(Self::Vulkan),
+            0x05 => Ok(Self::WebGpu),
+            0x06 => Ok(Self::Hexagon),
+            0x07 => Ok(Self::LevelZero),
+            0x08 => Ok(Self::OpenCl),
+            0x09..=0xEF => Err(Error::ReservedDeviceTag(b)),
             0xF0..=0xFE => Ok(Self::Private(PrivateTag(b))),
             0xFF => Err(Error::InvalidDeviceTag(b)),
         }
@@ -206,6 +286,11 @@ impl DeviceTag {
     /// assert_eq!(DeviceTag::Cuda.to_byte(), 0x01);
     /// assert_eq!(DeviceTag::Rocm.to_byte(), 0x02);
     /// assert_eq!(DeviceTag::Metal.to_byte(), 0x03);
+    /// assert_eq!(DeviceTag::Vulkan.to_byte(), 0x04);
+    /// assert_eq!(DeviceTag::WebGpu.to_byte(), 0x05);
+    /// assert_eq!(DeviceTag::Hexagon.to_byte(), 0x06);
+    /// assert_eq!(DeviceTag::LevelZero.to_byte(), 0x07);
+    /// assert_eq!(DeviceTag::OpenCl.to_byte(), 0x08);
     /// assert_eq!(DeviceTag::from_byte(0xF5).unwrap().to_byte(), 0xF5);
     /// ```
     pub fn to_byte(self) -> u8 {
@@ -214,6 +299,11 @@ impl DeviceTag {
             Self::Cuda => 0x01,
             Self::Rocm => 0x02,
             Self::Metal => 0x03,
+            Self::Vulkan => 0x04,
+            Self::WebGpu => 0x05,
+            Self::Hexagon => 0x06,
+            Self::LevelZero => 0x07,
+            Self::OpenCl => 0x08,
             Self::Private(t) => t.0,
         }
     }
@@ -254,6 +344,11 @@ impl fmt::Display for DeviceTag {
     /// assert_eq!(DeviceTag::Cuda.to_string(), "cuda");
     /// assert_eq!(DeviceTag::Rocm.to_string(), "rocm");
     /// assert_eq!(DeviceTag::Metal.to_string(), "metal");
+    /// assert_eq!(DeviceTag::Vulkan.to_string(), "vulkan");
+    /// assert_eq!(DeviceTag::WebGpu.to_string(), "webgpu");
+    /// assert_eq!(DeviceTag::Hexagon.to_string(), "hexagon");
+    /// assert_eq!(DeviceTag::LevelZero.to_string(), "level_zero");
+    /// assert_eq!(DeviceTag::OpenCl.to_string(), "opencl");
     /// assert_eq!(DeviceTag::from_byte(0xF3).unwrap().to_string(), "private(0xF3)");
     /// ```
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -262,6 +357,11 @@ impl fmt::Display for DeviceTag {
             Self::Cuda => f.write_str("cuda"),
             Self::Rocm => f.write_str("rocm"),
             Self::Metal => f.write_str("metal"),
+            Self::Vulkan => f.write_str("vulkan"),
+            Self::WebGpu => f.write_str("webgpu"),
+            Self::Hexagon => f.write_str("hexagon"),
+            Self::LevelZero => f.write_str("level_zero"),
+            Self::OpenCl => f.write_str("opencl"),
             Self::Private(t) => write!(f, "private(0x{:02X})", t.0),
         }
     }
@@ -546,15 +646,15 @@ mod tests {
         assert_eq!(DeviceTag::from_byte(0x03).unwrap(), DeviceTag::Metal);
     }
 
-    // ── DeviceTag::from_byte — reserved range 0x04–0xEF ─────────────────────
+    // ── DeviceTag::from_byte — reserved range 0x09–0xEF ─────────────────────
 
-    /// Spec § buffer-protocol.md Device Tags: 0x04 (lower bound of reserved range)
-    /// must return ReservedDeviceTag.
+    /// Spec § buffer-protocol.md Device Tags: 0x09 (lower bound of reserved range
+    /// after ADR-016 assigned 0x04–0x08) must return ReservedDeviceTag.
     #[test]
     fn from_byte_reserved_lower_bound() {
         assert!(matches!(
-            DeviceTag::from_byte(0x04),
-            Err(Error::ReservedDeviceTag(0x04))
+            DeviceTag::from_byte(0x09),
+            Err(Error::ReservedDeviceTag(0x09))
         ));
     }
 
