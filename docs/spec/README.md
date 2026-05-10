@@ -12,7 +12,7 @@ quantization schemes, and access patterns of modern AI/ML inference pipelines.
 - Enable zero-copy buffer sharing across runtimes, processes, and devices.
 - Support the full range of quantization schemes used in modern inference.
 - Be streamable (streaming format): a reader MUST be able to start processing tensor data without buffering the entire input, and a writer MUST be able to emit tensor data incrementally without buffering the entire output. Tensor descriptors always precede their data buffers; the format is self-delimiting; back-references are not permitted. File format writers operate in a single forward pass and append a footer index at the end.
-- Be extensible without breaking existing readers.
+- **Extensible:** extension points are stable across 1.x; new named values go through the spec amendment process. See [`versioning.md`](versioning.md) § Extensibility Contract.
 - Align the Tier 1 element type vocabulary with the Python Array API Standard, enabling zero-copy interoperability without dtype translation for standard numeric types. See [`docs/impl/python-bindings.md`](../impl/python-bindings.md) for binding-level requirements.
 - Serve as the storage foundation of an array database engine: the file format, tiled/blocked layout, Morton and Hilbert curve layouts, and footer index are designed to be compatible with sub-array queries, tile-skipping, and range-based retrieval. A concrete target use case is an embeddable SQL/MDA query engine (ISO 9075-15) backed by Hurray buffers, with zero-copy handoff from query results to an ML inference pipeline. Spec decisions that would foreclose chunk-based access, spatial locality, dimension-range indexing, or SQL/MDA interoperability MUST be evaluated against this use case before being adopted.
 
