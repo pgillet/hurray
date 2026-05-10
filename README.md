@@ -43,15 +43,19 @@ No Rust-isms leak into the format or the C FFI boundary. The binary spec uses ge
 
 Every tensor descriptor carries its own length in the first 10 bytes (readable before parsing the rest). Magic bytes (`HRRY`) and version fields allow format evolution. Optional sections (quantization, shard, statistics, extension type) are gated by flag bits and length-prefixed so readers can skip what they don't understand without rejecting the tensor.
 
-### 8. Inference-Optimized Type System
+### 8. Extensible by Design
+
+Extension points — element type tags, layout tags, device tags, quantization scheme tags, flag bits, and optional sections — are stable across the lifetime of major version `1.x`. Implementation-private ranges (`0xF0`–`0xFE`) are reserved permanently; no named public value will ever be allocated into them. New public values go through the spec amendment process, not through implementation-defined registration. Older readers can skip unknown optional sections via length prefixes and parse a descriptor's shape and buffer table even when they cannot interpret an unknown layout or quantization scheme. See [`versioning.md`](versioning.md) § Extensibility Contract for the full normative definition.
+
+### 9. Inference-Optimized Type System
 
 Tier 1 types cover `float16`, `bfloat16`, `float32`, `float64`, signed/unsigned integers from `int4` to `int64`, `bool`. Tier 2 adds `float8_e4m3` and `float8_e5m2` for Blackwell/MI300X inference. Private extension tags (`0xF0`–`0xFE`) allow vendor-specific types. Each private extension tag MUST carry an inline descriptor encoding at minimum: bit width, packing, and floating-point parameters.
 
-### 9. Multi-Transport Interchange
+### 10. Multi-Transport Interchange
 
 The interchange protocol covers in-process (pointer passing), IPC (shared memory), and cross-machine (streaming framing + optional RDMA data plane via GPUDirect). Layout negotiation is built into the protocol. Sender and receiver agree on the tensor format before data moves.
 
-### 10. Array Database Foundation
+### 11. Array Database Foundation
 
 Hurray is designed to serve as the storage layer of an array database engine — covering the full tensor supply chain: capture, storage, retrieval, and sharing. The tiled/blocked layout enables chunk-based access and tile-skipping for sub-array queries. Morton Z-order and Hilbert curve layouts preserve spatial locality across dimensions, improving range query cache performance. The file format footer index supports O(1) tensor lookup by name and is designed to be extensible with spatial or dimension-range indexes. Spec decisions that would foreclose chunk-based storage, spatial locality, or dimension-range indexing MUST be evaluated against this use case before being adopted.
 
