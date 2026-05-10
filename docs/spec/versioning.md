@@ -238,6 +238,172 @@ supported minor version MUST treat the affected feature as unknown:
 
 ---
 
+## Extensibility Contract
+
+This section states the **stability guarantees** the Hurray format makes to
+implementors and downstream tools across the lifetime of major version `1.x`.
+It is the normative counterpart to the "Extensible" property listed in
+[`README.md`](README.md) § Scope and Goals. The guarantee period begins at
+descriptor and container version `1.0`; pre-`1.0` drafts are explicitly
+excluded (see [§ Out of Scope](#out-of-scope) below).
+
+The per-tag-space mechanics — reserved-range layouts, extension-range
+boundaries, and tag allocation tables — are normatively defined in the
+per-section files. This section does not restate those rules; it cross-
+references them:
+
+- Element type tag space and extension range: see
+  [`element-types.md`](element-types.md) § Type Tag Space.
+- Layout tag space, extension range, and per-layout reserved bytes: see
+  [`memory-layout.md`](memory-layout.md) § Layout Tag Space and the per-layout
+  files under [`layouts/`](layouts/).
+- Device tag space and extension range: see
+  [`buffer-protocol.md`](buffer-protocol.md) § Device Tag Space.
+- Quantization scheme tag space, scheme reserved ranges, and permissive-mode
+  parsing: see [`quantization.md`](quantization.md) § Scheme Tag Space and
+  § Descriptor Header.
+- KV value tag space and file flag bits: see
+  [`file-format.md`](file-format.md) § KV Value Types and § File Flags.
+
+### Commitments
+
+For the lifetime of major version `1.x`, this specification commits to the
+following invariants. Conforming readers, writers, and downstream tools MAY
+rely on every one of them.
+
+1. **Reserved tag ranges are stable.** Reserved tag ranges defined by this
+   specification — across every public tag space (element type, layout,
+   device, quantization scheme, KV value, and flag bits) — MUST NOT be
+   repurposed, narrowed, or removed within major version `1.x`. A reserved
+   range allocated at `1.0` MUST remain reserved with the same boundaries
+   and the same intended use class throughout `1.x`.
+2. **Implementation-private ranges remain implementation-private.** The
+   implementation-private ranges `0xF0`–`0xFE` for element type tags, layout
+   tags, and device tags MUST remain implementation-private for the lifetime
+   of major version `1.x`. This specification MUST NOT allocate any named
+   public value into a private range, and a future minor revision MUST NOT
+   reclaim a private range for public allocation. Equivalent
+   implementation-private ranges defined for other tag spaces in their per-
+   section files (e.g., the quantization scheme private range in
+   `quantization.md`) are subject to the same guarantee.
+3. **Reserved flag bits remain available for feature gating.** Reserved flag
+   bits in the tensor descriptor header `flags` field, the file header
+   `file_flags` field, and every per-section flag field defined in this
+   specification MUST remain available for backward-compatible feature gating
+   throughout major version `1.x`. A reserved flag bit MUST NOT be removed
+   or have its reserved status withdrawn within `1.x`; when allocated, it
+   MUST be allocated as an optional feature gated by a minor version
+   increment, per [§ Change Classification](#change-classification).
+4. **Every variable-length section is length-prefixed.** Every variable-length
+   section in the tensor descriptor and the file format MUST carry a length
+   prefix that allows an older reader to skip unknown trailing content
+   without rejecting the structure. A future minor revision of the descriptor
+   or container MUST NOT introduce a variable-length section that lacks such
+   a length prefix. The applicable prefixes (`descriptor_length`,
+   `quantization_length`, file index entry section lengths, and any
+   equivalent fields defined in future minor revisions) MUST continue to
+   bound exactly the bytes whose interpretation may change.
+5. **Permissive-mode parsing is preserved.** A reader MUST be able to parse
+   the tensor descriptor's shape and buffer table even when it cannot
+   interpret an unknown layout tag or an unknown quantization scheme tag.
+   This specification MUST NOT, within major version `1.x`, introduce a
+   change that requires interpreting a layout tag or a quantization scheme
+   tag in order to recover the shape, rank, element type, or buffer table.
+   The exact behaviour of permissive mode for each tag space is defined in
+   its per-section file (see [`quantization.md`](quantization.md) §
+   Descriptor Header and [`memory-layout.md`](memory-layout.md) § Layout
+   Tag Space).
+6. **The three version axes evolve independently.** The descriptor,
+   container, and per-quantization-scheme versions MUST evolve independently.
+   Adding a new feature on one axis MUST NOT force a version bump on the
+   others. A descriptor minor increment MUST NOT require a container minor
+   increment; a scheme-version bump for a single `(scheme_tag,
+   scheme_version)` pair MUST NOT require any change to the descriptor or
+   container version; a container minor increment MUST NOT require any
+   change to the descriptor or to any scheme version. This commitment
+   complements [§ Version Axes](#version-axes), which establishes the
+   axes themselves.
+7. **Public tag allocation goes through the spec amendment process.** Any
+   new public tag value — including a new element type tag, layout tag,
+   device tag, quantization scheme tag, KV value tag, or named flag bit —
+   MUST be added by a spec amendment that increments the appropriate minor
+   version (per [§ Change Classification](#change-classification)). New
+   public named values MUST NOT be added by implementations independently of
+   the specification. Implementations that need a private value MUST use the
+   appropriate implementation-private range and remain subject to commitment
+   (2) above.
+
+> **Note (non-normative):** Together, commitments (1)–(7) form the stable
+> "extension surface" that downstream array databases, runtime registries,
+> language bindings, and compatibility-testing harnesses can build against.
+> A new tag allocated at descriptor `1.5` is guaranteed to retain its
+> meaning, encoding, and tag-space neighbourhood through descriptor `1.99`.
+
+### Out of Scope
+
+The Extensibility Contract is a finite guarantee. The following properties
+are deliberately **not** guaranteed by this specification, and conforming
+readers, writers, and tools MUST NOT rely on them:
+
+1. **Forward compatibility across major versions is out of scope.** This
+   contract applies within major version `1.x` only. A reader MUST reject
+   data whose major version on any axis exceeds the reader's supported
+   major version, per [§ Compatibility Matrix](#compatibility-matrix). The
+   guarantees in [§ Commitments](#commitments) do not transfer to major
+   version `2.x` or beyond; a future major version MAY revise tag spaces,
+   reserved ranges, flag bits, and length-prefix conventions without
+   preserving `1.x` semantics.
+2. **Interpretation of unknown content is out of scope.** Permissive-mode
+   parsing allows a reader to extract shape, rank, element type, and buffer
+   table when a layout tag or scheme tag is unknown. It does not authorise
+   the reader to interpret the associated data buffer. A reader that does
+   not understand the layout tag or quantization scheme tag of a tensor
+   MUST NOT attempt to dereference, dequantize, or otherwise interpret the
+   data buffer; doing so would constitute silent misinterpretation, which
+   this contract explicitly forbids.
+3. **Interoperability of implementation-private tags is out of scope.** Tag
+   values in any implementation-private range (e.g., `0xF0`–`0xFE` for
+   element type, layout, and device tags, and equivalent ranges in other tag
+   spaces) MUST NOT be exchanged between independent implementations without
+   an out-of-band agreement on their meaning. Encountering a private-range
+   value from an unknown source MUST be treated as an unknown tag under the
+   rules in [§ Compatibility Matrix](#compatibility-matrix); permissive-mode
+   parsing remains available where defined, but no semantic interoperability
+   is implied.
+4. **A runtime plugin or codec mechanism is out of scope.** This
+   specification provides no registered plugin interface, no dynamic codec
+   loader, and no implementation-supplied extension descriptor. New element
+   types, layouts, devices, quantization schemes, and KV value tags MUST be
+   added by a spec amendment under commitment (7); they MUST NOT be added by
+   a runtime registration call, a sidecar manifest, or any implementation-
+   private mechanism.
+5. **User-defined non-numeric element types are out of scope.** The element
+   type extension range defined in [`element-types.md`](element-types.md)
+   exists only for new numeric encodings (integer, floating-point, and
+   numerically-equivalent storage types). It MUST NOT be used to encode
+   strings, structured records, opaque blobs, references to other tensors,
+   or any other non-numeric content. Carrying non-numeric data over Hurray
+   is the responsibility of the KV metadata section in
+   [`file-format.md`](file-format.md), not of the element type system.
+6. **Back-compatibility of pre-`1.0` drafts is out of scope.** The
+   Extensibility Contract begins at descriptor and container version `1.0`.
+   Pre-`1.0` draft versions of this specification MAY have used different
+   tag allocations, reserved ranges, or wire encodings, and conforming
+   `1.x` readers and writers MUST NOT assume any compatibility with them. A
+   reader encountering data that claims a pre-`1.0` version SHOULD reject
+   it; it MAY accept it only if the reader was explicitly configured to
+   consume draft data and has applied an implementation-defined migration.
+
+> **Note (non-normative):** The boundary between "what we promise" and
+> "what we deliberately do not promise" is what makes the Extensibility
+> Contract usable. Without the out-of-scope list, downstream tooling could
+> infer guarantees that the format cannot actually defend — for example,
+> assuming that a private-range tag from one runtime is meaningful in
+> another, or that permissive-mode parsing implies safe buffer access.
+> Calling out non-commitments is part of the contract.
+
+---
+
 ## Writer Requirements
 
 A conforming writer:
