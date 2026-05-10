@@ -71,11 +71,53 @@ still implement `__dlpack__` where DLPack supports the type.
 - The DLPack capsule MUST reference the original buffer without copying. The buffer's
   reference count MUST be incremented when the capsule is created and decremented when
   the capsule is consumed or deleted.
-- `__dlpack_device__()` MUST return the correct `(DLDeviceType, device_id)` pair:
-  - CPU: `(1, 0)`
-  - CUDA: `(2, device_id)`
-  - ROCm: `(10, device_id)`
-  - Metal: `(8, device_id)`
+- `__dlpack_device__()` MUST return the correct `(DLDeviceType, device_id)` pair
+  according to the [Device Tag Mapping (Hurray ↔ DLPack)](#device-tag-mapping-hurray--dlpack)
+  table below.
+
+### Device Tag Mapping (Hurray ↔ DLPack)
+
+The Hurray device tag values defined in `docs/spec/buffer-protocol.md` § Device
+Tags are **not** numerically aligned with DLPack's `DLDeviceType` enum. The
+binding layer is responsible for translating between the two using the table
+below.
+
+| Hurray tag | Hurray device | DLPack constant | DLPack integer |
+|---|---|---|---|
+| `0x00` | CPU | `kDLCPU` | 1 |
+| `0x01` | CUDA | `kDLCUDA` | 2 |
+| `0x02` | ROCm | `kDLROCM` | 10 |
+| `0x03` | Metal | — | — (no DLPack equivalent; use `kDLMetal` if/when standardised) |
+| `0x04` | Vulkan | `kDLVulkan` | 7 |
+| `0x05` | WebGPU | `kDLWebGPU` | 15 |
+| `0x06` | Hexagon | `kDLHexagon` | 16 |
+| `0x07` | Intel Level Zero / oneAPI | `kDLOneAPI` | 14 |
+| `0x08` | OpenCL | `kDLOpenCL` | 4 |
+| `0xF0`–`0xFE` | Implementation-private | — | (out-of-band agreement required) |
+
+Notes on the mapping:
+
+1. Hurray's integer values are intentionally distinct from DLPack's. The Hurray
+   tag space is a contiguous `uint8` enumeration with a well-defined private
+   range at `0xF0`–`0xFE`; DLPack's `DLDeviceType` is open-ended and
+   non-contiguous. Translation is the binding layer's responsibility — Hurray
+   tag values MUST NOT be passed directly to DLPack consumers, and DLPack
+   integer values MUST NOT be stored in a Hurray buffer handle's `device_tag`
+   field.
+2. When implementing `__dlpack_device__`, the binding layer MUST translate the
+   underlying buffer's `device_tag` to a `DLDeviceType` using this table. It
+   MUST NOT return the raw Hurray tag value.
+3. Metal has no standardised DLPack constant in the v0.8 specification. A
+   binding implementation SHOULD raise an informative exception (e.g.,
+   `hurray.UnsupportedError`) when asked to expose a Metal-backed tensor via
+   `__dlpack__` / `__dlpack_device__`, OR MAY return a vendor-specific
+   `DLDeviceType` value agreed with the consuming runtime out of band. If a
+   future DLPack revision standardises `kDLMetal`, this table is updated and
+   bindings MUST switch to the standardised value.
+4. For implementation-private Hurray tags (`0xF0`–`0xFE`), the binding layer
+   MUST NOT fabricate a DLPack mapping. It SHOULD raise `hurray.UnsupportedError`
+   unless the consumer has explicitly agreed on a private DLPack mapping out of
+   band.
 
 ## NumPy Interoperability
 
