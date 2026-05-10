@@ -88,19 +88,133 @@ The `device_tag` field identifies the memory space in which the buffer resides.
 | `0x01` | CUDA device memory |
 | `0x02` | ROCm device memory |
 | `0x03` | Metal device memory (Apple Silicon unified memory) |
-| `0x04`–`0xEF` | Reserved for future specification versions |
+| `0x04` | Vulkan device memory |
+| `0x05` | WebGPU device memory |
+| `0x06` | Qualcomm Hexagon (HVX/HMX) memory |
+| `0x07` | Intel Level Zero / oneAPI device memory |
+| `0x08` | OpenCL device memory |
+| `0x09`–`0xEF` | Reserved for future specification versions |
 | `0xF0`–`0xFE` | Implementation-private device types |
 | `0xFF` | Reserved (invalid) |
 
 A reader MUST reject a buffer handle whose `device_tag` is `0xFF`.
 
-Tags in the range `0x04`–`0xEF` MUST NOT be used by any implementation; they
+Tags in the range `0x09`–`0xEF` MUST NOT be used by any implementation; they
 are reserved for future specification versions.
 
 Tags in the range `0xF0`–`0xFE` MAY be used by implementations for
 private or experimental device types. Descriptors carrying private device tags
 MUST NOT be exchanged between independent implementations unless both parties
 have agreed on the semantics out of band.
+
+### Per-Device Memory Model
+
+This subsection specifies, for each named device tag, the allocation context the
+buffer's base address refers to and any alignment requirement that applies in
+addition to the global 64-byte SIMD minimum defined in [§ Alignment](#alignment).
+Where no device-specific alignment is required, only the 64-byte minimum (and
+the page-alignment SHOULD for GPU/IPC) applies.
+
+#### `0x00` CPU host memory
+
+Buffers reside in the producer's process-addressable host memory, allocated by
+any standard host allocator (e.g., `malloc`, `mmap`, jemalloc, the system page
+allocator). No alignment requirement above the 64-byte SIMD minimum applies.
+Buffers shared via IPC SHOULD be page-aligned per [§ Page Alignment for GPU and
+IPC](#page-alignment-for-gpu-and-ipc).
+
+#### `0x01` CUDA device memory
+
+Buffers reside in CUDA device memory, typically allocated by `cudaMalloc`,
+`cuMemAlloc`, or `cuMemCreate` / `cuMemMap` on the device identified by the
+producer's CUDA context. The base address is a CUDA device pointer and MUST NOT
+be dereferenced from the host. Buffers intended for cross-process sharing or
+GPUDirect RDMA SHOULD be page-aligned (typically `4096` bytes); the CUDA driver
+returns allocations aligned to at least 256 bytes, which already satisfies the
+64-byte SIMD minimum.
+
+#### `0x02` ROCm device memory
+
+Buffers reside in AMD GPU device memory allocated through the HIP / ROCr runtime
+(e.g., `hipMalloc`, `hsa_amd_memory_pool_allocate`). The base address is a
+device pointer and MUST NOT be dereferenced from the host. The 64-byte minimum
+applies; page alignment SHOULD be used for IPC and RDMA per the global rules.
+
+#### `0x03` Metal device memory
+
+Buffers reside in a Metal `MTLBuffer` whose storage mode is shared (Apple
+Silicon unified memory) or private. On Apple Silicon, unified memory permits
+host access to shared-mode buffers; private-mode buffers MUST NOT be
+dereferenced from the host. The base address conveyed via this tag is the
+buffer's contents pointer (for shared/managed storage) or the GPU resource
+handle (for private storage); the consumer MUST agree out of band on which
+storage mode the producer used. The 64-byte minimum applies.
+
+#### `0x04` Vulkan device memory
+
+Buffers reside in a `VkDeviceMemory` allocation on the producer's Vulkan logical
+device, typically backing a `VkBuffer`. The base address is the result of
+`vkMapMemory` for host-visible memory, or an opaque device handle that MUST NOT
+be dereferenced from the host for device-local memory. Cross-process sharing
+requires an external memory handle (`VkExternalMemoryHandleTypeFlagBits`)
+exchanged out of band. The 64-byte minimum applies; producers SHOULD honour
+the device's `nonCoherentAtomSize` and `minMemoryMapAlignment` properties when
+applicable.
+
+#### `0x05` WebGPU device memory
+
+Buffers reside in a WebGPU `GPUBuffer` allocated against the producer's
+`GPUDevice`. The base address is a host pointer only when the buffer was
+mapped via `mapAsync` with `MAP_READ` or `MAP_WRITE`; otherwise it is an
+opaque GPU resource handle that MUST NOT be dereferenced from the host. WebGPU
+imposes a 4-byte minimum for buffer offsets and copy sizes; the 64-byte SIMD
+minimum subsumes this. Cross-process sharing of WebGPU buffers is not defined
+by the W3C specification; implementations MUST exchange GPU resource handles
+out of band.
+
+#### `0x06` Qualcomm Hexagon (HVX/HMX) memory
+
+Buffers reside in memory allocated via the Qualcomm AI Engine Direct (QNN)
+SDK or the Hexagon SDK's `rpcmem` / FastRPC allocator, accessible to the
+Hexagon DSP / NPU via the QNN HTP backend. The base address is a host pointer
+into the rpcmem region that the DSP can also address through its IOMMU. HVX
+operations are most efficient on 128-byte-aligned addresses; producers SHOULD
+align buffers to at least 128 bytes when targeting Hexagon, which exceeds the
+64-byte SIMD minimum.
+
+#### `0x07` Intel Level Zero / oneAPI device memory
+
+Buffers reside in memory allocated via the Intel Level Zero API
+(`zeMemAllocDevice`, `zeMemAllocHost`, `zeMemAllocShared`) on a Level Zero
+device, or equivalently via SYCL Unified Shared Memory (`sycl::malloc_device`,
+`sycl::malloc_shared`). The base address may or may not be host-dereferenceable
+depending on the allocation kind; consumers MUST agree on the kind out of band
+or query it via `zeMemGetAllocProperties`. The 64-byte minimum applies; the
+Level Zero spec returns allocations aligned to at least 64 bytes by default.
+
+#### `0x08` OpenCL device memory
+
+Buffers reside in an OpenCL `cl_mem` allocation on the producer's OpenCL
+context and device. The base address is a host pointer only when the buffer
+was created with `CL_MEM_USE_HOST_PTR` / `CL_MEM_ALLOC_HOST_PTR` and is
+currently mapped via `clEnqueueMapBuffer`; otherwise it is an opaque device
+handle and MUST NOT be dereferenced from the host. The 64-byte minimum applies;
+producers SHOULD honour the device's `CL_DEVICE_MEM_BASE_ADDR_ALIGN` property
+when allocating sub-buffers.
+
+#### `0xF0`–`0xFE` Implementation-private device types
+
+Buffers carrying a private device tag MUST be exchanged only between peers that
+have agreed on the allocation context, alignment requirements, host-versus-device
+addressability, and synchronisation rules out of band. The format specification
+makes no statement about the memory model of private tags beyond the global
+buffer protocol invariants in this section.
+
+> **Note (non-normative):** The mapping between Hurray device tags and DLPack
+> `DLDeviceType` constants is normative for Python bindings only and lives in
+> `docs/impl/python-bindings.md` § Device Tag Mapping (Hurray ↔ DLPack). It is
+> intentionally not duplicated here, since translation is the binding layer's
+> responsibility, not a property of the buffer protocol.
 
 ### Device Colocation
 

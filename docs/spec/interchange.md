@@ -177,12 +177,18 @@ respond with an `ERROR` message instead and close the connection.
 
 | Tag | Device |
 |-----|--------|
-| `0x00` | CPU (host memory) |
+| `0x00` | CPU host memory |
 | `0x01` | CUDA device memory |
 | `0x02` | ROCm device memory |
-| `0x03` | Metal device memory |
-| `0x04`–`0xEF` | Reserved — future specification versions (see `buffer-protocol.md`) |
+| `0x03` | Metal device memory (Apple Silicon unified memory) |
+| `0x04` | Vulkan device memory |
+| `0x05` | WebGPU device memory |
+| `0x06` | Qualcomm Hexagon (HVX/HMX) memory |
+| `0x07` | Intel Level Zero / oneAPI device memory |
+| `0x08` | OpenCL device memory |
+| `0x09`–`0xEF` | Reserved for future specification versions |
 | `0xF0`–`0xFE` | Implementation-private device types |
+| `0xFF` | Reserved (invalid) |
 
 ---
 
