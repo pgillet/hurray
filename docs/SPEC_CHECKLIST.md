@@ -2,7 +2,7 @@
 
 This checklist is applied to every new or modified section of the Hurray format specification. Items that do not apply to a given section should be noted as N/A with a brief justification.
 
-The 12 categories correspond directly to the 10 Core Properties defined in `README.md`, plus two cross-cutting quality checks. Core Property 3 (Streamable by Design) applies differently to the streaming format and the file format; the checklist items below are labelled accordingly.
+The 13 categories correspond directly to the 11 Core Properties defined in `README.md`, plus two cross-cutting quality checks. Core Property 3 (Streamable by Design) applies differently to the streaming format and the file format; the checklist items below are labelled accordingly.
 
 ---
 
@@ -66,24 +66,36 @@ The 12 categories correspond directly to the 10 Core Properties defined in `READ
 - [ ] Is the total byte length of the section determinable from a fixed, early-offset field?
 - [ ] Are reserved fields explicitly required to be `0x00`, and must readers reject non-zero values?
 
-## 8. Type System Compliance
-*(Core Property 8)*
+## 8. Extensibility Contract Compliance
+*(Core Property 8 — see `versioning.md` § Extensibility Contract)*
+
+- [ ] Does this amendment preserve the Extensibility Contract? Specifically:
+  - [ ] Does it repurpose, narrow, or remove any reserved tag range within major version `1.x`? (MUST NOT.)
+  - [ ] Does it allocate any named public value into an implementation-private range (`0xF0`–`0xFE`)? (MUST NOT.)
+  - [ ] Does it remove or narrow any reserved flag bit without a major version bump? (MUST NOT.)
+  - [ ] Does it introduce a new variable-length section without a length prefix? (MUST NOT.)
+  - [ ] Does it require interpreting a layout tag or quantization scheme tag in order to recover the shape, rank, element type, or buffer table? (MUST NOT — permissive-mode parsing must remain possible.)
+  - [ ] Does it force a version bump on an axis that did not actually change? (MUST NOT — version axes are independent.)
+  - [ ] Does it add a new public tag value without a spec amendment that increments the appropriate minor version? (MUST NOT.)
+
+## 9. Type System Compliance
+*(Core Property 9)*
 
 - [ ] Are all byte values expressed as hex literals (`0x00`, `0xFF` — never decimal)?
 - [ ] Are all multi-byte fields declared as little-endian explicitly?
 - [ ] Are type tags consistent with the type tag space defined in `element-types.md`?
 - [ ] Are reserved tag ranges respected (`0x80`–`0xEF` must not be assigned)?
 
-## 9. Interchange and File Format Compatibility
-*(Core Property 9)*
+## 10. Interchange and File Format Compatibility
+*(Core Property 10)*
 
 - [ ] If the section defines new streaming message types or fields, are they consistent with the framing defined in `interchange.md`?
 - [ ] If the section defines new file format fields or sections, are they consistent with the container defined in `file-format.md`?
 - [ ] Does the section break any existing invariant in either protocol (e.g., descriptor-before-data ordering, trailer-at-end-of-file)?
 - [ ] If new flags are introduced, are flag bit positions documented and reserved bits required to be `0`?
 
-## 10. Array Database Compatibility
-*(Core Property 10)*
+## 11. Array Database Compatibility
+*(Core Property 11)*
 
 - [ ] Does the section introduce any requirement that would prevent chunk-based or tile-based storage and retrieval? If so, is the restriction justified?
 - [ ] If the section modifies the tiled, Morton, or Hilbert layout definitions, does it preserve spatial locality properties required for range-query cache efficiency?
@@ -92,14 +104,14 @@ The 12 categories correspond directly to the 10 Core Properties defined in `READ
 - [ ] If new metadata fields are introduced, could they carry dimension domain or coordinate information relevant to an array database (e.g., axis labels, tile extents, dimension ranges)?
 - [ ] Is the section compatible with a SQL/MDA query engine (ISO 9075-15) consuming Hurray buffers? In particular: can query results be handed off to an ML inference pipeline without copying, and can quantized types be treated as first-class column types?
 
-## 11. RFC 2119 Correctness
+## 12. RFC 2119 Correctness
 
 - [ ] Does the section include the RFC 2119 notice near the top?
 - [ ] Are normative keywords (`MUST`, `SHOULD`, `MAY`, etc.) in uppercase?
 - [ ] Are normative keywords absent from non-normative blocks (prefixed `> **Note (non-normative):**`)?
 - [ ] Are open questions marked with `> **[OQ-N]:**` and sequentially numbered within the file?
 
-## 12. Cross-Section Consistency
+## 13. Cross-Section Consistency
 
 - [ ] Does any term, field, or formula in this section contradict another spec section?
 - [ ] Are all cross-references to other sections accurate (correct section names and field names)?
