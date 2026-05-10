@@ -1,7 +1,7 @@
 # ADR-017: Extensibility as a Core Property
 
 ## Status
-Draft
+Accepted
 
 ## Context
 
