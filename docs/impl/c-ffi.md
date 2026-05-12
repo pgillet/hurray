@@ -15,6 +15,25 @@ foundation for all non-Python language bindings.
 - Enums exposed across the FFI boundary MUST be `#[repr(u8)]` or `#[repr(i32)]` as
   appropriate, never `#[repr(Rust)]`.
 
+## C ABI Version
+
+The C ABI carries a single `uint32` version identifier exposed via a constant
+`HURRAY_C_ABI_VERSION` and a runtime accessor `hurray_c_abi_version()`. The
+current version is `2`:
+
+| Version | Changes |
+|---------|---------|
+| `1` | Initial C ABI: opaque handles, buffer release callbacks, panic-safe error returns. |
+| `2` | Per-mode buffer handoff sync payloads (`SYNC_PRODUCER_SYNCED`, `SYNC_EVENT`, `SYNC_CONSUMER_STREAM`) and the event-release callback. See [Buffer Handoff Synchronisation](#buffer-handoff-synchronisation). |
+
+A consumer of the C ABI MUST query `hurray_c_abi_version()` before invoking any
+function whose contract changed in a later version. A consumer compiled against
+version `1` of the ABI that links against a runtime providing version `2` will
+receive buffer handles whose `sync_mode` is `SYNC_PRODUCER_SYNCED` (`0x00`) by
+default, which is the safe fallback: a version-`1` consumer that does not
+inspect `sync_mode` will still observe the strongest synchronisation guarantee
+and will not race against the producer's device writes.
+
 ## Opaque Handles
 
 All Hurray objects crossing the FFI boundary MUST be represented as **opaque pointer
@@ -109,3 +128,108 @@ A C header file (`hurray.h`) MUST be generated from the Rust source using `cbind
 as part of the build process. The generated header MUST be checked into the repository
 and kept in sync with the Rust source. CI MUST fail if the generated header differs
 from the committed one.
+
+## Buffer Handoff Synchronisation
+
+The buffer protocol's `sync_mode` field (see `docs/spec/buffer-protocol.md`
+§ Stream and Event Synchronisation) declares one of three producer-side
+synchronisation mechanisms in the binary descriptor. The C ABI carries the
+corresponding **payload** out of band; the discriminant itself is read from the
+buffer handle's binary descriptor and is NOT duplicated in the ABI struct.
+
+The ABI layer MUST cross-check the `sync_mode` declared in the descriptor
+against the payload provided at handoff time. A mismatch is a producer-side
+bug; the ABI MUST reject the handoff with `HURRAY_ERR_SYNC_MODE_MISMATCH`
+before returning a buffer handle to the consumer.
+
+### Per-Mode Payloads
+
+#### `sync_mode = SYNC_PRODUCER_SYNCED` (`0x00`)
+
+No additional fields beyond the buffer pointer, byte size, alignment, device
+tag, release callback, and release context defined in [Buffer Release
+Callbacks](#buffer-release-callbacks).
+
+The producer MUST have issued a host-side wait on the device stream(s) that
+wrote the buffer before calling the handoff function. For CPU buffers
+(`device_tag == 0x00`), the producer MUST have issued a host memory fence if
+concurrent host-side writes exist.
+
+#### `sync_mode = SYNC_EVENT` (`0x01`)
+
+The handoff struct carries an opaque event handle and an event-release callback
+in addition to the buffer fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sync_handle` | opaque pointer (`void*`) | Device-vendor-specific event handle (e.g., `cudaEvent_t`, `hipEvent_t`, `MTLSharedEvent`, `VkSemaphore`). Opaque to the ABI layer. |
+| `sync_handle_device_tag` | `uint8` | Device tag identifying the event handle's driver context. MUST equal the buffer's `device_tag`. The ABI MUST reject the handoff if it does not. |
+| `event_release_fn` | `void (*)(void* sync_handle, void* context)` | Callback the consumer calls exactly once after issuing its stream-wait. Thread-safe. |
+| `event_release_context` | opaque pointer (`void*`) | Context pointer passed to `event_release_fn`. |
+
+The producer MUST record the event on the writing stream(s) before calling the
+handoff function. The producer MUST NOT defer event recording past the
+handoff; doing so would allow the consumer to issue a stream-wait on an
+unrecorded event and deadlock.
+
+The consumer MUST issue a device-stream-wait on `sync_handle` on every stream
+that will access the buffer before enqueuing any work that touches the
+buffer's bytes. The consumer MUST call `event_release_fn(sync_handle,
+event_release_context)` exactly once after all stream-waits have been issued
+(typically immediately after handoff). `event_release_fn` MUST be safe to call
+from any thread.
+
+The event-release callback is **separate from** the buffer-release callback
+defined in [Buffer Release Callbacks](#buffer-release-callbacks): a consumer
+in `SYNC_EVENT` mode makes two release calls per buffer, with independent
+lifetimes.
+
+#### `sync_mode = SYNC_CONSUMER_STREAM` (`0x02`)
+
+At handoff request time, the consumer supplies an opaque stream handle to the
+producer:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `consumer_stream` | opaque pointer (`void*`) | Device-vendor-specific stream handle (e.g., `cudaStream_t`, `hipStream_t`, `id<MTLCommandQueue>`). Opaque to the ABI layer. Supplied by the consumer at handoff request time. |
+| `consumer_stream_device_tag` | `uint8` | Device tag identifying the stream handle's driver context. MUST equal the buffer's `device_tag`. The ABI MUST reject the handoff if it does not. |
+
+The producer MUST issue a device-side ordering dependency from its writing
+stream(s) onto `consumer_stream` before the handoff function returns a buffer
+handle. The producer-side stream is not blocked; the ordering is established
+on the device.
+
+The consumer MAY access the buffer on `consumer_stream` after handoff returns,
+but MUST NOT access the buffer on any other stream until it has issued an
+inter-stream wait on that other stream.
+
+`SYNC_CONSUMER_STREAM` does not introduce a second release callback: there is
+no event handle whose lifetime must be managed.
+
+### ABI Cross-Check
+
+For every buffer handed off through the C ABI, the implementation MUST:
+
+1. Read the `sync_mode` byte at offset 13 of the buffer handle binary
+   descriptor.
+2. Verify that the payload provided by the producer at handoff time matches
+   the declared `sync_mode`:
+   - `SYNC_PRODUCER_SYNCED` MUST NOT carry a `sync_handle` or `consumer_stream`.
+   - `SYNC_EVENT` MUST carry a non-NULL `sync_handle`, an `event_release_fn`,
+     and a `sync_handle_device_tag` equal to the buffer's `device_tag`.
+   - `SYNC_CONSUMER_STREAM` MUST carry a non-NULL `consumer_stream` and a
+     `consumer_stream_device_tag` equal to the buffer's `device_tag`.
+3. Reject any reserved `sync_mode` value (`0x03`–`0xFE`) and the invalid value
+   `0xFF` with `HURRAY_ERR_INVALID_SYNC_MODE`.
+4. Reject a mismatch between descriptor and payload with
+   `HURRAY_ERR_SYNC_MODE_MISMATCH`.
+
+### Backward Compatibility for Pre-Version-2 Consumers
+
+A consumer compiled against C ABI version `1` that does not inspect `sync_mode`
+will receive buffers whose `sync_mode == SYNC_PRODUCER_SYNCED` by default. This
+is the safe fallback: the strongest synchronisation guarantee, no per-mode
+payload required, and behaviour identical to the version-`1` contract. A
+producer that wishes to interoperate with version-`1` consumers MUST set
+`sync_mode = SYNC_PRODUCER_SYNCED` for every buffer it hands off and MUST
+issue the corresponding host-side wait before handoff.

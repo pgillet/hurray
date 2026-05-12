@@ -361,6 +361,11 @@ the following transport-specific fields:
 | `shard_index` | `uint32` | Index of this shard in a parallel transfer. `0` for non-parallel transfers. |
 | `total_shards` | `uint32` | Total number of shards in a parallel transfer. `1` for non-parallel transfers. |
 
+The `sync_mode` field of each buffer handle inside `TENSOR_DESCRIPTOR` declares
+the producer's synchronisation guarantee for that buffer. Consumers MUST observe
+the `sync_mode` value and apply the matching rule per `buffer-protocol.md`
+§ Stream and Event Synchronisation before accessing the buffer's bytes.
+
 ### TENSOR_DATA Payload
 
 | Field | Type | Description |
@@ -540,6 +545,18 @@ to begin.
 After the RDMA operation completes on the sender's side, the sender MUST send
 `TENSOR_DATA_END` over the control plane. The receiver MUST NOT read from the
 transferred buffer before receiving `TENSOR_DATA_END`.
+
+For cross-machine transport, the sender MUST set
+`sync_mode = SYNC_PRODUCER_SYNCED` (`0x00`) in every buffer handle within the
+transmitted `TENSOR_DESCRIPTOR`. `TENSOR_DATA_END` is the cross-machine
+equivalent of `SYNC_PRODUCER_SYNCED` per `buffer-protocol.md` § Stream and
+Event Synchronisation: the receiver MUST NOT read from the transferred buffer
+before receiving `TENSOR_DATA_END`, and upon receipt of `TENSOR_DATA_END` the
+buffer is considered producer-synced. The `sync_mode` values `SYNC_EVENT`
+(`0x01`) and `SYNC_CONSUMER_STREAM` (`0x02`) are FORBIDDEN on cross-machine
+transports because device event and stream handles are not valid in a
+different driver context on a different host. A receiver MUST reject a
+cross-machine `TENSOR_DESCRIPTOR` whose buffer handle declares any other mode.
 
 > **Note (non-normative):** RDMA Write completion on the sender does not imply that
 > the receiver has observed the data without an explicit memory fence or signal.

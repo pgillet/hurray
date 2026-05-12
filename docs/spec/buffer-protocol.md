@@ -25,10 +25,11 @@ buffer table of the tensor descriptor (see `metadata.md` § Buffer Table).
 
 | Offset | Field | Type | Description |
 |--------|-------|------|-------------|
-| 0 | `byte_size` | `uint64` | Size of the buffer in bytes. `0` denotes an empty buffer. |
-| 8 | `alignment` | `uint32` | Minimum alignment of the buffer's base address in bytes. MUST be a power of two; MUST be at least `64` for non-empty buffers (`byte_size > 0`); any power-of-two value (including `1`) is valid for empty buffers (`byte_size == 0`). See [§ Empty Buffers](#empty-buffers). |
+| 0 | `byte_size` | `uint64` | Size of the buffer in bytes (little-endian). `0` denotes an empty buffer. |
+| 8 | `alignment` | `uint32` | Minimum alignment of the buffer's base address in bytes (little-endian). MUST be a power of two; MUST be at least `64` for non-empty buffers (`byte_size > 0`); any power-of-two value (including `1`) is valid for empty buffers (`byte_size == 0`). See [§ Empty Buffers](#empty-buffers). |
 | 12 | `device_tag` | `uint8` | Device where this buffer resides. See [§ Device Tags](#device-tags). |
-| 13 | `_reserved` | `uint8[3]` | MUST be `0x00`. Readers MUST reject a descriptor with non-zero reserved bytes. |
+| 13 | `sync_mode` | `uint8` | Producer-side synchronisation mechanism in effect. See [§ Stream and Event Synchronisation](#stream-and-event-synchronisation). |
+| 14 | `_reserved` | `uint8[2]` | MUST be `0x00`. Readers MUST reject a descriptor with non-zero reserved bytes. |
 
 All multi-byte fields MUST be encoded in little-endian byte order.
 
@@ -295,6 +296,124 @@ requires.
 > `DLManagedTensor.deleter`. It keeps the ABI surface minimal and allows each
 > language binding to use its own lifetime management idiom (Python GC,
 > Rust `Arc`, etc.) without bridging to a C reference count.
+
+---
+
+## Stream and Event Synchronisation
+
+The `sync_mode` field at offset 13 of the buffer handle declares how the
+producer has ordered its device-side writes with respect to the moment of
+handoff. The release callback (see [§ Release Callback](#release-callback))
+governs the **end** of consumer access; `sync_mode` governs the **start**.
+The two contracts are independent and apply symmetrically.
+
+### `sync_mode` Values
+
+| Value | Name | Meaning |
+|-------|------|---------|
+| `0x00` | `SYNC_PRODUCER_SYNCED` | The producer has issued a host-side wait on the device stream(s) that wrote the buffer, ensuring all preceding device-side writes have completed before handoff. The consumer MAY access the buffer immediately on any stream. |
+| `0x01` | `SYNC_EVENT` | The producer has recorded a device event on the stream(s) that wrote the buffer. The consumer MUST retrieve the producer's event handle via the C ABI (see `docs/impl/c-ffi.md`) and MUST issue a device-stream-wait on it on every stream that will access the buffer before enqueuing any work that touches the buffer. The consumer MUST release the event handle exactly once via the event-release callback defined in `docs/impl/c-ffi.md`. |
+| `0x02` | `SYNC_CONSUMER_STREAM` | The consumer declared its target stream at handoff time via the C ABI; the producer has issued a device-side ordering dependency from its writing stream(s) onto the consumer's declared stream(s). The consumer MAY access the buffer on the stream(s) it declared, but MUST NOT access the buffer on any other stream until it has issued an inter-stream wait. |
+| `0x03`–`0xFE` | (reserved) | Reserved for future specification versions. Readers MUST reject a buffer handle whose `sync_mode` is in this range. |
+| `0xFF` | (invalid) | Reserved. Readers MUST reject a buffer handle whose `sync_mode` is `0xFF`. |
+
+A reader MUST reject a buffer handle whose `sync_mode` value is not one of the
+values defined for the format version it implements.
+
+### Producer Requirement
+
+A producer of a non-CPU buffer (`device_tag != 0x00`) MUST ensure that, at the
+instant ownership of the buffer is transferred to the consumer, all device-side
+writes enqueued by the producer that affect the buffer's bytes have reached a
+point at which a properly-synchronised consumer access on the same device will
+observe them. The producer MUST satisfy this requirement by exactly one of the
+three mechanisms enumerated above, and the chosen mechanism MUST be declared in
+the buffer handle's `sync_mode` field.
+
+For a CPU buffer (`device_tag == 0x00`), `sync_mode` MUST be
+`SYNC_PRODUCER_SYNCED` (`0x00`). When concurrent host-side writes exist, the
+producer MUST additionally issue a host memory fence (a release-store or
+equivalent) before handoff so that all preceding host writes are visible to the
+consumer's subsequent loads.
+
+### Consumer Requirement
+
+A consumer that has received a buffer handle MUST inspect the `sync_mode` field
+and apply the matching rule before accessing the buffer's bytes:
+
+- If `sync_mode == SYNC_PRODUCER_SYNCED`, the consumer MAY access the buffer
+  immediately on any stream.
+- If `sync_mode == SYNC_EVENT`, the consumer MUST retrieve the producer's event
+  handle from the C ABI handoff structure and MUST issue a device-stream-wait
+  on it on every stream that will access the buffer before enqueuing any work
+  that touches the buffer. The consumer MUST release the event handle exactly
+  once via the event-release callback.
+- If `sync_mode == SYNC_CONSUMER_STREAM`, the consumer MAY access the buffer on
+  the stream(s) it declared at handoff time, but MUST NOT access the buffer on
+  any other stream until it has issued an inter-stream wait.
+
+A consumer that does not recognise the declared `sync_mode` value MUST reject
+the descriptor.
+
+### Per-Transport Constraints
+
+The set of `sync_mode` values that are valid depends on the interchange
+transport (see `interchange.md`):
+
+- **In-process.** All three `sync_mode` values are valid. Event and stream
+  handles are exchanged out of band via the C ABI; both parties share the same
+  driver context.
+- **IPC (same machine, different processes).** `SYNC_PRODUCER_SYNCED` is always
+  valid. `SYNC_EVENT` is valid only if the device supports IPC-exportable
+  events (e.g., CUDA `cudaIpcEventHandle_t`, ROCm `hipIpcEventHandle_t`).
+  `SYNC_CONSUMER_STREAM` is valid only if the device supports IPC-exportable
+  streams. When neither `SYNC_EVENT` nor `SYNC_CONSUMER_STREAM` is available on
+  the underlying device, the producer MUST use `SYNC_PRODUCER_SYNCED` or fall
+  back to a host-staged copy.
+- **Cross-machine (network transport).** `sync_mode` MUST be
+  `SYNC_PRODUCER_SYNCED` for every buffer handle transmitted over a network
+  transport. `SYNC_EVENT` and `SYNC_CONSUMER_STREAM` are FORBIDDEN across
+  machines because device event and stream handles are not valid in a different
+  driver context on a different host. A receiver MUST reject a cross-machine
+  `TENSOR_DESCRIPTOR` whose buffer handle declares any other mode. See
+  `interchange.md` § RDMA Data Plane for how `TENSOR_DATA_END` serves as the
+  cross-machine equivalent of `SYNC_PRODUCER_SYNCED`.
+
+### Relationship to the Release Callback
+
+The `sync_mode` contract governs the **start** of consumer access; the release
+callback (see [§ Release Callback](#release-callback)) governs the **end** of
+consumer access. The two are independent normative contracts that occupy
+symmetric positions at the bookends of the consumer's hold.
+
+The event-release callback used in `SYNC_EVENT` mode is **separate from** the
+buffer-release callback. A consumer in `SYNC_EVENT` mode therefore makes two
+release calls per buffer: one for the event handle, called after the consumer
+has issued its stream-wait (typically immediately after handoff), and one for
+the buffer, called after all device work on the buffer is complete. Conflating
+the two would force the producer to keep the event alive for the buffer's
+entire lifetime, defeating the purpose of using events instead of full stream
+synchronisation.
+
+A consumer that has issued device work using the buffer MUST NOT call the
+buffer-release callback until that device work has completed on the device.
+The consumer is free to satisfy this by host-side waiting, by recording its own
+completion event and waiting on it, or by deferring the release callback to a
+completion callback registered on its stream.
+
+### C ABI Note
+
+The opaque event handle (for `SYNC_EVENT`) and the consumer stream handle (for
+`SYNC_CONSUMER_STREAM`) are NOT carried in the binary descriptor. They are
+exchanged out of band via the C ABI. See `docs/impl/c-ffi.md` for the per-mode
+handoff payload definitions and the ABI-side cross-check that the payload
+provided at handoff time matches the `sync_mode` declared in the descriptor.
+
+> **Note (non-normative):** `sync_mode` is a *declaration* of a buffer's
+> synchronisation properties; the synchronisation handle is a transport detail,
+> not a buffer property. Putting the discriminant in the binary descriptor lets
+> a static inspector (`hurray-inspect`) surface the synchronisation contract
+> for any buffer without reaching into the C ABI layer.
 
 ---
 
