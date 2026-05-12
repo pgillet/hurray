@@ -208,7 +208,7 @@ assert!(matches!(validate_layout_tag_strict(0xF0), Err(Error::PrivateLayoutTag(0
 
 // Permissive mode: wrap unrecognised tags in Unknown for passthrough.
 // The reader must NOT dereference the tensor data buffer for Unknown layouts.
-let unknown = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![]));
+let unknown = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![]).unwrap());
 assert_eq!(unknown.tag(), 0x0A);
 assert!(unknown.buffer_count().is_none());
 ```
@@ -231,6 +231,17 @@ assert!(csr.validate_against_shape(&Shape::new(vec![4, 5]).unwrap()).is_ok());
 // Rank-3: rejected — CSR is only defined for rank-2 tensors.
 assert!(csr.validate_against_shape(&Shape::new(vec![2, 3, 4]).unwrap()).is_err());
 ```
+
+## Known limitations
+
+**Subpaving full-coverage validation is not implemented.** The spec requires that
+the union of all regions in a subpaving layout exactly covers the tensor's index
+space (every index belongs to exactly one region). This MUST requirement is not
+currently enforced by `validate_against_shape`. Writers are responsible for
+ensuring full coverage. The non-overlap check (regions must not intersect) IS
+enforced. A volume-sum heuristic (`∑ region volumes == total elements`) would
+catch most coverage gaps but is also deferred; see the inline TODO in
+`hurray-core/src/layout/mod.rs`.
 
 ## Private extension layouts
 

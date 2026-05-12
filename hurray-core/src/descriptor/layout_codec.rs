@@ -19,13 +19,10 @@ use crate::descriptor::cursor::{ByteCursor, ByteWriter};
 use crate::layout::{
     CooLayout, CscLayout, CsrLayout, HilbertLayout, InnerStrides, LayoutDescriptor, MortonLayout,
     OuterStrides, PrivateExtensionLayout, RegionDescriptor, StridedLayout, SubpavingLayout,
-    TiledLayout, TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSR, TAG_HILBERT, TAG_MORTON, TAG_ROW_MAJOR,
-    TAG_STRIDED, TAG_SUBPAVING, TAG_TILED,
+    TiledLayout, MAX_TILED_DEPTH, TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSR, TAG_HILBERT,
+    TAG_MORTON, TAG_ROW_MAJOR, TAG_STRIDED, TAG_SUBPAVING, TAG_TILED,
 };
 use crate::{Error, Result};
-
-/// Maximum recursion depth for nested tiled / subpaving descriptors.
-const MAX_RECURSION_DEPTH: u8 = 8;
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
@@ -38,15 +35,29 @@ pub(crate) fn encode_layout_payload(
     rank: u32,
     w: &mut ByteWriter,
 ) -> Result<()> {
+    // Top-level callers always start at depth 0; recursion uses the internal
+    // depth-aware variant so the MAX_TILED_DEPTH guard fires on the encode path.
+    encode_layout_payload_at_depth(layout, rank, w, 0)
+}
+
+/// Internal depth-aware dispatcher.  `depth` mirrors the same counter used in
+/// `decode_layout_payload` so the recursion guard applies symmetrically to
+/// both encode and decode.
+fn encode_layout_payload_at_depth(
+    layout: &LayoutDescriptor,
+    rank: u32,
+    w: &mut ByteWriter,
+    depth: u8,
+) -> Result<()> {
     match layout {
         LayoutDescriptor::RowMajor | LayoutDescriptor::ColMajor => {
             // No additional payload.
             Ok(())
         }
         LayoutDescriptor::Strided(s) => encode_strided(s, w),
-        LayoutDescriptor::Tiled(t) => encode_tiled(t, rank, w, 0),
+        LayoutDescriptor::Tiled(t) => encode_tiled(t, rank, w, depth),
         LayoutDescriptor::Morton(m) => encode_morton(m, w),
-        LayoutDescriptor::Subpaving(sp) => encode_subpaving(sp, rank, w, 0),
+        LayoutDescriptor::Subpaving(sp) => encode_subpaving(sp, rank, w, depth),
         LayoutDescriptor::Coo(c) => encode_coo(c, w),
         LayoutDescriptor::Csr(c) => encode_csr(c, w),
         LayoutDescriptor::Csc(c) => encode_csc(c, w),
@@ -69,7 +80,7 @@ pub(crate) fn decode_layout_payload(
     cursor: &mut ByteCursor<'_>,
     depth: u8,
 ) -> Result<LayoutDescriptor> {
-    if depth >= MAX_RECURSION_DEPTH {
+    if depth >= MAX_TILED_DEPTH as u8 {
         return Err(Error::SubpavingNestingTooDeep);
     }
     match tag {
@@ -111,8 +122,10 @@ fn decode_strided(cursor: &mut ByteCursor<'_>, rank: u32) -> Result<LayoutDescri
 
 // ── Tiled ─────────────────────────────────────────────────────────────────────
 
+// `rank` is passed through to recursive calls of encode_tiled; not used directly in this level.
+#[allow(clippy::only_used_in_recursion)]
 fn encode_tiled(layout: &TiledLayout, rank: u32, w: &mut ByteWriter, depth: u8) -> Result<()> {
-    if depth >= MAX_RECURSION_DEPTH {
+    if depth >= MAX_TILED_DEPTH as u8 {
         return Err(Error::SubpavingNestingTooDeep);
     }
     // tile_shape: uint64[rank]
@@ -123,12 +136,11 @@ fn encode_tiled(layout: &TiledLayout, rank: u32, w: &mut ByteWriter, depth: u8) 
     w.write_u8(layout.inner_layout);
     w.write_zeros(2); // _reserved
 
-    // Conditional: outer_strides if outer_layout == 0x03
+    // Conditional: outer_strides if outer_layout == 0x03.
+    // The stride-length invariant (strides.len() == rank) is maintained by TiledLayout::new,
+    // so no padding is needed here.
     if layout.outer_layout == TAG_STRIDED {
         if let Some(os) = &layout.outer_strides {
-            for _ in 0..rank as usize - os.strides.len() {
-                // Pad if needed — though lengths should match rank.
-            }
             for &s in &os.strides {
                 w.write_i64_le(s);
             }
@@ -157,7 +169,7 @@ fn encode_tiled(layout: &TiledLayout, rank: u32, w: &mut ByteWriter, depth: u8) 
 // Returns TiledLayout directly so call sites can wrap it without an unreachable!()
 // match arm on the LayoutDescriptor::Tiled variant.
 fn decode_tiled(cursor: &mut ByteCursor<'_>, rank: u32, depth: u8) -> Result<TiledLayout> {
-    if depth >= MAX_RECURSION_DEPTH {
+    if depth >= MAX_TILED_DEPTH as u8 {
         return Err(Error::SubpavingNestingTooDeep);
     }
 
@@ -241,7 +253,7 @@ fn encode_subpaving(
     w: &mut ByteWriter,
     depth: u8,
 ) -> Result<()> {
-    if depth >= MAX_RECURSION_DEPTH {
+    if depth >= MAX_TILED_DEPTH as u8 {
         return Err(Error::SubpavingNestingTooDeep);
     }
     w.write_u32_le(layout.regions.len() as u32);
@@ -253,9 +265,9 @@ fn encode_subpaving(
 
 fn encode_region(
     region: &RegionDescriptor,
-    _rank: u32,
+    rank: u32,
     w: &mut ByteWriter,
-    _depth: u8,
+    depth: u8,
 ) -> Result<()> {
     // origin uint64[rank]
     for &v in &region.origin {
@@ -269,16 +281,60 @@ fn encode_region(
     w.write_zeros(3); // _reserved
     w.write_u32_le(region.buffer_index);
     w.write_u64_le(region.region_byte_offset);
-    // region_layout_length = 0: this worktree's RegionDescriptor does not store an
-    // inner layout payload — it holds only the tag, which is sufficient for RowMajor
-    // and ColMajor regions. Tags that require a payload (strided, tiled, …) are not
-    // supported in this struct version; the wire length is written as 0.
-    w.write_u32_le(0u32);
+
+    // Encode region_layout_length and region_layout_payload per ADR-015.
+    // Row-major (0x01) and col-major (0x02) have no additional fields; all other
+    // tags carry their layout-specific fields in inner_layout.
+    match region.region_layout_tag {
+        TAG_ROW_MAJOR | TAG_COL_MAJOR => {
+            // No inner layout payload for these two tags.
+            w.write_u32_le(0u32);
+        }
+        _ => {
+            // Every other tag requires an inner_layout payload. A missing inner_layout
+            // here is a producer bug — the RegionDescriptor was constructed without
+            // calling with_inner_layout() for a tag that mandates it.
+            let inner = region.inner_layout.as_deref().ok_or_else(|| {
+                Error::InvalidLayout(format!(
+                    "region_layout_tag 0x{:02X} requires an inner_layout payload, but none is present",
+                    region.region_layout_tag
+                ))
+            })?;
+
+            // Subpaving regions that are themselves subpavings increment depth to match
+            // the depth accounting in decode_region.  The incremented depth is passed
+            // through encode_layout_payload_at_depth so that encode_subpaving's
+            // MAX_TILED_DEPTH guard fires on the encode path, not only on decode.
+            let inner_depth = if region.region_layout_tag == TAG_SUBPAVING {
+                depth + 1
+            } else {
+                depth
+            };
+
+            // Encode the inner layout's payload into a temporary buffer, then write
+            // the length-prefixed bytes. A temporary Vec avoids seek-back on the
+            // main writer, which ByteWriter does not support.
+            let mut payload_w = ByteWriter::new();
+            encode_layout_payload_at_depth(inner, rank, &mut payload_w, inner_depth)?;
+            let payload = payload_w.into_vec();
+
+            let payload_len = u32::try_from(payload.len()).map_err(|_| {
+                Error::InvalidLayout(format!(
+                    "inner layout payload for region_layout_tag 0x{:02X} exceeds u32::MAX bytes ({})",
+                    region.region_layout_tag,
+                    payload.len()
+                ))
+            })?;
+            w.write_u32_le(payload_len);
+            w.write_bytes(&payload);
+        }
+    }
+
     Ok(())
 }
 
 fn decode_subpaving(cursor: &mut ByteCursor<'_>, rank: u32, depth: u8) -> Result<LayoutDescriptor> {
-    if depth >= MAX_RECURSION_DEPTH {
+    if depth >= MAX_TILED_DEPTH as u8 {
         return Err(Error::SubpavingNestingTooDeep);
     }
     let region_count = cursor.read_u32_le()?;
@@ -324,7 +380,7 @@ fn decode_region(cursor: &mut ByteCursor<'_>, rank: u32, depth: u8) -> Result<Re
     // Decode the inner layout payload if present.
     // Row-major (0x01) and col-major (0x02) have no additional fields; all other
     // tags require recursive decode. Recursive subpaving (0x06) increments depth
-    // so the MAX_RECURSION_DEPTH guard in decode_layout_payload fires correctly.
+    // so the MAX_TILED_DEPTH guard in decode_layout_payload fires correctly.
     let base = RegionDescriptor::new(
         origin,
         region_shape,
@@ -571,5 +627,201 @@ mod tests {
         let mut c = ByteCursor::new(bytes, 0);
         let err = decode_layout_payload(0x0A, 0, &mut c, 0).unwrap_err();
         assert!(matches!(err, Error::ReservedLayoutTag(0x0A)));
+    }
+
+    // ── Group A: subpaving with non-trivial inner layout round-trips ──────────
+
+    mod subpaving_inner_layout {
+        use crate::descriptor::TensorDescriptor;
+        use crate::layout::{
+            LayoutDescriptor, MortonLayout, RegionDescriptor, StridedLayout, SubpavingLayout,
+            TiledLayout,
+        };
+        use crate::{BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT};
+
+        /// Helper: a minimal float32 [8,8] TensorDescriptor with the given subpaving layout.
+        fn descriptor_8x8(layout: LayoutDescriptor) -> TensorDescriptor {
+            let shape = Shape::new(vec![8u64, 8]).unwrap();
+            // Subpaving uses 1 buffer (dense).
+            let buf = BufferHandle::new(
+                512,
+                MIN_BUFFER_ALIGNMENT,
+                DeviceTag::Cpu,
+                SyncMode::ProducerSynced,
+            )
+            .unwrap();
+            TensorDescriptor::new(
+                1,
+                0,
+                ElementType::Float32,
+                shape,
+                0,
+                layout,
+                vec![buf],
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        }
+
+        /// Region 0: [0,0]→[4,8], Region 1: [4,0]→[4,8], both strided.
+        ///
+        /// Strided inner layouts carry an `int64[rank]` payload in the region's
+        /// `region_layout_length` / `region_layout_payload` fields.  This is the
+        /// simplest non-trivial inner layout: both regions share the same strides
+        /// but each carries its own encoded payload.
+        #[test]
+        fn region_with_strided_inner_layout() {
+            let strided = LayoutDescriptor::Strided(StridedLayout::new(vec![8i64, 1]));
+            let r0 = RegionDescriptor::new(vec![0u64, 0], vec![4, 8], 0x03, 0, 0)
+                .unwrap()
+                .with_inner_layout(strided.clone())
+                .unwrap();
+            let r1 = RegionDescriptor::new(vec![4u64, 0], vec![4, 8], 0x03, 0, 256)
+                .unwrap()
+                .with_inner_layout(strided)
+                .unwrap();
+            let layout = LayoutDescriptor::Subpaving(SubpavingLayout::new(vec![r0, r1]).unwrap());
+
+            let desc = descriptor_8x8(layout);
+            let encoded = desc.encode().unwrap();
+            let decoded = TensorDescriptor::decode(&encoded).unwrap();
+            assert_eq!(decoded, desc);
+        }
+
+        /// One region covering the whole [8,8] tensor with a tiled inner layout.
+        ///
+        /// Uses a 2-level tiling (outer row-major, inner col-major, 4×4 tiles).
+        /// The tiled payload includes `tile_shape u64[rank]` + tag bytes, which
+        /// must survive the length-prefixed region_layout_payload encoding path.
+        #[test]
+        fn region_with_tiled_inner_layout() {
+            let tiled = LayoutDescriptor::Tiled(Box::new(
+                TiledLayout::new(vec![4u64, 4], 0x01, 0x02, None, None, None).unwrap(),
+            ));
+            let r = RegionDescriptor::new(vec![0u64, 0], vec![8, 8], 0x04, 0, 0)
+                .unwrap()
+                .with_inner_layout(tiled)
+                .unwrap();
+            let layout = LayoutDescriptor::Subpaving(SubpavingLayout::new(vec![r]).unwrap());
+
+            let desc = descriptor_8x8(layout);
+            let encoded = desc.encode().unwrap();
+            let decoded = TensorDescriptor::decode(&encoded).unwrap();
+            assert_eq!(decoded, desc);
+        }
+
+        /// One region with a Morton (Z-order) inner layout.
+        ///
+        /// Morton payload is `uint32[rank]` (bits_per_dim), so rank=2 gives 8 bytes.
+        /// 3 bits per dimension can address 2^3 = 8 elements, fitting the [8,8] region.
+        #[test]
+        fn region_with_morton_inner_layout() {
+            let morton = LayoutDescriptor::Morton(MortonLayout::new(vec![3u32, 3]).unwrap());
+            let r = RegionDescriptor::new(vec![0u64, 0], vec![8, 8], 0x05, 0, 0)
+                .unwrap()
+                .with_inner_layout(morton)
+                .unwrap();
+            let layout = LayoutDescriptor::Subpaving(SubpavingLayout::new(vec![r]).unwrap());
+
+            let desc = descriptor_8x8(layout);
+            let encoded = desc.encode().unwrap();
+            let decoded = TensorDescriptor::decode(&encoded).unwrap();
+            assert_eq!(decoded, desc);
+        }
+
+        /// Outer subpaving with two regions; Region 0 itself contains an inner
+        /// subpaving, exercising the recursive depth-increment path.
+        ///
+        /// Outer:
+        ///   Region 0: origin [0,0], extent [4,8] → inner subpaving (depth+1)
+        ///   Region 1: origin [4,0], extent [4,8] → row-major (no payload)
+        ///
+        /// Inner subpaving (nested inside Region 0):
+        ///   Inner Region A: origin [0,0], extent [2,8] → row-major
+        ///   Inner Region B: origin [2,0], extent [2,8] → row-major
+        ///
+        /// The inner regions are within the [8,8] tensor shape so
+        /// validate_against_shape passes.  depth increments from 0→1 in
+        /// encode_region / decode_region when region_layout_tag == TAG_SUBPAVING.
+        #[test]
+        fn recursive_subpaving_round_trip() {
+            // Inner subpaving (lives inside the [0,0]→[4,8] outer region).
+            let inner_r_a = RegionDescriptor::new(vec![0u64, 0], vec![2, 8], 0x01, 0, 0).unwrap();
+            let inner_r_b = RegionDescriptor::new(vec![2u64, 0], vec![2, 8], 0x01, 0, 128).unwrap();
+            let inner_sp = LayoutDescriptor::Subpaving(
+                SubpavingLayout::new(vec![inner_r_a, inner_r_b]).unwrap(),
+            );
+
+            // Outer Region 0: tag 0x06 (subpaving), carries inner_sp as payload.
+            let outer_r0 = RegionDescriptor::new(vec![0u64, 0], vec![4, 8], 0x06, 0, 0)
+                .unwrap()
+                .with_inner_layout(inner_sp)
+                .unwrap();
+
+            // Outer Region 1: row-major, no payload.
+            let outer_r1 = RegionDescriptor::new(vec![4u64, 0], vec![4, 8], 0x01, 0, 256).unwrap();
+
+            let layout = LayoutDescriptor::Subpaving(
+                SubpavingLayout::new(vec![outer_r0, outer_r1]).unwrap(),
+            );
+
+            let desc = descriptor_8x8(layout);
+            let encoded = desc.encode().unwrap();
+            let decoded = TensorDescriptor::decode(&encoded).unwrap();
+            assert_eq!(decoded, desc);
+        }
+    }
+
+    // ── Group B: Unknown layout encode rejection ──────────────────────────────
+
+    mod unknown_encode {
+        use crate::descriptor::TensorDescriptor;
+        use crate::layout::{LayoutDescriptor, UnknownLayout};
+        use crate::{
+            BufferHandle, DeviceTag, ElementType, Error, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
+        };
+
+        /// `encode_layout_payload` MUST return `Err(UnknownLayoutTag)` when the
+        /// layout descriptor is `LayoutDescriptor::Unknown`.
+        ///
+        /// The spec (§ strict mode) prohibits re-encoding unrecognized layouts;
+        /// the implementation enforces this by rejecting `Unknown` on the encode
+        /// path, not only on the decode path.
+        #[test]
+        fn encode_unknown_layout_returns_error() {
+            let unknown_layout =
+                LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![0x01, 0x02]).unwrap());
+            let shape = Shape::new(vec![4u64]).unwrap();
+            let buf = BufferHandle::new(
+                64,
+                MIN_BUFFER_ALIGNMENT,
+                DeviceTag::Cpu,
+                SyncMode::ProducerSynced,
+            )
+            .unwrap();
+            // TensorDescriptor::new accepts Unknown (it does not validate the layout tag).
+            let desc = TensorDescriptor::new(
+                1,
+                0,
+                ElementType::Float32,
+                shape,
+                0,
+                unknown_layout,
+                vec![buf],
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            let err = desc.encode().unwrap_err();
+            assert!(
+                matches!(err, Error::UnknownLayoutTag(_)),
+                "expected UnknownLayoutTag, got {err:?}"
+            );
+        }
     }
 }
