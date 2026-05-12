@@ -15,14 +15,14 @@
 //!
 //! ```
 //! use hurray_core::{
-//!     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+//!     BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
 //!     descriptor::TensorDescriptor,
 //!     layout::LayoutDescriptor,
 //! };
 //!
 //! // Build a float32 [3, 4] row-major tensor descriptor (the spec's worked example).
 //! let shape = Shape::new(vec![3, 4]).unwrap();
-//! let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+//! let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
 //! let desc = TensorDescriptor::new(
 //!     1, 0,
 //!     ElementType::Float32,
@@ -162,13 +162,13 @@ use crate::{BufferHandle, ElementType, Error, LayoutDescriptor, Result, Shape};
 ///
 /// ```
 /// use hurray_core::{
-///     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+///     BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
 ///     descriptor::TensorDescriptor,
 ///     layout::LayoutDescriptor,
 /// };
 ///
 /// let shape  = Shape::new(vec![3u64, 4]).unwrap();
-/// let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+/// let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
 /// let desc   = TensorDescriptor::new(
 ///     1, 0,
 ///     ElementType::Float32,
@@ -227,13 +227,13 @@ impl TensorDescriptor {
     ///
     /// ```
     /// use hurray_core::{
-    ///     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    ///     BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
     ///     descriptor::TensorDescriptor,
     ///     layout::LayoutDescriptor,
     /// };
     ///
     /// let shape  = Shape::new(vec![2u64, 3]).unwrap();
-    /// let buffer = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+    /// let buffer = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
     /// let desc   = TensorDescriptor::new(
     ///     1, 0, ElementType::Float32, shape, 0,
     ///     LayoutDescriptor::RowMajor, vec![buffer],
@@ -315,13 +315,13 @@ impl TensorDescriptor {
     ///
     /// ```
     /// use hurray_core::{
-    ///     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    ///     BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
     ///     descriptor::{TensorDescriptor, DescriptorFlags},
     ///     layout::LayoutDescriptor,
     /// };
     ///
     /// let shape  = Shape::new(vec![4u64]).unwrap();
-    /// let buffer = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+    /// let buffer = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
     /// let desc   = TensorDescriptor::new(
     ///     1, 0, ElementType::Float32, shape, 0,
     ///     LayoutDescriptor::RowMajor, vec![buffer],
@@ -357,13 +357,13 @@ impl TensorDescriptor {
     ///
     /// ```
     /// use hurray_core::{
-    ///     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    ///     BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
     ///     descriptor::TensorDescriptor,
     ///     layout::LayoutDescriptor,
     /// };
     ///
     /// let shape  = Shape::new(vec![3u64, 4]).unwrap();
-    /// let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+    /// let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
     /// let desc   = TensorDescriptor::new(
     ///     1, 0, ElementType::Float32, shape, 0,
     ///     LayoutDescriptor::RowMajor, vec![buffer],
@@ -394,13 +394,13 @@ impl TensorDescriptor {
     ///
     /// ```
     /// use hurray_core::{
-    ///     BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    ///     BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
     ///     descriptor::TensorDescriptor,
     ///     layout::LayoutDescriptor,
     /// };
     ///
     /// let shape  = Shape::new(vec![3u64, 4]).unwrap();
-    /// let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+    /// let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
     /// let desc   = TensorDescriptor::new(
     ///     1, 0, ElementType::Float32, shape, 0,
     ///     LayoutDescriptor::RowMajor, vec![buffer],
@@ -422,12 +422,18 @@ impl TensorDescriptor {
 mod tests {
     use super::*;
     use crate::layout::LayoutDescriptor;
-    use crate::{BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT};
+    use crate::{BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT};
 
     // Helper: build the spec's worked example (float32, [3,4], row-major, 1 buffer).
     fn worked_example() -> TensorDescriptor {
         let shape = Shape::new(vec![3u64, 4]).unwrap();
-        let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let buffer = BufferHandle::new(
+            192,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
         TensorDescriptor::new(
             1,
             0,
@@ -475,8 +481,10 @@ mod tests {
         0x40, 0x00, 0x00, 0x00,
         // buffer[0].device_tag = 0x00 (CPU)
         0x00,
-        // buffer[0]._reserved
-        0x00, 0x00, 0x00,
+        // buffer[0].sync_mode = 0x00 (ProducerSynced, ADR-018)
+        0x00,
+        // buffer[0]._reserved[2]
+        0x00, 0x00,
     ];
 
     #[test]
@@ -581,7 +589,13 @@ mod tests {
     #[test]
     fn flags_quantization_set() {
         let shape = Shape::new(vec![4u64]).unwrap();
-        let buf = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let buf = BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
         let desc = TensorDescriptor::new(
             1,
             0,
@@ -625,7 +639,13 @@ mod tests {
     #[test]
     fn new_rejects_shard_rank_mismatch() {
         let shape = Shape::new(vec![4u64, 4]).unwrap(); // rank 2
-        let buf = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let buf = BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
         // shard with rank 1 (mismatch)
         let shard = ShardDescriptor::new(vec![10u64], vec![0u64]).unwrap();
         let err = TensorDescriptor::new(
@@ -651,7 +671,13 @@ mod tests {
     fn round_trip_with_shard() {
         use crate::layout::LayoutDescriptor;
         let shape = Shape::new(vec![4u64, 8]).unwrap();
-        let buf = BufferHandle::new(128, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let buf = BufferHandle::new(
+            128,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
         let shard = ShardDescriptor::new(vec![10u64, 20], vec![0u64, 4]).unwrap();
         let desc = TensorDescriptor::new(
             1,
@@ -674,7 +700,13 @@ mod tests {
     #[test]
     fn round_trip_with_quantization_payload() {
         let shape = Shape::new(vec![8u64]).unwrap();
-        let buf = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let buf = BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
         let quant_bytes = vec![0x01u8, 0x00, 0x00, 0x00, 0xAB, 0xCD];
         let desc = TensorDescriptor::new(
             1,
@@ -698,7 +730,13 @@ mod tests {
     fn round_trip_with_statistics() {
         use crate::descriptor::statistics::{Statistics, StatisticsMask};
         let shape = Shape::new(vec![16u64]).unwrap();
-        let buf = BufferHandle::new(128, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let buf = BufferHandle::new(
+            128,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
         let stats = Statistics {
             computed_mask: StatisticsMask(StatisticsMask::NNZ_VALID),
             nnz: 10,
@@ -737,7 +775,13 @@ mod tests {
     fn round_trip_strided_layout() {
         use crate::layout::StridedLayout;
         let shape = Shape::new(vec![3u64, 4]).unwrap();
-        let buf = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let buf = BufferHandle::new(
+            192,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
         let layout = LayoutDescriptor::Strided(StridedLayout::new(vec![8i64, 1]));
         let desc = TensorDescriptor::new(
             1,
@@ -762,8 +806,20 @@ mod tests {
         use crate::layout::CooLayout;
         let shape = Shape::new(vec![10u64, 10]).unwrap();
         // COO requires 2 buffers (values + indices)
-        let buf0 = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
-        let buf1 = BufferHandle::new(128, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let buf0 = BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
+        let buf1 = BufferHandle::new(
+            128,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
         let layout = LayoutDescriptor::Coo(CooLayout::new(5, true));
         let desc = TensorDescriptor::new(
             1,
@@ -791,7 +847,13 @@ mod tests {
     fn round_trip_extension_element_type() {
         use crate::descriptor::ExtensionTypeDescriptor;
         let shape = Shape::new(vec![4u64]).unwrap();
-        let buf = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let buf = BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
         // 8-bit integer extension type, packing_factor=1.
         let ext =
             ExtensionTypeDescriptor::new(8, 1, false, true, 0, 0, 0, 0, false, false).unwrap();
@@ -824,7 +886,15 @@ mod tests {
     fn new_rejects_buffer_count_exceeding_255() {
         let shape = Shape::new(vec![4u64]).unwrap();
         let buffers: Vec<BufferHandle> = (0..256)
-            .map(|_| BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap())
+            .map(|_| {
+                BufferHandle::new(
+                    64,
+                    MIN_BUFFER_ALIGNMENT,
+                    DeviceTag::Cpu,
+                    SyncMode::ProducerSynced,
+                )
+                .unwrap()
+            })
             .collect();
         let err = TensorDescriptor::new(
             1,
@@ -903,7 +973,13 @@ mod tests {
         // shallow (1-level) tiled layout, then splice in the 9-level bytes.
         use crate::layout::TiledLayout;
         let shape = Shape::new(vec![2u64]).unwrap();
-        let buf = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+        let buf = BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
         let shallow = LayoutDescriptor::Tiled(Box::new(
             TiledLayout::new(vec![2u64], 0x01, 0x01, None, None, None).unwrap(),
         ));

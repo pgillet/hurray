@@ -7,7 +7,7 @@
 
 use hurray_core::{
     BufferHandle, DeviceTag, ElementType, Mxfp, Nf4, PerBlockAffine, PerChannelAffine,
-    PerTensorAffine, QuantizationDescriptor, MIN_BUFFER_ALIGNMENT, NF4_LUT,
+    PerTensorAffine, QuantizationDescriptor, SyncMode, MIN_BUFFER_ALIGNMENT, NF4_LUT,
 };
 
 fn main() {
@@ -157,12 +157,27 @@ fn main() {
 
     println!("Validating buffer placement constraints...");
 
-    let cpu_buffer_data =
-        BufferHandle::new(4096, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).expect("valid buffer");
-    let cpu_buffer_scale =
-        BufferHandle::new(256, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).expect("valid buffer");
-    let cpu_buffer_zp =
-        BufferHandle::new(256, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).expect("valid buffer");
+    let cpu_buffer_data = BufferHandle::new(
+        4096,
+        MIN_BUFFER_ALIGNMENT,
+        DeviceTag::Cpu,
+        SyncMode::ProducerSynced,
+    )
+    .expect("valid buffer");
+    let cpu_buffer_scale = BufferHandle::new(
+        256,
+        MIN_BUFFER_ALIGNMENT,
+        DeviceTag::Cpu,
+        SyncMode::ProducerSynced,
+    )
+    .expect("valid buffer");
+    let cpu_buffer_zp = BufferHandle::new(
+        256,
+        MIN_BUFFER_ALIGNMENT,
+        DeviceTag::Cpu,
+        SyncMode::ProducerSynced,
+    )
+    .expect("valid buffer");
 
     let buffers = [cpu_buffer_data, cpu_buffer_scale, cpu_buffer_zp];
 

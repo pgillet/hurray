@@ -649,12 +649,12 @@ pub fn validate_axis(axis: u32, rank: u32) -> Result<()> {
 ///
 /// ```
 /// use hurray_core::{
-///     BufferHandle, DeviceTag, Nf4, QuantizationDescriptor,
+///     BufferHandle, DeviceTag, Nf4, QuantizationDescriptor, SyncMode,
 ///     validate_buffer_placement, MIN_BUFFER_ALIGNMENT,
 /// };
 ///
-/// let data = BufferHandle::new(1024, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
-/// let scale = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+/// let data = BufferHandle::new(1024, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
+/// let scale = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
 /// let buffers = [data, scale];
 ///
 /// let desc = QuantizationDescriptor::Nf4(Nf4::new(0, 64, 1).unwrap());
@@ -745,7 +745,7 @@ fn param_buffer_indices(desc: &QuantizationDescriptor) -> impl Iterator<Item = u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BufferHandle, DeviceTag, ElementType, Error, MIN_BUFFER_ALIGNMENT};
+    use crate::{BufferHandle, DeviceTag, ElementType, Error, SyncMode, MIN_BUFFER_ALIGNMENT};
 
     // ── QuantizationSchemeTag::from_byte ─────────────────────────────────────
 
@@ -984,7 +984,13 @@ mod tests {
     // ── validate_buffer_placement ─────────────────────────────────────────────
 
     fn make_cpu_buffer() -> BufferHandle {
-        BufferHandle::new(1024, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap()
+        BufferHandle::new(
+            1024,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -1038,8 +1044,20 @@ mod tests {
     #[test]
     fn validate_buffer_placement_device_tag_mismatch_is_err() {
         // data=Cpu (index 0), scale=Cuda (index 1) → DeviceTagMismatch.
-        let cpu_buf = BufferHandle::new(1024, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
-        let cuda_buf = BufferHandle::new(1024, MIN_BUFFER_ALIGNMENT, DeviceTag::Cuda).unwrap();
+        let cpu_buf = BufferHandle::new(
+            1024,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
+        let cuda_buf = BufferHandle::new(
+            1024,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cuda,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
         let buffers = [cpu_buf, cuda_buf];
         let desc = QuantizationDescriptor::Nf4(Nf4::new(0, 64, 1).unwrap());
         assert!(matches!(

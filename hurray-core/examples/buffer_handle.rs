@@ -7,7 +7,8 @@
 //! ```
 
 use hurray_core::{
-    validate_colocation, BufferHandle, DeviceTag, Error, MIN_BUFFER_ALIGNMENT, PAGE_ALIGNMENT,
+    validate_colocation, BufferHandle, DeviceTag, Error, SyncMode, MIN_BUFFER_ALIGNMENT,
+    PAGE_ALIGNMENT,
 };
 
 fn main() {
@@ -37,27 +38,34 @@ fn main() {
     // ── CPU buffer with SIMD alignment ────────────────────────────────────────
 
     println!("\n=== CPU buffer (SIMD alignment) ===");
-    let cpu_buffer =
-        BufferHandle::new(1024, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).expect("valid CPU buffer");
+    let cpu_buffer = BufferHandle::new(
+        1024,
+        MIN_BUFFER_ALIGNMENT,
+        DeviceTag::Cpu,
+        SyncMode::ProducerSynced,
+    )
+    .expect("valid CPU buffer");
     println!("  Size: {} bytes", cpu_buffer.byte_size());
     println!(
         "  Alignment: {} bytes (SIMD minimum)",
         cpu_buffer.alignment()
     );
     println!("  Device: {}", cpu_buffer.device_tag());
+    println!("  Sync mode: {}", cpu_buffer.sync_mode());
     println!("  Empty: {}", cpu_buffer.is_empty());
 
     // ── GPU buffer with page alignment ────────────────────────────────────────
 
-    println!("\n=== CUDA buffer (page alignment) ===");
-    let cuda_buffer =
-        BufferHandle::new(8192, PAGE_ALIGNMENT, DeviceTag::Cuda).expect("valid CUDA buffer");
+    println!("\n=== CUDA buffer (page alignment, Event sync) ===");
+    let cuda_buffer = BufferHandle::new(8192, PAGE_ALIGNMENT, DeviceTag::Cuda, SyncMode::Event)
+        .expect("valid CUDA buffer");
     println!("  Size: {} bytes", cuda_buffer.byte_size());
     println!(
         "  Alignment: {} bytes (page-aligned for GPU)",
         cuda_buffer.alignment()
     );
     println!("  Device: {}", cuda_buffer.device_tag());
+    println!("  Sync mode: {}", cuda_buffer.sync_mode());
     println!("  Empty: {}", cuda_buffer.is_empty());
 
     // ── Empty buffer ──────────────────────────────────────────────────────────
@@ -70,6 +78,7 @@ fn main() {
         empty.alignment()
     );
     println!("  Device: {}", empty.device_tag());
+    println!("  Sync mode: {}", empty.sync_mode());
     println!("  Empty: {}", empty.is_empty());
     println!("  → Readers MUST NOT dereference the pointer of an empty buffer");
 
@@ -77,8 +86,13 @@ fn main() {
 
     println!("\n=== Private device tag (custom hardware) ===");
     let private_tag = DeviceTag::from_byte(0xF2).unwrap();
-    let custom_buffer = BufferHandle::new(4096, MIN_BUFFER_ALIGNMENT, private_tag)
-        .expect("valid custom-device buffer");
+    let custom_buffer = BufferHandle::new(
+        4096,
+        MIN_BUFFER_ALIGNMENT,
+        private_tag,
+        SyncMode::ProducerSynced,
+    )
+    .expect("valid custom-device buffer");
     println!("  Device tag: {}", custom_buffer.device_tag());
     println!("  Is private: {}", custom_buffer.device_tag().is_private());
     println!(
@@ -91,7 +105,7 @@ fn main() {
 
     println!("\n=== Alignment validation: non-power-of-two ===");
     if let Err(Error::AlignmentNotPowerOfTwo { alignment }) =
-        BufferHandle::new(512, 63, DeviceTag::Cpu)
+        BufferHandle::new(512, 63, DeviceTag::Cpu, SyncMode::ProducerSynced)
     {
         println!("  alignment={alignment}: rejected (not a power of two)");
     }
@@ -100,7 +114,7 @@ fn main() {
 
     println!("\n=== Alignment validation: below SIMD minimum ===");
     if let Err(Error::AlignmentBelowMinimum { alignment, minimum }) =
-        BufferHandle::new(512, 32, DeviceTag::Cpu)
+        BufferHandle::new(512, 32, DeviceTag::Cpu, SyncMode::ProducerSynced)
     {
         println!(
             "  alignment={alignment}, minimum={minimum}: rejected \
@@ -108,10 +122,22 @@ fn main() {
         );
     }
 
+    // ── CPU + non-ProducerSynced rejected ─────────────────────────────────────
+
+    println!("\n=== Sync mode validation: CPU must use ProducerSynced ===");
+    if let Err(Error::InvalidSyncMode(b)) =
+        BufferHandle::new(512, 64, DeviceTag::Cpu, SyncMode::Event)
+    {
+        println!(
+            "  sync_mode=0x{b:02X} (Event) on CPU: rejected (CPU buffers must use ProducerSynced)"
+        );
+    }
+
     // ── Valid empty buffer with low alignment ─────────────────────────────────
 
     println!("\n=== Empty buffer allows any power-of-two alignment ===");
-    let empty_aligned = BufferHandle::new(0, 1, DeviceTag::Metal).expect("valid empty buffer");
+    let empty_aligned = BufferHandle::new(0, 1, DeviceTag::Metal, SyncMode::ProducerSynced)
+        .expect("valid empty buffer");
     println!("  Empty buffer with alignment=1: accepted");
     println!("  Byte size: {}", empty_aligned.byte_size());
 
@@ -119,9 +145,27 @@ fn main() {
 
     println!("\n=== Colocation validation: all on CPU (pass) ===");
     let handles = [
-        BufferHandle::new(1024, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap(),
-        BufferHandle::new(512, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap(),
-        BufferHandle::new(256, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap(),
+        BufferHandle::new(
+            1024,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap(),
+        BufferHandle::new(
+            512,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap(),
+        BufferHandle::new(
+            256,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap(),
     ];
     if let Ok(tag) = validate_colocation(&handles) {
         println!("  All {} buffers on: {}", handles.len(), tag);
@@ -131,8 +175,20 @@ fn main() {
 
     println!("\n=== Colocation validation: mixed devices (fail) ===");
     let mixed = [
-        BufferHandle::new(1024, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap(),
-        BufferHandle::new(512, PAGE_ALIGNMENT, DeviceTag::Cuda).unwrap(),
+        BufferHandle::new(
+            1024,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap(),
+        BufferHandle::new(
+            512,
+            PAGE_ALIGNMENT,
+            DeviceTag::Cuda,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap(),
     ];
     if let Err(Error::DeviceTagMismatch { expected, found }) = validate_colocation(&mixed) {
         println!("  Buffer 0: device 0x{expected:02X}; Buffer 1: device 0x{found:02X}",);
@@ -149,20 +205,32 @@ fn main() {
     // ── Metal device (Apple Silicon) ──────────────────────────────────────────
 
     println!("\n=== Metal device (Apple Silicon unified memory) ===");
-    let metal = BufferHandle::new(2048, PAGE_ALIGNMENT, DeviceTag::Metal).unwrap();
+    let metal = BufferHandle::new(2048, PAGE_ALIGNMENT, DeviceTag::Metal, SyncMode::Event).unwrap();
     println!("  Device: {}", metal.device_tag());
     println!("  Size: {}", metal.byte_size());
     println!("  Alignment: {}", metal.alignment());
+    println!("  Sync mode: {}", metal.sync_mode());
 
     // ── ROCm device ───────────────────────────────────────────────────────────
 
     println!("\n=== ROCm device ===");
-    let rocm = BufferHandle::new(4096, PAGE_ALIGNMENT, DeviceTag::Rocm).unwrap();
+    let rocm = BufferHandle::new(
+        4096,
+        PAGE_ALIGNMENT,
+        DeviceTag::Rocm,
+        SyncMode::ConsumerStream,
+    )
+    .unwrap();
     println!("  Device: {}", rocm.device_tag());
     println!("  Size: {}", rocm.byte_size());
+    println!("  Sync mode: {}", rocm.sync_mode());
 
     println!("\n=== Summary ===");
     println!("  • Device tags identify where a buffer resides (CPU, GPU, or private)");
+    println!("  • SyncMode describes producer–consumer ordering (ADR-018)");
+    println!(
+        "  • CPU buffers must use ProducerSynced; GPU buffers may use Event or ConsumerStream"
+    );
     println!("  • Non-empty buffers must use SIMD alignment (≥64 bytes)");
     println!("  • Page-aligned buffers (≥4096 bytes) are recommended for GPU/IPC");
     println!("  • All buffers in a tensor must reside on the same device");

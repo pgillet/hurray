@@ -10,7 +10,7 @@ use crate::descriptor::mod_types::{DescriptorFlags, TensorDescriptor, RESERVED_F
 use crate::descriptor::shard::ShardDescriptor;
 use crate::descriptor::statistics::Statistics;
 use crate::descriptor::{DESCRIPTOR_VERSION_MAJOR, MIN_DESCRIPTOR_LEN};
-use crate::{BufferHandle, DeviceTag, ElementType, Error, Result, Shape};
+use crate::{BufferHandle, DeviceTag, ElementType, Error, Result, Shape, SyncMode};
 
 /// Decodes a [`TensorDescriptor`] from its wire representation.
 ///
@@ -131,14 +131,16 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<TensorDescriptor> {
         let byte_size = cursor.read_u64_le()?;
         let alignment = cursor.read_u32_le()?;
         let device_tag_byte = cursor.read_u8()?;
-        let reserved = cursor.read_bytes(3)?;
-        if reserved != [0u8, 0, 0] {
+        let sync_mode_byte = cursor.read_u8()?;
+        let reserved = cursor.read_bytes(2)?;
+        if reserved != [0u8, 0] {
             return Err(Error::ReservedBytesNonZero {
                 field: "buffer_handle._reserved",
             });
         }
         let device_tag = DeviceTag::from_byte(device_tag_byte)?;
-        let handle = BufferHandle::new(byte_size, alignment, device_tag)?;
+        let sync_mode = SyncMode::from_byte(sync_mode_byte)?;
+        let handle = BufferHandle::new(byte_size, alignment, device_tag, sync_mode)?;
         buffers.push(handle);
     }
 
