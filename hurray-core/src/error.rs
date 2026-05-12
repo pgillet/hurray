@@ -350,6 +350,16 @@ pub enum Error {
     IndexArithmeticOverflow,
 
     // ── Descriptor (Layer 4) errors ───────────────────────────────────────────
+    /// The sync mode byte is not a recognized value.
+    ///
+    /// Valid sync mode bytes are `0x00` (`ProducerSynced`), `0x01` (`Event`),
+    /// and `0x02` (`ConsumerStream`). Bytes `0x03`–`0xFF` are reserved or
+    /// permanently invalid; all conforming readers MUST reject them.
+    ///
+    /// See `docs/spec/buffer-protocol.md § Synchronization Mode` and ADR-018.
+    #[error("invalid sync mode byte: 0x{0:02X} (reserved or invalid)")]
+    InvalidSyncMode(u8),
+
     /// Magic bytes are not `"HRRY"` (`0x48 0x52 0x52 0x59`).
     #[error("invalid magic: expected 48 52 52 59, got {got:02X?}")]
     InvalidMagic {

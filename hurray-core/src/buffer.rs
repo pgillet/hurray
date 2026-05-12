@@ -16,7 +16,8 @@
 //! | Item | Description |
 //! |------|-------------|
 //! | [`DeviceTag`] | Identifies the memory space a buffer resides in |
-//! | [`BufferHandle`] | Declares a buffer's size, alignment, and device |
+//! | [`SyncMode`] | Describes how the producer–consumer memory ordering is established |
+//! | [`BufferHandle`] | Declares a buffer's size, alignment, device, and sync mode |
 //! | [`validate_colocation`] | Checks that a set of handles all share the same device |
 //! | [`MIN_BUFFER_ALIGNMENT`] | 64-byte SIMD minimum for non-empty buffers |
 //! | [`PAGE_ALIGNMENT`] | 4096-byte recommendation for GPU / IPC buffers |
@@ -101,6 +102,133 @@ pub const MIN_BUFFER_ALIGNMENT: u32 = 64;
 /// assert_eq!(PAGE_ALIGNMENT, 4096);
 /// ```
 pub const PAGE_ALIGNMENT: u32 = 4096;
+
+// ── SyncMode ──────────────────────────────────────────────────────────────────
+
+/// Describes how the producer–consumer memory ordering guarantee is established
+/// for a buffer.
+///
+/// The `sync_mode` field in the binary buffer handle is a single `uint8` at
+/// wire offset 13. This enum is the typed representation of that byte; use
+/// [`SyncMode::from_byte`] to parse and [`SyncMode::to_byte`] to serialize.
+///
+/// CPU buffers (`device_tag == 0x00`) MUST use [`SyncMode::ProducerSynced`];
+/// [`BufferHandle::new`] enforces this and returns [`Error::InvalidSyncMode`]
+/// if any other mode is combined with [`DeviceTag::Cpu`].
+///
+/// | Wire value | Variant |
+/// |------------|---------|
+/// | `0x00` | [`ProducerSynced`][SyncMode::ProducerSynced] |
+/// | `0x01` | [`Event`][SyncMode::Event] |
+/// | `0x02` | [`ConsumerStream`][SyncMode::ConsumerStream] |
+/// | `0x03`–`0xFF` | reserved / permanently invalid → [`Error::InvalidSyncMode`] |
+///
+/// See `docs/spec/buffer-protocol.md § Synchronization Mode` and ADR-018.
+///
+/// # Examples
+///
+/// ```
+/// use hurray_core::{SyncMode, Error};
+///
+/// let mode = SyncMode::from_byte(0x00).unwrap();
+/// assert_eq!(mode, SyncMode::ProducerSynced);
+/// assert_eq!(mode.to_byte(), 0x00);
+/// assert_eq!(mode.to_string(), "producer_synced");
+///
+/// let event = SyncMode::from_byte(0x01).unwrap();
+/// assert_eq!(event, SyncMode::Event);
+///
+/// assert!(matches!(SyncMode::from_byte(0x03), Err(Error::InvalidSyncMode(0x03))));
+/// assert!(matches!(SyncMode::from_byte(0xFF), Err(Error::InvalidSyncMode(0xFF))));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SyncMode {
+    /// Producer has issued a host-side wait; consumer may access on any stream.
+    ///
+    /// This is the only valid mode for CPU buffers (`device_tag == 0x00`).
+    /// Wire byte `0x00`.
+    ProducerSynced,
+    /// Producer recorded a device event; consumer must wait on it via the C ABI.
+    ///
+    /// Wire byte `0x01`.
+    Event,
+    /// Consumer declared a target stream; producer ordered it device-side.
+    ///
+    /// Wire byte `0x02`.
+    ConsumerStream,
+}
+
+impl SyncMode {
+    /// Parses a [`SyncMode`] from its one-byte wire representation.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::InvalidSyncMode`] — byte is `0x03`–`0xFF` (reserved or
+    ///   permanently invalid).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::{SyncMode, Error};
+    ///
+    /// assert_eq!(SyncMode::from_byte(0x00).unwrap(), SyncMode::ProducerSynced);
+    /// assert_eq!(SyncMode::from_byte(0x01).unwrap(), SyncMode::Event);
+    /// assert_eq!(SyncMode::from_byte(0x02).unwrap(), SyncMode::ConsumerStream);
+    /// assert!(matches!(SyncMode::from_byte(0x03), Err(Error::InvalidSyncMode(0x03))));
+    /// assert!(matches!(SyncMode::from_byte(0xFE), Err(Error::InvalidSyncMode(0xFE))));
+    /// assert!(matches!(SyncMode::from_byte(0xFF), Err(Error::InvalidSyncMode(0xFF))));
+    /// ```
+    pub fn from_byte(b: u8) -> crate::Result<Self> {
+        match b {
+            0x00 => Ok(Self::ProducerSynced),
+            0x01 => Ok(Self::Event),
+            0x02 => Ok(Self::ConsumerStream),
+            // 0x03–0xFF: all reserved or permanently invalid; reject unconditionally.
+            _ => Err(Error::InvalidSyncMode(b)),
+        }
+    }
+
+    /// Returns the one-byte wire representation of this sync mode.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::SyncMode;
+    ///
+    /// assert_eq!(SyncMode::ProducerSynced.to_byte(), 0x00);
+    /// assert_eq!(SyncMode::Event.to_byte(), 0x01);
+    /// assert_eq!(SyncMode::ConsumerStream.to_byte(), 0x02);
+    /// ```
+    pub fn to_byte(self) -> u8 {
+        match self {
+            Self::ProducerSynced => 0x00,
+            Self::Event => 0x01,
+            Self::ConsumerStream => 0x02,
+        }
+    }
+}
+
+impl fmt::Display for SyncMode {
+    /// Formats the sync mode as a human-readable lowercase string.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::SyncMode;
+    ///
+    /// assert_eq!(SyncMode::ProducerSynced.to_string(), "producer_synced");
+    /// assert_eq!(SyncMode::Event.to_string(), "event");
+    /// assert_eq!(SyncMode::ConsumerStream.to_string(), "consumer_stream");
+    /// ```
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProducerSynced => f.write_str("producer_synced"),
+            Self::Event => f.write_str("event"),
+            Self::ConsumerStream => f.write_str("consumer_stream"),
+        }
+    }
+}
 
 // ── DeviceTag ─────────────────────────────────────────────────────────────────
 
@@ -369,7 +497,7 @@ impl fmt::Display for DeviceTag {
 
 // ── BufferHandle ──────────────────────────────────────────────────────────────
 
-/// A declaration of a buffer's size, alignment, and device location.
+/// A declaration of a buffer's size, alignment, device location, and sync mode.
 ///
 /// A `BufferHandle` is the in-memory representation of the 16-byte buffer
 /// handle entry in the tensor descriptor's buffer table (see
@@ -377,6 +505,16 @@ impl fmt::Display for DeviceTag {
 /// locate and access a buffer but does not itself hold a pointer — the actual
 /// memory address is communicated out-of-band via the interchange protocol or
 /// the C ABI (see `docs/impl/c-ffi.md`).
+///
+/// ## Wire layout (ADR-018 § 3)
+///
+/// | Offset | Field | Type | Size |
+/// |--------|-------|------|------|
+/// | 0 | `byte_size` | uint64 LE | 8 |
+/// | 8 | `alignment` | uint32 LE | 4 |
+/// | 12 | `device_tag` | uint8 | 1 |
+/// | 13 | `sync_mode` | uint8 | 1 |
+/// | 14 | `_reserved` | uint8\[2\] | 2 |
 ///
 /// # Alignment rules
 ///
@@ -392,13 +530,14 @@ impl fmt::Display for DeviceTag {
 /// # Examples
 ///
 /// ```
-/// use hurray_core::{BufferHandle, DeviceTag, MIN_BUFFER_ALIGNMENT};
+/// use hurray_core::{BufferHandle, DeviceTag, SyncMode, MIN_BUFFER_ALIGNMENT};
 ///
 /// // Non-empty CPU buffer, minimum SIMD alignment.
-/// let handle = BufferHandle::new(1024, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+/// let handle = BufferHandle::new(1024, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
 /// assert_eq!(handle.byte_size(), 1024);
 /// assert_eq!(handle.alignment(), 64);
 /// assert_eq!(handle.device_tag(), DeviceTag::Cpu);
+/// assert_eq!(handle.sync_mode(), SyncMode::ProducerSynced);
 /// assert!(!handle.is_empty());
 ///
 /// // Empty buffer — alignment 1 is valid.
@@ -412,41 +551,59 @@ pub struct BufferHandle {
     byte_size: u64,
     alignment: u32,
     device_tag: DeviceTag,
+    sync_mode: SyncMode,
 }
 
 impl BufferHandle {
-    /// Creates a new [`BufferHandle`] with the given size, alignment, and device.
+    /// Creates a new [`BufferHandle`] with the given size, alignment, device, and sync mode.
     ///
     /// # Errors
     ///
     /// - [`Error::AlignmentNotPowerOfTwo`] — `alignment` is not a power of two.
     /// - [`Error::AlignmentBelowMinimum`] — `byte_size > 0` and `alignment` is
     ///   less than [`MIN_BUFFER_ALIGNMENT`] (64).
+    /// - [`Error::InvalidSyncMode`] — `device_tag` is [`DeviceTag::Cpu`] and
+    ///   `sync_mode` is not [`SyncMode::ProducerSynced`] (CPU buffers MUST use
+    ///   `SYNC_PRODUCER_SYNCED` per the spec).
     ///
     /// # Examples
     ///
     /// ```
-    /// use hurray_core::{BufferHandle, DeviceTag, Error, MIN_BUFFER_ALIGNMENT};
+    /// use hurray_core::{BufferHandle, DeviceTag, Error, SyncMode, MIN_BUFFER_ALIGNMENT};
     ///
-    /// // Valid: non-empty buffer with minimum SIMD alignment.
-    /// assert!(BufferHandle::new(512, 64, DeviceTag::Cpu).is_ok());
+    /// // Valid: non-empty CPU buffer with minimum SIMD alignment.
+    /// assert!(BufferHandle::new(512, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).is_ok());
+    ///
+    /// // Valid: CUDA buffer with Event sync.
+    /// assert!(BufferHandle::new(512, 64, DeviceTag::Cuda, SyncMode::Event).is_ok());
     ///
     /// // Valid: empty buffer with alignment 1.
-    /// assert!(BufferHandle::new(0, 1, DeviceTag::Cpu).is_ok());
+    /// assert!(BufferHandle::new(0, 1, DeviceTag::Cpu, SyncMode::ProducerSynced).is_ok());
     ///
     /// // Error: alignment is not a power of two.
     /// assert!(matches!(
-    ///     BufferHandle::new(512, 3, DeviceTag::Cpu),
+    ///     BufferHandle::new(512, 3, DeviceTag::Cpu, SyncMode::ProducerSynced),
     ///     Err(Error::AlignmentNotPowerOfTwo { alignment: 3 })
     /// ));
     ///
     /// // Error: non-empty buffer with alignment below the 64-byte minimum.
     /// assert!(matches!(
-    ///     BufferHandle::new(512, 32, DeviceTag::Cpu),
+    ///     BufferHandle::new(512, 32, DeviceTag::Cpu, SyncMode::ProducerSynced),
     ///     Err(Error::AlignmentBelowMinimum { alignment: 32, minimum: 64 })
     /// ));
+    ///
+    /// // Error: CPU buffer with non-ProducerSynced mode.
+    /// assert!(matches!(
+    ///     BufferHandle::new(512, 64, DeviceTag::Cpu, SyncMode::Event),
+    ///     Err(Error::InvalidSyncMode(0x01))
+    /// ));
     /// ```
-    pub fn new(byte_size: u64, alignment: u32, device_tag: DeviceTag) -> crate::Result<Self> {
+    pub fn new(
+        byte_size: u64,
+        alignment: u32,
+        device_tag: DeviceTag,
+        sync_mode: SyncMode,
+    ) -> crate::Result<Self> {
         if !alignment.is_power_of_two() {
             return Err(Error::AlignmentNotPowerOfTwo { alignment });
         }
@@ -456,34 +613,44 @@ impl BufferHandle {
                 minimum: MIN_BUFFER_ALIGNMENT,
             });
         }
+        // CPU buffers must use ProducerSynced: no device-side sync primitives exist.
+        if device_tag == DeviceTag::Cpu && sync_mode != SyncMode::ProducerSynced {
+            return Err(Error::InvalidSyncMode(sync_mode.to_byte()));
+        }
         Ok(Self {
             byte_size,
             alignment,
             device_tag,
+            sync_mode,
         })
     }
 
     /// Creates an **empty** [`BufferHandle`] (zero bytes) on the given device.
     ///
     /// The alignment is set to `1` — the minimum valid power-of-two for an
-    /// empty buffer. This constructor is infallible.
+    /// empty buffer — and `sync_mode` is always [`SyncMode::ProducerSynced`].
+    /// This constructor is infallible.
     ///
     /// # Examples
     ///
     /// ```
-    /// use hurray_core::{BufferHandle, DeviceTag};
+    /// use hurray_core::{BufferHandle, DeviceTag, SyncMode};
     ///
     /// let handle = BufferHandle::empty(DeviceTag::Cpu);
     /// assert!(handle.is_empty());
     /// assert_eq!(handle.byte_size(), 0);
     /// assert_eq!(handle.alignment(), 1);
     /// assert_eq!(handle.device_tag(), DeviceTag::Cpu);
+    /// assert_eq!(handle.sync_mode(), SyncMode::ProducerSynced);
     /// ```
     pub fn empty(device_tag: DeviceTag) -> Self {
+        // ProducerSynced is the safest universal default: empty buffers carry no
+        // data and no device-side synchronisation is required.
         Self {
             byte_size: 0,
             alignment: 1,
             device_tag,
+            sync_mode: SyncMode::ProducerSynced,
         }
     }
 
@@ -495,9 +662,9 @@ impl BufferHandle {
     /// # Examples
     ///
     /// ```
-    /// use hurray_core::{BufferHandle, DeviceTag};
+    /// use hurray_core::{BufferHandle, DeviceTag, SyncMode};
     ///
-    /// let handle = BufferHandle::new(4096, 4096, DeviceTag::Cuda).unwrap();
+    /// let handle = BufferHandle::new(4096, 4096, DeviceTag::Cuda, SyncMode::Event).unwrap();
     /// assert_eq!(handle.byte_size(), 4096);
     /// ```
     pub fn byte_size(self) -> u64 {
@@ -512,9 +679,9 @@ impl BufferHandle {
     /// # Examples
     ///
     /// ```
-    /// use hurray_core::{BufferHandle, DeviceTag, PAGE_ALIGNMENT};
+    /// use hurray_core::{BufferHandle, DeviceTag, SyncMode, PAGE_ALIGNMENT};
     ///
-    /// let handle = BufferHandle::new(8192, PAGE_ALIGNMENT, DeviceTag::Cuda).unwrap();
+    /// let handle = BufferHandle::new(8192, PAGE_ALIGNMENT, DeviceTag::Cuda, SyncMode::Event).unwrap();
     /// assert_eq!(handle.alignment(), 4096);
     /// ```
     pub fn alignment(self) -> u32 {
@@ -526,13 +693,32 @@ impl BufferHandle {
     /// # Examples
     ///
     /// ```
-    /// use hurray_core::{BufferHandle, DeviceTag};
+    /// use hurray_core::{BufferHandle, DeviceTag, SyncMode};
     ///
-    /// let handle = BufferHandle::new(256, 64, DeviceTag::Metal).unwrap();
+    /// let handle = BufferHandle::new(256, 64, DeviceTag::Metal, SyncMode::Event).unwrap();
     /// assert_eq!(handle.device_tag(), DeviceTag::Metal);
     /// ```
     pub fn device_tag(self) -> DeviceTag {
         self.device_tag
+    }
+
+    /// Returns the [`SyncMode`] describing the producer–consumer ordering guarantee
+    /// for this buffer.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::{BufferHandle, DeviceTag, SyncMode};
+    ///
+    /// let handle = BufferHandle::new(1024, 64, DeviceTag::Cuda, SyncMode::ConsumerStream).unwrap();
+    /// assert_eq!(handle.sync_mode(), SyncMode::ConsumerStream);
+    ///
+    /// // CPU buffers are always ProducerSynced.
+    /// let cpu = BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
+    /// assert_eq!(cpu.sync_mode(), SyncMode::ProducerSynced);
+    /// ```
+    pub fn sync_mode(self) -> SyncMode {
+        self.sync_mode
     }
 
     /// Returns `true` if this buffer has zero bytes (`byte_size == 0`).
@@ -543,10 +729,10 @@ impl BufferHandle {
     /// # Examples
     ///
     /// ```
-    /// use hurray_core::{BufferHandle, DeviceTag};
+    /// use hurray_core::{BufferHandle, DeviceTag, SyncMode};
     ///
     /// assert!(BufferHandle::empty(DeviceTag::Cpu).is_empty());
-    /// assert!(!BufferHandle::new(1, 64, DeviceTag::Cpu).unwrap().is_empty());
+    /// assert!(!BufferHandle::new(1, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap().is_empty());
     /// ```
     pub fn is_empty(self) -> bool {
         self.byte_size == 0
@@ -575,12 +761,12 @@ impl BufferHandle {
 /// # Examples
 ///
 /// ```
-/// use hurray_core::{BufferHandle, DeviceTag, Error, validate_colocation};
+/// use hurray_core::{BufferHandle, DeviceTag, Error, SyncMode, validate_colocation};
 ///
 /// // All handles on CPU — succeeds.
 /// let handles = [
-///     BufferHandle::new(1024, 64, DeviceTag::Cpu).unwrap(),
-///     BufferHandle::new(256, 64, DeviceTag::Cpu).unwrap(),
+///     BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap(),
+///     BufferHandle::new(256, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap(),
 /// ];
 /// assert_eq!(validate_colocation(&handles).unwrap(), DeviceTag::Cpu);
 ///
@@ -589,8 +775,8 @@ impl BufferHandle {
 ///
 /// // Mixed devices — error.
 /// let mixed = [
-///     BufferHandle::new(1024, 64, DeviceTag::Cpu).unwrap(),
-///     BufferHandle::new(256, 64, DeviceTag::Cuda).unwrap(),
+///     BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap(),
+///     BufferHandle::new(256, 64, DeviceTag::Cuda, SyncMode::ProducerSynced).unwrap(),
 /// ];
 /// assert!(matches!(
 ///     validate_colocation(&mixed),
@@ -864,14 +1050,14 @@ mod tests {
     /// alignment (64) on CPU is valid.
     #[test]
     fn new_nonempty_cpu_min_alignment() {
-        let result = BufferHandle::new(1024, 64, DeviceTag::Cpu);
+        let result = BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::ProducerSynced);
         assert!(result.is_ok());
     }
 
     /// A non-empty CUDA buffer at page alignment is valid.
     #[test]
     fn new_nonempty_cuda_page_alignment() {
-        let result = BufferHandle::new(4096, 4096, DeviceTag::Cuda);
+        let result = BufferHandle::new(4096, 4096, DeviceTag::Cuda, SyncMode::Event);
         assert!(result.is_ok());
     }
 
@@ -879,14 +1065,14 @@ mod tests {
     /// may have any power-of-two alignment, including 1.
     #[test]
     fn new_empty_alignment_1_is_valid() {
-        let result = BufferHandle::new(0, 1, DeviceTag::Cpu);
+        let result = BufferHandle::new(0, 1, DeviceTag::Cpu, SyncMode::ProducerSynced);
         assert!(result.is_ok());
     }
 
     /// An empty buffer with the SIMD minimum alignment is also valid.
     #[test]
     fn new_empty_alignment_64_is_valid() {
-        let result = BufferHandle::new(0, 64, DeviceTag::Cpu);
+        let result = BufferHandle::new(0, 64, DeviceTag::Cpu, SyncMode::ProducerSynced);
         assert!(result.is_ok());
     }
 
@@ -896,7 +1082,7 @@ mod tests {
     #[test]
     fn new_alignment_zero_not_power_of_two() {
         assert!(matches!(
-            BufferHandle::new(1024, 0, DeviceTag::Cpu),
+            BufferHandle::new(1024, 0, DeviceTag::Cpu, SyncMode::ProducerSynced),
             Err(Error::AlignmentNotPowerOfTwo { alignment: 0 })
         ));
     }
@@ -905,7 +1091,7 @@ mod tests {
     #[test]
     fn new_alignment_63_not_power_of_two() {
         assert!(matches!(
-            BufferHandle::new(1024, 63, DeviceTag::Cpu),
+            BufferHandle::new(1024, 63, DeviceTag::Cpu, SyncMode::ProducerSynced),
             Err(Error::AlignmentNotPowerOfTwo { alignment: 63 })
         ));
     }
@@ -914,7 +1100,7 @@ mod tests {
     #[test]
     fn new_alignment_100_not_power_of_two() {
         assert!(matches!(
-            BufferHandle::new(1024, 100, DeviceTag::Cpu),
+            BufferHandle::new(1024, 100, DeviceTag::Cpu, SyncMode::ProducerSynced),
             Err(Error::AlignmentNotPowerOfTwo { alignment: 100 })
         ));
     }
@@ -924,7 +1110,7 @@ mod tests {
     #[test]
     fn new_nonempty_alignment_below_minimum_32() {
         assert!(matches!(
-            BufferHandle::new(1, 32, DeviceTag::Cpu),
+            BufferHandle::new(1, 32, DeviceTag::Cpu, SyncMode::ProducerSynced),
             Err(Error::AlignmentBelowMinimum {
                 alignment: 32,
                 minimum: 64
@@ -937,11 +1123,29 @@ mod tests {
     #[test]
     fn new_nonempty_alignment_below_minimum_1() {
         assert!(matches!(
-            BufferHandle::new(1, 1, DeviceTag::Cpu),
+            BufferHandle::new(1, 1, DeviceTag::Cpu, SyncMode::ProducerSynced),
             Err(Error::AlignmentBelowMinimum {
                 alignment: 1,
                 minimum: 64
             })
+        ));
+    }
+
+    /// ADR-018: CPU buffer with non-ProducerSynced mode must return InvalidSyncMode.
+    #[test]
+    fn new_cpu_with_event_sync_rejected() {
+        assert!(matches!(
+            BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::Event),
+            Err(Error::InvalidSyncMode(0x01))
+        ));
+    }
+
+    /// ADR-018: CPU buffer with ConsumerStream must return InvalidSyncMode.
+    #[test]
+    fn new_cpu_with_consumer_stream_rejected() {
+        assert!(matches!(
+            BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::ConsumerStream),
+            Err(Error::InvalidSyncMode(0x02))
         ));
     }
 
@@ -988,35 +1192,53 @@ mod tests {
 
     // ── BufferHandle accessors ───────────────────────────────────────────────
 
-    /// byte_size(), alignment(), device_tag(), and is_empty() must return the
-    /// values that were passed to new().
+    /// byte_size(), alignment(), device_tag(), sync_mode(), and is_empty() must
+    /// return the values that were passed to new().
     #[test]
     fn accessors_byte_size() {
-        let handle = BufferHandle::new(8192, 4096, DeviceTag::Cuda).unwrap();
+        let handle = BufferHandle::new(8192, 4096, DeviceTag::Cuda, SyncMode::Event).unwrap();
         assert_eq!(handle.byte_size(), 8192);
     }
 
     #[test]
     fn accessors_alignment() {
-        let handle = BufferHandle::new(256, 256, DeviceTag::Metal).unwrap();
+        let handle = BufferHandle::new(256, 256, DeviceTag::Metal, SyncMode::Event).unwrap();
         assert_eq!(handle.alignment(), 256);
     }
 
     #[test]
     fn accessors_device_tag() {
-        let handle = BufferHandle::new(512, 64, DeviceTag::Rocm).unwrap();
+        let handle = BufferHandle::new(512, 64, DeviceTag::Rocm, SyncMode::ConsumerStream).unwrap();
         assert_eq!(handle.device_tag(), DeviceTag::Rocm);
     }
 
     #[test]
+    fn accessors_sync_mode_producer_synced() {
+        let handle = BufferHandle::new(512, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
+        assert_eq!(handle.sync_mode(), SyncMode::ProducerSynced);
+    }
+
+    #[test]
+    fn accessors_sync_mode_event() {
+        let handle = BufferHandle::new(512, 64, DeviceTag::Cuda, SyncMode::Event).unwrap();
+        assert_eq!(handle.sync_mode(), SyncMode::Event);
+    }
+
+    #[test]
+    fn accessors_sync_mode_consumer_stream() {
+        let handle = BufferHandle::new(512, 64, DeviceTag::Cuda, SyncMode::ConsumerStream).unwrap();
+        assert_eq!(handle.sync_mode(), SyncMode::ConsumerStream);
+    }
+
+    #[test]
     fn accessors_is_empty_false_for_nonempty() {
-        let handle = BufferHandle::new(1, 64, DeviceTag::Cpu).unwrap();
+        let handle = BufferHandle::new(1, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
         assert!(!handle.is_empty());
     }
 
     #[test]
     fn accessors_is_empty_true_for_zero_size() {
-        let handle = BufferHandle::new(0, 1, DeviceTag::Cpu).unwrap();
+        let handle = BufferHandle::new(0, 1, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
         assert!(handle.is_empty());
     }
 
@@ -1034,7 +1256,7 @@ mod tests {
     /// Single-element slice must succeed and return the handle's device tag.
     #[test]
     fn colocation_single_handle_returns_its_tag() {
-        let handle = BufferHandle::new(1024, 64, DeviceTag::Cpu).unwrap();
+        let handle = BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
         let result = validate_colocation(&[handle]);
         assert_eq!(result.unwrap(), DeviceTag::Cpu);
     }
@@ -1043,9 +1265,9 @@ mod tests {
     #[test]
     fn colocation_all_cpu_three_handles() {
         let handles = [
-            BufferHandle::new(1024, 64, DeviceTag::Cpu).unwrap(),
-            BufferHandle::new(512, 64, DeviceTag::Cpu).unwrap(),
-            BufferHandle::new(256, 64, DeviceTag::Cpu).unwrap(),
+            BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap(),
+            BufferHandle::new(512, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap(),
+            BufferHandle::new(256, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap(),
         ];
         assert_eq!(validate_colocation(&handles).unwrap(), DeviceTag::Cpu);
     }
@@ -1054,8 +1276,8 @@ mod tests {
     #[test]
     fn colocation_mixed_cpu_cuda_returns_mismatch() {
         let handles = [
-            BufferHandle::new(1024, 64, DeviceTag::Cpu).unwrap(),
-            BufferHandle::new(256, 64, DeviceTag::Cuda).unwrap(),
+            BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap(),
+            BufferHandle::new(256, 64, DeviceTag::Cuda, SyncMode::ProducerSynced).unwrap(),
         ];
         assert!(matches!(
             validate_colocation(&handles),
@@ -1071,8 +1293,8 @@ mod tests {
     fn colocation_all_private_same_tag() {
         let private = DeviceTag::from_byte(0xF0).unwrap();
         let handles = [
-            BufferHandle::new(1024, 64, private).unwrap(),
-            BufferHandle::new(512, 64, private).unwrap(),
+            BufferHandle::new(1024, 64, private, SyncMode::ProducerSynced).unwrap(),
+            BufferHandle::new(512, 64, private, SyncMode::ProducerSynced).unwrap(),
         ];
         assert_eq!(validate_colocation(&handles).unwrap(), private);
     }
@@ -1082,8 +1304,8 @@ mod tests {
     fn colocation_named_and_private_returns_mismatch() {
         let private = DeviceTag::from_byte(0xF0).unwrap();
         let handles = [
-            BufferHandle::new(1024, 64, DeviceTag::Cpu).unwrap(),
-            BufferHandle::new(512, 64, private).unwrap(),
+            BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap(),
+            BufferHandle::new(512, 64, private, SyncMode::ProducerSynced).unwrap(),
         ];
         assert!(matches!(
             validate_colocation(&handles),
@@ -1099,9 +1321,9 @@ mod tests {
     #[test]
     fn colocation_mismatch_at_third_element() {
         let handles = [
-            BufferHandle::new(1024, 64, DeviceTag::Cuda).unwrap(),
-            BufferHandle::new(512, 64, DeviceTag::Cuda).unwrap(),
-            BufferHandle::new(256, 64, DeviceTag::Metal).unwrap(),
+            BufferHandle::new(1024, 64, DeviceTag::Cuda, SyncMode::Event).unwrap(),
+            BufferHandle::new(512, 64, DeviceTag::Cuda, SyncMode::Event).unwrap(),
+            BufferHandle::new(256, 64, DeviceTag::Metal, SyncMode::Event).unwrap(),
         ];
         assert!(matches!(
             validate_colocation(&handles),
@@ -1110,5 +1332,524 @@ mod tests {
                 found: 0x03
             })
         ));
+    }
+
+    // ── SyncMode ──────────────────────────────────────────────────────────────
+
+    mod sync_mode {
+        use super::*;
+        use std::collections::HashSet;
+
+        // ── from_byte — named values ─────────────────────────────────────────
+
+        /// Spec § buffer-protocol.md Sync Mode: 0x00 decodes to ProducerSynced.
+        #[test]
+        fn from_byte_producer_synced() {
+            assert_eq!(SyncMode::from_byte(0x00).unwrap(), SyncMode::ProducerSynced);
+        }
+
+        /// Spec § buffer-protocol.md Sync Mode: 0x01 decodes to Event.
+        #[test]
+        fn from_byte_event() {
+            assert_eq!(SyncMode::from_byte(0x01).unwrap(), SyncMode::Event);
+        }
+
+        /// Spec § buffer-protocol.md Sync Mode: 0x02 decodes to ConsumerStream.
+        #[test]
+        fn from_byte_consumer_stream() {
+            assert_eq!(SyncMode::from_byte(0x02).unwrap(), SyncMode::ConsumerStream);
+        }
+
+        // ── from_byte — reserved / invalid bytes ─────────────────────────────
+
+        /// Spec § buffer-protocol.md Sync Mode: 0x03 (first reserved) must
+        /// return InvalidSyncMode(0x03).
+        #[test]
+        fn from_byte_0x03_is_invalid() {
+            assert!(matches!(
+                SyncMode::from_byte(0x03),
+                Err(Error::InvalidSyncMode(0x03))
+            ));
+        }
+
+        /// Spec § buffer-protocol.md Sync Mode: 0xFE (reserved) must return
+        /// InvalidSyncMode(0xFE).
+        #[test]
+        fn from_byte_0xfe_is_invalid() {
+            assert!(matches!(
+                SyncMode::from_byte(0xFE),
+                Err(Error::InvalidSyncMode(0xFE))
+            ));
+        }
+
+        /// Spec § buffer-protocol.md Sync Mode: 0xFF (reserved) must return
+        /// InvalidSyncMode(0xFF).
+        #[test]
+        fn from_byte_0xff_is_invalid() {
+            assert!(matches!(
+                SyncMode::from_byte(0xFF),
+                Err(Error::InvalidSyncMode(0xFF))
+            ));
+        }
+
+        // ── to_byte — wire byte values ────────────────────────────────────────
+
+        /// ProducerSynced serializes to wire byte 0x00.
+        #[test]
+        fn to_byte_producer_synced() {
+            assert_eq!(SyncMode::ProducerSynced.to_byte(), 0x00);
+        }
+
+        /// Event serializes to wire byte 0x01.
+        #[test]
+        fn to_byte_event() {
+            assert_eq!(SyncMode::Event.to_byte(), 0x01);
+        }
+
+        /// ConsumerStream serializes to wire byte 0x02.
+        #[test]
+        fn to_byte_consumer_stream() {
+            assert_eq!(SyncMode::ConsumerStream.to_byte(), 0x02);
+        }
+
+        // ── from_byte → to_byte identity ─────────────────────────────────────
+
+        /// For each named value, from_byte(m.to_byte()) == m.
+        #[test]
+        fn from_byte_to_byte_identity_producer_synced() {
+            let m = SyncMode::ProducerSynced;
+            assert_eq!(SyncMode::from_byte(m.to_byte()).unwrap(), m);
+        }
+
+        #[test]
+        fn from_byte_to_byte_identity_event() {
+            let m = SyncMode::Event;
+            assert_eq!(SyncMode::from_byte(m.to_byte()).unwrap(), m);
+        }
+
+        #[test]
+        fn from_byte_to_byte_identity_consumer_stream() {
+            let m = SyncMode::ConsumerStream;
+            assert_eq!(SyncMode::from_byte(m.to_byte()).unwrap(), m);
+        }
+
+        // ── Display ───────────────────────────────────────────────────────────
+
+        /// Spec § buffer-protocol.md Display: ProducerSynced displays as
+        /// "producer_synced".
+        #[test]
+        fn display_producer_synced() {
+            assert_eq!(SyncMode::ProducerSynced.to_string(), "producer_synced");
+        }
+
+        /// Event displays as "event".
+        #[test]
+        fn display_event() {
+            assert_eq!(SyncMode::Event.to_string(), "event");
+        }
+
+        /// ConsumerStream displays as "consumer_stream".
+        #[test]
+        fn display_consumer_stream() {
+            assert_eq!(SyncMode::ConsumerStream.to_string(), "consumer_stream");
+        }
+
+        // ── Clone, Copy, PartialEq, Eq, Hash smoke tests ─────────────────────
+
+        /// Clone produces an equal value for each variant.
+        #[test]
+        fn clone_equals_original() {
+            for m in [
+                SyncMode::ProducerSynced,
+                SyncMode::Event,
+                SyncMode::ConsumerStream,
+            ] {
+                assert_eq!(m, m.clone());
+            }
+        }
+
+        /// Copy: assigning to a new binding leaves the original usable (Copy
+        /// semantics verified by using both after the assignment).
+        #[test]
+        fn copy_semantics() {
+            let original = SyncMode::Event;
+            let copied = original;
+            assert_eq!(original, copied);
+        }
+
+        /// PartialEq: distinct variants are not equal.
+        #[test]
+        fn partial_eq_distinct_variants() {
+            assert_ne!(SyncMode::ProducerSynced, SyncMode::Event);
+            assert_ne!(SyncMode::ProducerSynced, SyncMode::ConsumerStream);
+            assert_ne!(SyncMode::Event, SyncMode::ConsumerStream);
+        }
+
+        /// Hash: all three variants produce distinct hashes (smoke test — hash
+        /// collisions are possible in theory but the stdlib hasher avoids them
+        /// for small integers).
+        #[test]
+        fn hash_all_variants_distinct() {
+            let set: HashSet<SyncMode> = [
+                SyncMode::ProducerSynced,
+                SyncMode::Event,
+                SyncMode::ConsumerStream,
+            ]
+            .into_iter()
+            .collect();
+            assert_eq!(set.len(), 3);
+        }
+    }
+
+    // ── DeviceTag new variants (ADR-016) ──────────────────────────────────────
+
+    mod device_tag_new_variants {
+        use super::*;
+
+        // ── Vulkan (0x04) ────────────────────────────────────────────────────
+
+        /// ADR-016: 0x04 decodes to Vulkan.
+        #[test]
+        fn vulkan_from_byte() {
+            assert_eq!(DeviceTag::from_byte(0x04).unwrap(), DeviceTag::Vulkan);
+        }
+
+        /// Vulkan serializes to wire byte 0x04.
+        #[test]
+        fn vulkan_to_byte() {
+            assert_eq!(DeviceTag::Vulkan.to_byte(), 0x04);
+        }
+
+        /// from_byte(0x04) → to_byte() == 0x04.
+        #[test]
+        fn vulkan_round_trip() {
+            let tag = DeviceTag::from_byte(0x04).unwrap();
+            assert_eq!(tag.to_byte(), 0x04);
+        }
+
+        /// Vulkan displays as "vulkan".
+        #[test]
+        fn vulkan_display() {
+            assert_eq!(DeviceTag::Vulkan.to_string(), "vulkan");
+        }
+
+        /// Vulkan is not a private tag.
+        #[test]
+        fn vulkan_is_not_private() {
+            assert!(!DeviceTag::Vulkan.is_private());
+        }
+
+        // ── WebGpu (0x05) ────────────────────────────────────────────────────
+
+        /// ADR-016: 0x05 decodes to WebGpu.
+        #[test]
+        fn webgpu_from_byte() {
+            assert_eq!(DeviceTag::from_byte(0x05).unwrap(), DeviceTag::WebGpu);
+        }
+
+        /// WebGpu serializes to wire byte 0x05.
+        #[test]
+        fn webgpu_to_byte() {
+            assert_eq!(DeviceTag::WebGpu.to_byte(), 0x05);
+        }
+
+        /// from_byte(0x05) → to_byte() == 0x05.
+        #[test]
+        fn webgpu_round_trip() {
+            let tag = DeviceTag::from_byte(0x05).unwrap();
+            assert_eq!(tag.to_byte(), 0x05);
+        }
+
+        /// WebGpu displays as "webgpu".
+        #[test]
+        fn webgpu_display() {
+            assert_eq!(DeviceTag::WebGpu.to_string(), "webgpu");
+        }
+
+        /// WebGpu is not a private tag.
+        #[test]
+        fn webgpu_is_not_private() {
+            assert!(!DeviceTag::WebGpu.is_private());
+        }
+
+        // ── Hexagon (0x06) ───────────────────────────────────────────────────
+
+        /// ADR-016: 0x06 decodes to Hexagon.
+        #[test]
+        fn hexagon_from_byte() {
+            assert_eq!(DeviceTag::from_byte(0x06).unwrap(), DeviceTag::Hexagon);
+        }
+
+        /// Hexagon serializes to wire byte 0x06.
+        #[test]
+        fn hexagon_to_byte() {
+            assert_eq!(DeviceTag::Hexagon.to_byte(), 0x06);
+        }
+
+        /// from_byte(0x06) → to_byte() == 0x06.
+        #[test]
+        fn hexagon_round_trip() {
+            let tag = DeviceTag::from_byte(0x06).unwrap();
+            assert_eq!(tag.to_byte(), 0x06);
+        }
+
+        /// Hexagon displays as "hexagon".
+        #[test]
+        fn hexagon_display() {
+            assert_eq!(DeviceTag::Hexagon.to_string(), "hexagon");
+        }
+
+        /// Hexagon is not a private tag.
+        #[test]
+        fn hexagon_is_not_private() {
+            assert!(!DeviceTag::Hexagon.is_private());
+        }
+
+        // ── LevelZero (0x07) ─────────────────────────────────────────────────
+
+        /// ADR-016: 0x07 decodes to LevelZero.
+        #[test]
+        fn level_zero_from_byte() {
+            assert_eq!(DeviceTag::from_byte(0x07).unwrap(), DeviceTag::LevelZero);
+        }
+
+        /// LevelZero serializes to wire byte 0x07.
+        #[test]
+        fn level_zero_to_byte() {
+            assert_eq!(DeviceTag::LevelZero.to_byte(), 0x07);
+        }
+
+        /// from_byte(0x07) → to_byte() == 0x07.
+        #[test]
+        fn level_zero_round_trip() {
+            let tag = DeviceTag::from_byte(0x07).unwrap();
+            assert_eq!(tag.to_byte(), 0x07);
+        }
+
+        /// LevelZero displays as "level_zero".
+        #[test]
+        fn level_zero_display() {
+            assert_eq!(DeviceTag::LevelZero.to_string(), "level_zero");
+        }
+
+        /// LevelZero is not a private tag.
+        #[test]
+        fn level_zero_is_not_private() {
+            assert!(!DeviceTag::LevelZero.is_private());
+        }
+
+        // ── OpenCl (0x08) ────────────────────────────────────────────────────
+
+        /// ADR-016: 0x08 decodes to OpenCl.
+        #[test]
+        fn opencl_from_byte() {
+            assert_eq!(DeviceTag::from_byte(0x08).unwrap(), DeviceTag::OpenCl);
+        }
+
+        /// OpenCl serializes to wire byte 0x08.
+        #[test]
+        fn opencl_to_byte() {
+            assert_eq!(DeviceTag::OpenCl.to_byte(), 0x08);
+        }
+
+        /// from_byte(0x08) → to_byte() == 0x08.
+        #[test]
+        fn opencl_round_trip() {
+            let tag = DeviceTag::from_byte(0x08).unwrap();
+            assert_eq!(tag.to_byte(), 0x08);
+        }
+
+        /// OpenCl displays as "opencl".
+        #[test]
+        fn opencl_display() {
+            assert_eq!(DeviceTag::OpenCl.to_string(), "opencl");
+        }
+
+        /// OpenCl is not a private tag.
+        #[test]
+        fn opencl_is_not_private() {
+            assert!(!DeviceTag::OpenCl.is_private());
+        }
+
+        // ── Edge cases ───────────────────────────────────────────────────────
+
+        /// 0x08 is the last named tag; it must succeed.
+        #[test]
+        fn from_byte_0x08_is_last_named_tag() {
+            assert!(DeviceTag::from_byte(0x08).is_ok());
+        }
+
+        /// 0x09 is the first reserved byte after the new range; must return
+        /// ReservedDeviceTag(0x09).
+        #[test]
+        fn from_byte_0x09_is_first_reserved_after_new_range() {
+            assert!(matches!(
+                DeviceTag::from_byte(0x09),
+                Err(Error::ReservedDeviceTag(0x09))
+            ));
+        }
+
+        /// The full new range 0x04–0x08 all round-trip cleanly.
+        #[test]
+        fn round_trip_new_range_all_bytes() {
+            for b in 0x04u8..=0x08 {
+                let tag = DeviceTag::from_byte(b)
+                    .unwrap_or_else(|e| panic!("from_byte(0x{b:02X}) failed: {e}"));
+                assert_eq!(tag.to_byte(), b, "round-trip failed for byte 0x{b:02X}");
+            }
+        }
+    }
+
+    // ── BufferHandle + SyncMode integration ───────────────────────────────────
+
+    mod buffer_handle_sync_mode {
+        use super::*;
+        use crate::descriptor::TensorDescriptor;
+        use crate::layout::LayoutDescriptor;
+        use crate::{ElementType, Shape, MIN_BUFFER_ALIGNMENT};
+
+        // ── Non-CPU buffers accept Event and ConsumerStream ───────────────────
+
+        /// A non-CPU buffer with SyncMode::Event must be accepted and the
+        /// sync_mode() accessor must return Event.
+        #[test]
+        fn new_with_event_sync_non_cpu_buffer() {
+            let handle =
+                BufferHandle::new(512, MIN_BUFFER_ALIGNMENT, DeviceTag::Cuda, SyncMode::Event)
+                    .unwrap();
+            assert_eq!(handle.sync_mode(), SyncMode::Event);
+            assert_eq!(handle.device_tag(), DeviceTag::Cuda);
+        }
+
+        /// A non-CPU buffer with SyncMode::ConsumerStream must be accepted and
+        /// the sync_mode() accessor must return ConsumerStream.
+        #[test]
+        fn new_with_consumer_stream_sync_non_cpu_buffer() {
+            let handle = BufferHandle::new(
+                512,
+                MIN_BUFFER_ALIGNMENT,
+                DeviceTag::Rocm,
+                SyncMode::ConsumerStream,
+            )
+            .unwrap();
+            assert_eq!(handle.sync_mode(), SyncMode::ConsumerStream);
+            assert_eq!(handle.device_tag(), DeviceTag::Rocm);
+        }
+
+        // ── CPU buffers must reject non-ProducerSynced modes ─────────────────
+
+        /// ADR-018: CPU buffer with SyncMode::Event must be rejected with
+        /// InvalidSyncMode(0x01).
+        #[test]
+        fn new_cpu_rejects_event() {
+            let result =
+                BufferHandle::new(512, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::Event);
+            assert!(matches!(result, Err(Error::InvalidSyncMode(0x01))));
+        }
+
+        /// ADR-018: CPU buffer with SyncMode::ConsumerStream must be rejected
+        /// with InvalidSyncMode(0x02).
+        #[test]
+        fn new_cpu_rejects_consumer_stream() {
+            let result = BufferHandle::new(
+                512,
+                MIN_BUFFER_ALIGNMENT,
+                DeviceTag::Cpu,
+                SyncMode::ConsumerStream,
+            );
+            assert!(matches!(result, Err(Error::InvalidSyncMode(0x02))));
+        }
+
+        /// ADR-018: CPU buffer with SyncMode::ProducerSynced must succeed.
+        #[test]
+        fn new_cpu_allows_producer_synced() {
+            let result = BufferHandle::new(
+                512,
+                MIN_BUFFER_ALIGNMENT,
+                DeviceTag::Cpu,
+                SyncMode::ProducerSynced,
+            );
+            assert!(result.is_ok());
+        }
+
+        // ── BufferHandle::empty always uses ProducerSynced ────────────────────
+
+        /// BufferHandle::empty always sets sync_mode to ProducerSynced,
+        /// even for non-CPU devices.
+        #[test]
+        fn empty_has_producer_synced() {
+            assert_eq!(
+                BufferHandle::empty(DeviceTag::Cuda).sync_mode(),
+                SyncMode::ProducerSynced
+            );
+        }
+
+        // ── encode/decode round-trip preserves sync_mode ─────────────────────
+
+        /// A TensorDescriptor containing a buffer with SyncMode::Event must
+        /// survive encode → decode with sync_mode unchanged.
+        #[test]
+        fn encode_decode_preserves_sync_mode_event() {
+            let shape = Shape::new(vec![4u64]).unwrap();
+            let buffer =
+                BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cuda, SyncMode::Event)
+                    .unwrap();
+            let desc = TensorDescriptor::new(
+                1,
+                0,
+                ElementType::Float32,
+                shape,
+                0,
+                LayoutDescriptor::RowMajor,
+                vec![buffer],
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let encoded = desc.encode().unwrap();
+            let decoded = TensorDescriptor::decode(&encoded).unwrap();
+
+            assert_eq!(decoded.buffers[0].sync_mode(), SyncMode::Event);
+            assert_eq!(decoded.buffers[0].device_tag(), DeviceTag::Cuda);
+            assert_eq!(decoded, desc);
+        }
+
+        /// A TensorDescriptor containing a buffer with SyncMode::ConsumerStream
+        /// must survive encode → decode with sync_mode unchanged.
+        #[test]
+        fn encode_decode_preserves_sync_mode_consumer_stream() {
+            let shape = Shape::new(vec![8u64]).unwrap();
+            let buffer = BufferHandle::new(
+                128,
+                MIN_BUFFER_ALIGNMENT,
+                DeviceTag::Vulkan,
+                SyncMode::ConsumerStream,
+            )
+            .unwrap();
+            let desc = TensorDescriptor::new(
+                1,
+                0,
+                ElementType::Float32,
+                shape,
+                0,
+                LayoutDescriptor::RowMajor,
+                vec![buffer],
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let encoded = desc.encode().unwrap();
+            let decoded = TensorDescriptor::decode(&encoded).unwrap();
+
+            assert_eq!(decoded.buffers[0].sync_mode(), SyncMode::ConsumerStream);
+            assert_eq!(decoded.buffers[0].device_tag(), DeviceTag::Vulkan);
+            assert_eq!(decoded, desc);
+        }
     }
 }

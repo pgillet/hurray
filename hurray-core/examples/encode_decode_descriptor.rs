@@ -16,7 +16,7 @@
 use hurray_core::{
     descriptor::{ShardDescriptor, Statistics, StatisticsMask, TensorDescriptor},
     layout::LayoutDescriptor,
-    BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
 };
 
 fn hex_dump(label: &str, bytes: &[u8]) {
@@ -51,7 +51,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shape = Shape::new(vec![3u64, 4]).unwrap();
     // 192 = 3×64 bytes — the spec's worked example allocation (one cache line per row).
     // The tensor data needs only 48 bytes; byte_size may exceed the data footprint.
-    let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu)?;
+    let buffer = BufferHandle::new(
+        192,
+        MIN_BUFFER_ALIGNMENT,
+        DeviceTag::Cpu,
+        SyncMode::ProducerSynced,
+    )?;
     let desc = TensorDescriptor::new(
         1,
         0,
@@ -77,7 +82,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ── Example 2: float16 [8, 8] col-major with statistics ──────────────────
 
     let shape2 = Shape::new(vec![8u64, 8]).unwrap();
-    let buf2 = BufferHandle::new(128, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu)?;
+    let buf2 = BufferHandle::new(
+        128,
+        MIN_BUFFER_ALIGNMENT,
+        DeviceTag::Cpu,
+        SyncMode::ProducerSynced,
+    )?;
 
     // Advisory statistics — value range is always valid here.
     let stats = Statistics {
@@ -133,7 +143,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let shape3 = Shape::new(vec![1024u64, 1024]).unwrap();
     // int4: 1024 × 1024 elements = 1,048,576 values packed into 524,288 bytes.
-    let buf3 = BufferHandle::new(524_288, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu)?;
+    let buf3 = BufferHandle::new(
+        524_288,
+        MIN_BUFFER_ALIGNMENT,
+        DeviceTag::Cpu,
+        SyncMode::ProducerSynced,
+    )?;
 
     // This shard covers rows 2048..3071 of the full 4096-row parent.
     let shard = ShardDescriptor::new(

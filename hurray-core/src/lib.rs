@@ -21,7 +21,8 @@ pub mod quantization;
 pub mod shape;
 
 pub use buffer::{
-    validate_colocation, BufferHandle, DeviceTag, PrivateTag, MIN_BUFFER_ALIGNMENT, PAGE_ALIGNMENT,
+    validate_colocation, BufferHandle, DeviceTag, PrivateTag, SyncMode, MIN_BUFFER_ALIGNMENT,
+    PAGE_ALIGNMENT,
 };
 pub use descriptor::{
     DescriptorFlags, ExtensionTypeDescriptor, ShardDescriptor, Statistics, StatisticsMask,
