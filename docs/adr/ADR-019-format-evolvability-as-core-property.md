@@ -6,7 +6,7 @@ Proposed
 
 ## Context
 
-ADR-017 named **extensibility** as a core property of Hurray and codified the stable extension surface (reserved tag ranges, private ranges, reserved flag bits, length-prefixed sections, permissive-mode parsing, independent version axes, spec-amendment process). It deliberately did not address the related-but-distinct property of **evolvability**: the rules that govern how the format changes over time and what compatibility a reader at minor `M` can expect when reading data written at minor `N`.
+ADR-017 named **extensibility** as a core property of Hurray and codified the stable extension surface (reserved tag ranges, private ranges, reserved flag bits, length-prefixed sections, permissive-mode parsing, independent version axes, spec-amendment process). Extensibility — also called **evolvability**, modifiability, or plasticity depending on the literature — is the single property of a format that makes it easy for engineers to change it in the future, adapting it for unanticipated use cases as requirements change. ADR-017 defined the extension *surface*; it did not formally specify the operational *rules* for using that surface: how backward and forward compatibility are achieved, what a reader is obliged to do when it meets data written by a newer minor version, how tags are added, and how an enum variant is safely deprecated and removed.
 
 The mechanics required for safe evolution are largely already in place:
 
@@ -39,7 +39,7 @@ This ADR closes the seven gaps above by naming the compatibility direction, adop
 
 ## Decision
 
-Hurray adopts **format evolvability** as a named core property. The property is defined by four compatibility direction declarations, two normative writer rules, two normative reader rules, six normative spec-amendment rules, and an explicit rejection of per-field tagging and vtables.
+Hurray formally specifies the operational rules for its extensibility property. **Format evolvability** — the same concept as extensibility, modifiability, or plasticity — is codified as Core Property #12: the normative contract that defines how the extension surface (Core Property #11) is used safely over time. The contract is defined by four compatibility direction declarations, two normative writer rules, two normative reader rules, six normative spec-amendment rules, and an explicit rejection of per-field tagging and vtables.
 
 ### CD — Compatibility direction (named and bounded)
 
@@ -93,11 +93,13 @@ Hurray's evolvability surface is the **flag-bit + length-prefix** model:
 
 ### New Core Property #12
 
+Core Property #11 (Extensibility, ADR-017) names the *surface* — the tag ranges, flag bits, and length-prefixed sections that allow the format to grow. Core Property #12 names the *rules* — the normative contract that governs how that surface is used safely over time. Together they form one continuous property; the split is editorial, not conceptual.
+
 The following paragraph is added to `README.md` after Core Property 11 (Array Database Foundation):
 
-> #### 12. Format Evolvability
+> #### 12. Format Evolvability (Operational Rules for Extensibility)
 >
-> Hurray defines normative rules for how the format itself evolves. Within major version `1.x`, the format is BACKWARD-compatible (a reader at minor `M` parses any minor `N ≤ M` correctly) and FORWARD_ADDITIVE (a reader at minor `M` correctly parses every part of newer-minor data that its own minor defines, ignores additive trailing bytes inside known length-prefixed sections, and rejects newer-minor data that uses an unknown flag bit or unknown public tag value). Public tag values are never rebound once allocated; deprecated tags retain their original semantics. A future major version is accompanied by a normative migration specification. Per-field tagging (Protobuf) and vtables (FlatBuffers) are explicitly rejected: they are incompatible with Hurray's zero-copy fixed-offset access model. See [`versioning.md`](versioning.md) § Evolvability Contract for the full normative definition.
+> Hurray defines normative rules for how the format changes over time, formally specifying how the extension surface from Core Property #11 is used in practice. Within major version `1.x`, the format is BACKWARD-compatible (a reader at minor `M` parses any minor `N ≤ M` correctly) and FORWARD_ADDITIVE (a reader at minor `M` correctly parses every part of newer-minor data that its own minor defines, ignores additive trailing bytes inside known length-prefixed sections, and rejects newer-minor data that uses an unknown flag bit or unknown public tag value). Public tag values are never rebound once allocated; deprecated tags retain their original semantics. A future major version is accompanied by a normative migration specification. Per-field tagging (Protobuf) and vtables (FlatBuffers) are explicitly rejected: they are incompatible with Hurray's zero-copy fixed-offset access model. See [`versioning.md`](versioning.md) § Evolvability Contract for the full normative definition.
 
 ## Alternatives Considered
 
