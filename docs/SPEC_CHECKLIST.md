@@ -2,7 +2,7 @@
 
 This checklist is applied to every new or modified section of the Hurray format specification. Items that do not apply to a given section should be noted as N/A with a brief justification.
 
-The 13 categories correspond directly to the 11 Core Properties defined in `README.md`, plus two cross-cutting quality checks. Core Property 3 (Streamable by Design) applies differently to the streaming format and the file format; the checklist items below are labelled accordingly.
+The 14 categories correspond directly to the 12 Core Properties defined in `README.md`, plus two cross-cutting quality checks. Core Property 3 (Streamable by Design) applies differently to the streaming format and the file format; the checklist items below are labelled accordingly.
 
 ---
 
@@ -104,14 +104,24 @@ The 13 categories correspond directly to the 11 Core Properties defined in `READ
 - [ ] If new metadata fields are introduced, could they carry dimension domain or coordinate information relevant to an array database (e.g., axis labels, tile extents, dimension ranges)?
 - [ ] Is the section compatible with a SQL/MDA query engine (ISO 9075-15) consuming Hurray buffers? In particular: can query results be handed off to an ML inference pipeline without copying, and can quantized types be treated as first-class column types?
 
-## 12. RFC 2119 Correctness
+## 12. Format Evolvability
+*(Core Property 12 — see `versioning.md` § Evolvability Contract)*
+
+- [ ] If this amendment appends a new optional trailing field to an existing length-prefixed section, is the default value for prior-minor readers documented in the defaults table in `versioning.md` § Defaults for Appended Trailing Fields? (S4)
+- [ ] If this amendment allocates a new public tag value, is it allocated from the documented public reserved range of its tag space? (S1)
+- [ ] Does this amendment rebind an already-allocated public tag value to a new meaning within major version `1.x`? (MUST NOT, per S2)
+- [ ] If this amendment deprecates a public tag value or flag bit, is it marked "deprecated since 1.N" in the relevant tag table, with a pointer to a replacement where applicable? (S3)
+- [ ] If this amendment introduces a new field, is it gated by a flag bit, a tag value, or a length-prefixed trailing extension? (MUST NOT add at a fixed offset in a minor revision, per S6)
+- [ ] Does this amendment preserve FORWARD_ADDITIVE compatibility for readers at the previous minor version — i.e., can a prior-minor reader still parse every part of the new-minor data that its own minor defines, while correctly rejecting any unknown flag bit or public tag value? (CD2)
+
+## 13. RFC 2119 Correctness
 
 - [ ] Does the section include the RFC 2119 notice near the top?
 - [ ] Are normative keywords (`MUST`, `SHOULD`, `MAY`, etc.) in uppercase?
 - [ ] Are normative keywords absent from non-normative blocks (prefixed `> **Note (non-normative):**`)?
 - [ ] Are open questions marked with `> **[OQ-N]:**` and sequentially numbered within the file?
 
-## 13. Cross-Section Consistency
+## 14. Cross-Section Consistency
 
 - [ ] Does any term, field, or formula in this section contradict another spec section?
 - [ ] Are all cross-references to other sections accurate (correct section names and field names)?

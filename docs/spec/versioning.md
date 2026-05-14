@@ -186,6 +186,11 @@ Changes to any of the three version axes fall into one of three classes.
 - Adding a new optional trailing field to an existing section without
   disturbing the offsets of fields defined in the previous minor version.
 
+Minor amendments MUST comply with the [Evolvability Contract § Spec
+Amendment Rules](#spec-amendment-rules) (in particular S6 — no fixed-offset
+additions) and the defaults table in [§ Defaults for Appended Trailing
+Fields](#defaults-for-appended-trailing-fields) (S4).
+
 ### Examples of PATCH changes
 
 - Clarifying ambiguous wording.
@@ -401,6 +406,203 @@ readers, writers, and tools MUST NOT rely on them:
 > assuming that a private-range tag from one runtime is meaningful in
 > another, or that permissive-mode parsing implies safe buffer access.
 > Calling out non-commitments is part of the contract.
+
+---
+
+## Evolvability Contract
+
+Evolvability and extensibility are complementary but distinct. The
+Extensibility Contract names *where* the format can grow — the extension
+surface of reserved tag ranges, implementation-private ranges, reserved flag
+bits, and length-prefixed sections. The Evolvability Contract names *how*
+that growth is staged across versions: which compatibility direction a
+reader can rely on when it encounters data from a different minor version on
+the same major axis, and which spec-amendment moves are admissible at each
+step. Together, the two contracts form the stability surface that downstream
+implementations build against.
+
+### Compatibility Direction
+
+- **BACKWARD (CD1):** A reader at minor `M` MUST correctly parse data
+  written at any minor `N ∈ {0, …, M}` on the same major version on the
+  relevant axis.
+- **FORWARD_ADDITIVE (CD2):** A reader at minor `M` reading data written at
+  minor `N > M` on the same major version MUST correctly parse every field
+  defined at minor `M` — the fixed header, the buffer table, and every
+  length-prefixed section whose gating flag bit is defined at minor `M`,
+  including trailing bytes of those sections up to the prefix length. The
+  reader MUST reject the data if it encounters any flag bit or public tag
+  value not defined at minor `M`, except within the permissive-mode
+  exceptions for layout tags and quantization scheme tags defined in
+  [`memory-layout.md`](memory-layout.md) § Layout Tag Space and
+  [`quantization.md`](quantization.md) § Descriptor Header.
+
+  > **Note (non-normative):** The asymmetry between rejecting new
+  > flag-gated sections and skipping additive trailing bytes is
+  > intentional. An unknown flag bit may gate a new section whose
+  > presence changes the semantics of the data buffer; the reader has no
+  > safe way to ignore such a gate. Additive trailing bytes inside an
+  > already-known length-prefixed section, by contrast, extend a
+  > structure whose framing the reader already understands and can step
+  > past using the existing length prefix.
+
+- **CD3:** A reader supporting major `K` on a given axis MUST reject data
+  whose major version on that axis is `K + 1` or higher.
+- **CD4:** Cross-major reading is not automatic. A `K+1`-major reader is
+  not required to read `K`-major data; it MAY do so only via the migration
+  specification required by S5 below.
+
+### Writer Evolution Rules
+
+- **W3:** A writer MUST NOT emit a deprecated public tag value or flag
+  bit when a non-deprecated equivalent exists.
+- **W4:** When a writer appends an optional trailing field to an
+  existing length-prefixed section under a `version_minor` increment,
+  the writer MUST emit that field at the documented offset and MUST
+  update the enclosing length prefix accordingly. A writer MUST NOT
+  emit a partial trailing field.
+
+> **Note (non-normative):** Rules W1 and W2 are the writer requirements
+> stated in [§ Writer Requirements](#writer-requirements) below. W3 and
+> W4 extend them with the evolution-specific constraints needed by the
+> Evolvability Contract.
+
+### Reader Evolution Rules
+
+- **R3:** A deprecated public tag value MUST be treated as semantically
+  equivalent to its non-deprecated definition. Deprecation MUST NOT
+  change a value's wire semantics.
+- **R4:** When a reader at minor `M` encounters a length-prefixed
+  section shorter than the section length defined for minor `M` (i.e.,
+  data written at some minor `N < M`), the reader MUST treat every
+  field beyond the data's section length as carrying its documented
+  default from the defaults table in
+  [§ Defaults for Appended Trailing Fields](#defaults-for-appended-trailing-fields)
+  below.
+
+> **Note (non-normative):** Rules R1 and R2 are the reader behaviours
+> stated in [§ Compatibility Matrix](#compatibility-matrix) above. R3
+> and R4 extend them with the evolution-specific constraints needed by
+> the Evolvability Contract.
+
+### Spec Amendment Rules
+
+- **S1:** New public tag values MUST be allocated from the documented
+  public reserved range of their tag space (see [§ Extensibility
+  Contract](#extensibility-contract), commitments 1 and 7).
+- **S2 (Anti-rebind):** An allocated public tag value MUST NOT be
+  rebound to a different meaning within the same major version, even
+  after deprecation.
+- **S3 (Deprecation convention):** A deprecated tag table entry MUST be
+  marked "deprecated since 1.N" and SHOULD point to a replacement.
+  Deprecation is a writer-facing signal only — see R3 for reader
+  obligations.
+- **S4 (Defaults for trailing fields):** Any new optional trailing
+  field appended to an existing section MUST have a normatively
+  documented default in the same minor revision. The default MUST be
+  recorded in
+  [§ Defaults for Appended Trailing Fields](#defaults-for-appended-trailing-fields)
+  below.
+- **S5 (Migration commitment):** A future major version MUST be
+  accompanied by a normative migration specification mapping the prior
+  major version's encoding onto the new major version's encoding for
+  every field, flag bit, and tag value that survives the transition.
+- **S6 (No fixed-offset additions):** A new field in a minor revision
+  MUST be gated by a flag bit, a tag value, or a length-prefixed
+  trailing extension. A minor amendment MUST NOT allocate a new field
+  at a fixed offset that an older reader would parse as part of an
+  existing structure.
+
+### Defaults for Appended Trailing Fields
+
+The following table records the default value that a reader at the prior
+minor version conceptually sees for each trailing field appended under a
+minor bump. This table is normative for R4. It MUST be updated as part
+of any spec amendment that adds a trailing field.
+
+| Section | Field | Introduced in | Default for prior-minor readers |
+|---------|-------|---------------|----------------------------------|
+| *(empty — no trailing fields have been appended at `1.0`)* | | | |
+
+> **Note (non-normative):** The table is currently empty because no
+> optional trailing fields have been appended to any section at
+> descriptor version `1.0`. The first such amendment MUST add its
+> entry here.
+
+### Anti-Patterns
+
+> **Note (non-normative):** This sub-section is non-normative
+> commentary; the operative prohibition lives in the bullet items
+> themselves, which use MUST NOT to bind future spec amendments to
+> the choice made here.
+
+- **Per-field numeric tagging (Protobuf, Thrift):** imposing a tag and
+  a length-or-type word on every field defeats fixed-offset zero-copy
+  reads and forces a per-field decode loop even for readers that need
+  only a small subset of fields. This approach MUST NOT be adopted as
+  the descriptor's encoding strategy within major version `1.x`.
+- **vtables (FlatBuffers):** adding a per-object vtable indirection
+  breaks single-pass streamability (the vtable is referenced by an
+  offset that may point backward relative to the object) and adds
+  extra cache-line traffic per field access. This approach MUST NOT
+  be adopted as the descriptor's encoding strategy within major
+  version `1.x`.
+- **Hurray's evolvability mechanism, by contrast, is the flag-bit +
+  length-prefix model:** new sections are gated by flag bits and
+  framed by length prefixes; additive trailing fields live behind
+  the enclosing length prefix; tag spaces grow only within their
+  documented reserved ranges. This combination preserves fixed-offset
+  zero-copy reads for every field defined at the reader's minor
+  version while still admitting backward-compatible extension.
+
+### Worked Example
+
+> **Note (non-normative):** This sub-section is illustrative. The
+> hypothetical `bias_correction` field described below is not part of
+> the format at descriptor version `1.0`; no MXFP trailing field has
+> been appended at `1.0`. The example shows how W4, R4, and S4 work
+> together when a future minor revision appends a trailing field.
+
+**Worked Example: MXFP Scheme Evolution Across Minor Versions**
+
+Suppose a future descriptor version `1.1` appends an optional
+`bias_correction` field (`float32`, 4 bytes) to the MXFP quantization
+scheme payload (see [`quantization/mxfp.md`](quantization/mxfp.md) §
+Binary Encoding) immediately after the existing `scale_buffer_index`
+field, extending the MXFP descriptor from 16 bytes to 20 bytes. The
+following steps illustrate the contract:
+
+1. **Spec amendment (S4).** The `1.1` amendment records
+   `bias_correction` in the defaults table in
+   [§ Defaults for Appended Trailing Fields](#defaults-for-appended-trailing-fields)
+   with default value `0.0` (IEEE 754 `float32` zero).
+2. **`1.1` writer (W4).** The writer emits the full 20-byte MXFP
+   payload including `bias_correction`, and sets the enclosing
+   `quantization_length` prefix to `20` (plus any further trailing
+   bytes added by an even later minor revision the writer
+   participates in).
+3. **`1.0` reader against `1.1` data (CD2, R4).** The reader sees
+   `quantization_length ≥ 20` but parses only the first 16 bytes
+   defined at `1.0`. The trailing 4 bytes are skipped via the
+   length prefix; the reader synthesises `bias_correction = 0.0`
+   per the defaults table, even though it never actually reads the
+   bytes (a `1.0` reader does not know `bias_correction` exists, so
+   the synthesised default is only observable to a downstream
+   `1.1` consumer that subsequently reparses the data).
+4. **`1.1` reader against `1.1` data.** The reader parses all
+   20 bytes, including `bias_correction`, and interprets the field
+   directly.
+5. **`1.1` reader against `1.0` data (CD1, R4).** The reader sees
+   `quantization_length = 16` (the `1.0` MXFP length). Every field
+   beyond the data's section length is treated as carrying its
+   documented default; the reader synthesises
+   `bias_correction = 0.0` per the defaults table and proceeds with
+   dequantization as if the writer had emitted the default
+   explicitly. No descriptor rejection occurs.
+
+This example does not introduce any normative requirement that is not
+already stated by W4, R4, and S4 — it only illustrates how those rules
+compose.
 
 ---
 
