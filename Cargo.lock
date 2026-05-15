@@ -111,6 +111,7 @@ dependencies = [
 name = "hurray-inspect"
 version = "0.1.0"
 dependencies = [
+ "hurray-core",
  "thiserror",
 ]
 
