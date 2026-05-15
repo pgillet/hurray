@@ -39,7 +39,7 @@ This ADR closes the seven gaps above by naming the compatibility direction, adop
 
 ## Decision
 
-Hurray formally specifies the operational rules for its extensibility property. **Format evolvability** — the same concept as extensibility, modifiability, or plasticity — is codified as Core Property #12: the normative contract that defines how the extension surface (Core Property #11) is used safely over time. The contract is defined by four compatibility direction declarations, two normative writer rules, two normative reader rules, six normative spec-amendment rules, and an explicit rejection of per-field tagging and vtables.
+Hurray adopts **format evolvability** as Core Property #4. Evolvability — the same concept as extensibility, modifiability, or plasticity — is the property of a format that makes it easy for engineers to change it in the future. This ADR formally specifies the rules that make that property concrete: four compatibility direction declarations, two normative writer rules, two normative reader rules, six normative spec-amendment rules, and an explicit rejection of per-field tagging and vtables.
 
 ### CD — Compatibility direction (named and bounded)
 
@@ -91,15 +91,13 @@ Hurray's evolvability surface is the **flag-bit + length-prefix** model:
 - **OQ-C (name for selective forward compatibility).** **Resolved as FORWARD_ADDITIVE.** See CD2.
 - **OQ-D (worked example placement).** **Resolved in two parts.** One worked example is added inline in `versioning.md` (the MXFP `scheme_version` scenario). A full evolution playbook with multiple scenarios is deferred to `docs/cookbook/evolution-playbook.md` as a Layer 5+ `doc-updater` deliverable.
 
-### New Core Property #12
+### New Core Property #4
 
-Core Property #11 (Extensibility, ADR-017) names the *surface* — the tag ranges, flag bits, and length-prefixed sections that allow the format to grow. Core Property #12 names the *rules* — the normative contract that governs how that surface is used safely over time. Together they form one continuous property; the split is editorial, not conceptual.
+The following paragraph is inserted into `README.md` as Core Property #4, with the existing properties #4–#11 renumbered to #5–#12:
 
-The following paragraph is added to `README.md` after Core Property 11 (Array Database Foundation):
-
-> #### 12. Format Evolvability (Operational Rules for Extensibility)
+> #### 4. Format Evolvability
 >
-> Hurray defines normative rules for how the format changes over time, formally specifying how the extension surface from Core Property #11 is used in practice. Within major version `1.x`, the format is BACKWARD-compatible (a reader at minor `M` parses any minor `N ≤ M` correctly) and FORWARD_ADDITIVE (a reader at minor `M` correctly parses every part of newer-minor data that its own minor defines, ignores additive trailing bytes inside known length-prefixed sections, and rejects newer-minor data that uses an unknown flag bit or unknown public tag value). Public tag values are never rebound once allocated; deprecated tags retain their original semantics. A future major version is accompanied by a normative migration specification. Per-field tagging (Protobuf) and vtables (FlatBuffers) are explicitly rejected: they are incompatible with Hurray's zero-copy fixed-offset access model. See [`versioning.md`](versioning.md) § Evolvability Contract for the full normative definition.
+> Hurray is designed to evolve. Within major version `1.x`, the format is BACKWARD-compatible: a reader at minor `M` correctly parses data written at any minor `N ≤ M`. The format is also FORWARD_ADDITIVE: a reader at minor `M` correctly parses every part of newer-minor data that its own minor version defines, ignores additive trailing bytes inside known length-prefixed sections, and rejects newer-minor data that relies on an unknown flag bit or tag value. Public tag values are never rebound once allocated; deprecated tags retain their original semantics forever within `1.x`. A future major version is accompanied by a normative migration specification. Per-field tagging (Protobuf) and vtables (FlatBuffers) are explicitly rejected as incompatible with Hurray's zero-copy fixed-offset access model. See [`versioning.md`](versioning.md) § Evolvability Contract for the full normative definition.
 
 ## Alternatives Considered
 
