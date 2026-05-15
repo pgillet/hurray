@@ -411,15 +411,10 @@ readers, writers, and tools MUST NOT rely on them:
 
 ## Evolvability Contract
 
-Evolvability and extensibility are complementary but distinct. The
-Extensibility Contract names *where* the format can grow — the extension
-surface of reserved tag ranges, implementation-private ranges, reserved flag
-bits, and length-prefixed sections. The Evolvability Contract names *how*
-that growth is staged across versions: which compatibility direction a
-reader can rely on when it encounters data from a different minor version on
-the same major axis, and which spec-amendment moves are admissible at each
-step. Together, the two contracts form the stability surface that downstream
-implementations build against.
+The Evolvability Contract defines the rules that make the format safe to
+change over time: which compatibility a reader can rely on when it encounters
+data from a different minor version, and which spec-amendment moves are
+admissible at each step.
 
 ### Compatibility Direction
 
