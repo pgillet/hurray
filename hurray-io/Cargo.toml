@@ -15,3 +15,10 @@ bytes = { workspace = true }
 [features]
 default = []
 tokio = ["dep:tokio"]
+
+[[example]]
+name = "stream_roundtrip"
+required-features = ["tokio"]
+
+[dev-dependencies]
+tokio = { workspace = true }
