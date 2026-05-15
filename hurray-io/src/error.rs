@@ -17,6 +17,33 @@ pub enum Error {
     /// A frame or record header is malformed.
     #[error("invalid frame header: {0}")]
     InvalidHeader(String),
+
+    /// The number of supplied buffer slices does not match the descriptor's buffer table.
+    #[error("buffer count mismatch: descriptor declares {declared}, got {actual}")]
+    MultiBufferLengthMismatch { declared: usize, actual: usize },
+
+    /// A supplied buffer's byte length does not match the corresponding handle's `byte_size`.
+    #[error("buffer[{index}] size mismatch: declared {declared}, got {actual}")]
+    BufferSizeMismatch {
+        index: usize,
+        declared: u64,
+        actual: u64,
+    },
+
+    /// A descriptor or buffer exceeded the configured size limit.
+    #[error("frame too large: {kind} = {value}, limit = {limit}")]
+    FrameTooLarge {
+        kind: &'static str,
+        value: u64,
+        limit: u64,
+    },
+
+    /// A buffer handle's `sync_mode` is invalid for a cross-machine transport.
+    #[error(
+        "buffer[{index}] sync_mode 0x{actual:02X} is invalid for cross-machine transport \
+         (must be 0x00 ProducerSynced)"
+    )]
+    InvalidCrossMachineSyncMode { index: usize, actual: u8 },
 }
 
 /// Convenience alias for `Result` with [`Error`].
