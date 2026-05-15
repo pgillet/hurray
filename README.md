@@ -29,7 +29,7 @@ Both formats share the same tensor descriptor encoding. A tensor descriptor pars
 
 ### 4. Format Evolvability
 
-Hurray is designed to evolve. Within major version `1.x`, the format is BACKWARD-compatible: a reader at minor `M` correctly parses data written at any minor `N ≤ M`. The format is also FORWARD_ADDITIVE: a reader at minor `M` correctly parses every part of newer-minor data that its own minor version defines, ignores additive trailing bytes inside known length-prefixed sections, and rejects newer-minor data that relies on an unknown flag bit or tag value. Public tag values are never rebound once allocated; deprecated tags retain their original semantics forever within `1.x`. A future major version is accompanied by a normative migration specification. Per-field tagging (Protobuf) and vtables (FlatBuffers) are explicitly rejected as incompatible with Hurray's zero-copy fixed-offset access model. See [`versioning.md`](versioning.md) § Evolvability Contract for the full normative definition.
+Hurray is designed to evolve. Within major version `1.x`, the format is BACKWARD-compatible: a reader at minor `M` correctly parses data written at any minor `N ≤ M`. The format is also FORWARD_ADDITIVE: a reader at minor `M` correctly parses every part of newer-minor data that its own minor version defines, ignores additive trailing bytes inside known length-prefixed sections, and rejects newer-minor data that relies on an unknown flag bit or tag value. Public tag values are never rebound once allocated; deprecated tags retain their original semantics forever within `1.x`. A future major version is accompanied by a normative migration specification. Extension points — element type tags, layout tags, device tags, quantization scheme tags, flag bits, and optional sections — are stable across the lifetime of major version `1.x`. Implementation-private ranges (`0xF0`–`0xFE`) are reserved permanently; no named public value will ever be allocated into them. New public values go through the spec amendment process, not through implementation-defined registration. Older readers can skip unknown optional sections via length prefixes and parse a descriptor's shape and buffer table even when they cannot interpret an unknown layout or quantization scheme. Per-field tagging (Protobuf) and vtables (FlatBuffers) are explicitly rejected as incompatible with Hurray's zero-copy fixed-offset access model. See [`versioning.md`](versioning.md) § Evolvability Contract for the full normative definition.
 
 ### 5. Rich Memory Layout Vocabulary
 
@@ -47,19 +47,15 @@ No Rust-isms leak into the format or the C FFI boundary. The binary spec uses ge
 
 Every tensor descriptor carries its own length in the first 10 bytes (readable before parsing the rest). Magic bytes (`HRRY`) and version fields allow format evolution. Optional sections (quantization, shard, statistics, extension type) are gated by flag bits and length-prefixed so readers can skip what they don't understand without rejecting the tensor.
 
-### 9. Extensible by Design
-
-Extension points — element type tags, layout tags, device tags, quantization scheme tags, flag bits, and optional sections — are stable across the lifetime of major version `1.x`. Implementation-private ranges (`0xF0`–`0xFE`) are reserved permanently; no named public value will ever be allocated into them. New public values go through the spec amendment process, not through implementation-defined registration. Older readers can skip unknown optional sections via length prefixes and parse a descriptor's shape and buffer table even when they cannot interpret an unknown layout or quantization scheme. See [`versioning.md`](versioning.md) § Extensibility Contract for the full normative definition.
-
-### 10. Inference-Optimized Type System
+### 9. Inference-Optimized Type System
 
 Tier 1 types cover `float16`, `bfloat16`, `float32`, `float64`, signed/unsigned integers from `int4` to `int64`, `bool`. Tier 2 adds `float8_e4m3` and `float8_e5m2` for Blackwell/MI300X inference. Private extension tags (`0xF0`–`0xFE`) allow vendor-specific types. Each private extension tag MUST carry an inline descriptor encoding at minimum: bit width, packing, and floating-point parameters.
 
-### 11. Multi-Transport Interchange
+### 10. Multi-Transport Interchange
 
 The interchange protocol covers in-process (pointer passing), IPC (shared memory), and cross-machine (streaming framing + optional RDMA data plane via GPUDirect). Layout negotiation is built into the protocol. Sender and receiver agree on the tensor format before data moves.
 
-### 12. Array Database Foundation
+### 11. Array Database Foundation
 
 Hurray is designed to serve as the storage layer of an array database engine — covering the full tensor supply chain: capture, storage, retrieval, and sharing. The tiled/blocked layout enables chunk-based access and tile-skipping for sub-array queries. Morton Z-order and Hilbert curve layouts preserve spatial locality across dimensions, improving range query cache performance. The file format footer index supports O(1) tensor lookup by name and is designed to be extensible with spatial or dimension-range indexes. Spec decisions that would foreclose chunk-based storage, spatial locality, or dimension-range indexing MUST be evaluated against this use case before being adopted.
 

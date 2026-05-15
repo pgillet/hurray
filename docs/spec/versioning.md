@@ -243,12 +243,16 @@ supported minor version MUST treat the affected feature as unknown:
 
 ---
 
-## Extensibility Contract
+## Evolvability Contract
 
-This section states the **stability guarantees** the Hurray format makes to
-implementors and downstream tools across the lifetime of major version `1.x`.
-It is the normative counterpart to the "Extensible" property listed in
-[`README.md`](README.md) § Scope and Goals. The guarantee period begins at
+The Evolvability Contract states the **stability guarantees** the Hurray format
+makes to implementors and downstream tools across the lifetime of major version
+`1.x`, and defines the rules that make the format safe to change over time:
+which compatibility a reader can rely on when it encounters data from a different
+minor version, and which spec-amendment moves are admissible at each step.
+
+It is the normative counterpart to the "Format Evolvability" property listed in
+[`README.md`](README.md) § Core Properties. The guarantee period begins at
 descriptor and container version `1.0`; pre-`1.0` drafts are explicitly
 excluded (see [§ Out of Scope](#out-of-scope) below).
 
@@ -270,7 +274,7 @@ references them:
 - KV value tag space and file flag bits: see
   [`file-format.md`](file-format.md) § KV Value Types and § File Flags.
 
-### Commitments
+### Stability Commitments
 
 For the lifetime of major version `1.x`, this specification commits to the
 following invariants. Conforming readers, writers, and downstream tools MAY
@@ -346,7 +350,7 @@ rely on every one of them.
 
 ### Out of Scope
 
-The Extensibility Contract is a finite guarantee. The following properties
+The Evolvability Contract is a finite guarantee. The following properties
 are deliberately **not** guaranteed by this specification, and conforming
 readers, writers, and tools MUST NOT rely on them:
 
@@ -354,10 +358,10 @@ readers, writers, and tools MUST NOT rely on them:
    contract applies within major version `1.x` only. A reader MUST reject
    data whose major version on any axis exceeds the reader's supported
    major version, per [§ Compatibility Matrix](#compatibility-matrix). The
-   guarantees in [§ Commitments](#commitments) do not transfer to major
-   version `2.x` or beyond; a future major version MAY revise tag spaces,
-   reserved ranges, flag bits, and length-prefix conventions without
-   preserving `1.x` semantics.
+   guarantees in [§ Stability Commitments](#stability-commitments) do not
+   transfer to major version `2.x` or beyond; a future major version MAY
+   revise tag spaces, reserved ranges, flag bits, and length-prefix
+   conventions without preserving `1.x` semantics.
 2. **Interpretation of unknown content is out of scope.** Permissive-mode
    parsing allows a reader to extract shape, rank, element type, and buffer
    table when a layout tag or scheme tag is unknown. It does not authorise
@@ -391,7 +395,7 @@ readers, writers, and tools MUST NOT rely on them:
    is the responsibility of the KV metadata section in
    [`file-format.md`](file-format.md), not of the element type system.
 6. **Back-compatibility of pre-`1.0` drafts is out of scope.** The
-   Extensibility Contract begins at descriptor and container version `1.0`.
+   Evolvability Contract begins at descriptor and container version `1.0`.
    Pre-`1.0` draft versions of this specification MAY have used different
    tag allocations, reserved ranges, or wire encodings, and conforming
    `1.x` readers and writers MUST NOT assume any compatibility with them. A
@@ -400,21 +404,12 @@ readers, writers, and tools MUST NOT rely on them:
    consume draft data and has applied an implementation-defined migration.
 
 > **Note (non-normative):** The boundary between "what we promise" and
-> "what we deliberately do not promise" is what makes the Extensibility
+> "what we deliberately do not promise" is what makes the Evolvability
 > Contract usable. Without the out-of-scope list, downstream tooling could
 > infer guarantees that the format cannot actually defend — for example,
 > assuming that a private-range tag from one runtime is meaningful in
 > another, or that permissive-mode parsing implies safe buffer access.
 > Calling out non-commitments is part of the contract.
-
----
-
-## Evolvability Contract
-
-The Evolvability Contract defines the rules that make the format safe to
-change over time: which compatibility a reader can rely on when it encounters
-data from a different minor version, and which spec-amendment moves are
-admissible at each step.
 
 ### Compatibility Direction
 
@@ -447,7 +442,7 @@ admissible at each step.
   not required to read `K`-major data; it MAY do so only via the migration
   specification required by S5 below.
 
-### Writer Evolution Rules
+### Writer Rules
 
 - **W3:** A writer MUST NOT emit a deprecated public tag value or flag
   bit when a non-deprecated equivalent exists.
@@ -462,7 +457,7 @@ admissible at each step.
 > W4 extend them with the evolution-specific constraints needed by the
 > Evolvability Contract.
 
-### Reader Evolution Rules
+### Reader Rules
 
 - **R3:** A deprecated public tag value MUST be treated as semantically
   equivalent to its non-deprecated definition. Deprecation MUST NOT
@@ -483,8 +478,8 @@ admissible at each step.
 ### Spec Amendment Rules
 
 - **S1:** New public tag values MUST be allocated from the documented
-  public reserved range of their tag space (see [§ Extensibility
-  Contract](#extensibility-contract), commitments 1 and 7).
+  public reserved range of their tag space (see [§ Stability
+  Commitments](#stability-commitments), items 1 and 7).
 - **S2 (Anti-rebind):** An allocated public tag value MUST NOT be
   rebound to a different meaning within the same major version, even
   after deprecation.
