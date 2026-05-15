@@ -2,7 +2,7 @@
 
 This checklist is applied to every new or modified section of the Hurray format specification. Items that do not apply to a given section should be noted as N/A with a brief justification.
 
-The 14 categories correspond directly to the 12 Core Properties defined in `README.md`, plus two cross-cutting quality checks. Core Property 3 (Streamable by Design) applies differently to the streaming format and the file format; the checklist items below are labelled accordingly.
+The 13 categories correspond directly to the 11 Core Properties defined in `README.md`, plus two cross-cutting quality checks. Core Property 3 (Streamable by Design) applies differently to the streaming format and the file format; the checklist items below are labelled accordingly.
 
 ---
 
@@ -36,7 +36,7 @@ The 14 categories correspond directly to the 12 Core Properties defined in `READ
 - [ ] Does the file format section introduce a footer, trailer, or index? If so, is it located by a fixed-size trailer at end-of-file?
 
 ## 4. Memory Layout Consistency
-*(Core Property 4)*
+*(Core Property 5)*
 
 - [ ] Are strides expressed in logical elements (not bytes)?
 - [ ] Is the layout tag used consistently with the tag table in `memory-layout.md`?
@@ -44,7 +44,7 @@ The 14 categories correspond directly to the 12 Core Properties defined in `READ
 - [ ] Are negative and zero strides explicitly permitted or excluded as appropriate?
 
 ## 5. Quantization Consistency
-*(Core Property 5)*
+*(Core Property 6)*
 
 - [ ] If the section references quantized tensors, does it use the scheme_tag model from `quantization.md` (not ad-hoc fields)?
 - [ ] Are storage types (`type_tag`) kept orthogonal from quantization scheme (`scheme_tag`)?
@@ -52,24 +52,24 @@ The 14 categories correspond directly to the 12 Core Properties defined in `READ
 - [ ] Are dequantization formulas consistent with `quantization.md`?
 
 ## 6. Language-Agnosticism
-*(Core Property 6)*
+*(Core Property 7)*
 
 - [ ] Are all field types expressed using language-agnostic names (`int32`, `uint64`, `float32` — never `i32`, `usize`, `String`)?
 - [ ] Does the section avoid Rust-specific idioms, lifetimes, or type names?
 - [ ] Is the binary layout specified precisely enough for a C, Python, or Go implementor without Rust knowledge?
 
 ## 7. Self-Describing and Self-Delimiting
-*(Core Property 7)*
+*(Core Property 8)*
 
 - [ ] Does every variable-length field or section begin with a length prefix (`uint32` or equivalent)?
 - [ ] Are magic bytes or tag fields present where needed to allow format identification without context?
 - [ ] Is the total byte length of the section determinable from a fixed, early-offset field?
 - [ ] Are reserved fields explicitly required to be `0x00`, and must readers reject non-zero values?
 
-## 8. Extensibility Contract Compliance
-*(Core Property 8 — see `versioning.md` § Extensibility Contract)*
+## 8. Evolvability Contract Compliance
+*(Core Property 4 — see `versioning.md` § Evolvability Contract)*
 
-- [ ] Does this amendment preserve the Extensibility Contract? Specifically:
+- [ ] Does this amendment preserve the Stability Commitments? Specifically:
   - [ ] Does it repurpose, narrow, or remove any reserved tag range within major version `1.x`? (MUST NOT.)
   - [ ] Does it allocate any named public value into an implementation-private range (`0xF0`–`0xFE`)? (MUST NOT.)
   - [ ] Does it remove or narrow any reserved flag bit without a major version bump? (MUST NOT.)
@@ -77,6 +77,12 @@ The 14 categories correspond directly to the 12 Core Properties defined in `READ
   - [ ] Does it require interpreting a layout tag or quantization scheme tag in order to recover the shape, rank, element type, or buffer table? (MUST NOT — permissive-mode parsing must remain possible.)
   - [ ] Does it force a version bump on an axis that did not actually change? (MUST NOT — version axes are independent.)
   - [ ] Does it add a new public tag value without a spec amendment that increments the appropriate minor version? (MUST NOT.)
+- [ ] If this amendment appends a new optional trailing field to an existing length-prefixed section, is the default value for prior-minor readers documented in the defaults table in `versioning.md` § Defaults for Appended Trailing Fields? (S4)
+- [ ] If this amendment allocates a new public tag value, is it allocated from the documented public reserved range of its tag space? (S1)
+- [ ] Does this amendment rebind an already-allocated public tag value to a new meaning within major version `1.x`? (MUST NOT, per S2)
+- [ ] If this amendment deprecates a public tag value or flag bit, is it marked "deprecated since 1.N" in the relevant tag table, with a pointer to a replacement where applicable? (S3)
+- [ ] If this amendment introduces a new field, is it gated by a flag bit, a tag value, or a length-prefixed trailing extension? (MUST NOT add at a fixed offset in a minor revision, per S6)
+- [ ] Does this amendment preserve FORWARD_ADDITIVE compatibility for readers at the previous minor version — i.e., can a prior-minor reader still parse every part of the new-minor data that its own minor defines, while correctly rejecting any unknown flag bit or public tag value? (CD2)
 
 ## 9. Type System Compliance
 *(Core Property 9)*
@@ -104,24 +110,14 @@ The 14 categories correspond directly to the 12 Core Properties defined in `READ
 - [ ] If new metadata fields are introduced, could they carry dimension domain or coordinate information relevant to an array database (e.g., axis labels, tile extents, dimension ranges)?
 - [ ] Is the section compatible with a SQL/MDA query engine (ISO 9075-15) consuming Hurray buffers? In particular: can query results be handed off to an ML inference pipeline without copying, and can quantized types be treated as first-class column types?
 
-## 12. Format Evolvability
-*(Core Property 12 — see `versioning.md` § Evolvability Contract)*
-
-- [ ] If this amendment appends a new optional trailing field to an existing length-prefixed section, is the default value for prior-minor readers documented in the defaults table in `versioning.md` § Defaults for Appended Trailing Fields? (S4)
-- [ ] If this amendment allocates a new public tag value, is it allocated from the documented public reserved range of its tag space? (S1)
-- [ ] Does this amendment rebind an already-allocated public tag value to a new meaning within major version `1.x`? (MUST NOT, per S2)
-- [ ] If this amendment deprecates a public tag value or flag bit, is it marked "deprecated since 1.N" in the relevant tag table, with a pointer to a replacement where applicable? (S3)
-- [ ] If this amendment introduces a new field, is it gated by a flag bit, a tag value, or a length-prefixed trailing extension? (MUST NOT add at a fixed offset in a minor revision, per S6)
-- [ ] Does this amendment preserve FORWARD_ADDITIVE compatibility for readers at the previous minor version — i.e., can a prior-minor reader still parse every part of the new-minor data that its own minor defines, while correctly rejecting any unknown flag bit or public tag value? (CD2)
-
-## 13. RFC 2119 Correctness
+## 12. RFC 2119 Correctness
 
 - [ ] Does the section include the RFC 2119 notice near the top?
 - [ ] Are normative keywords (`MUST`, `SHOULD`, `MAY`, etc.) in uppercase?
 - [ ] Are normative keywords absent from non-normative blocks (prefixed `> **Note (non-normative):**`)?
 - [ ] Are open questions marked with `> **[OQ-N]:**` and sequentially numbered within the file?
 
-## 14. Cross-Section Consistency
+## 13. Cross-Section Consistency
 
 - [ ] Does any term, field, or formula in this section contradict another spec section?
 - [ ] Are all cross-references to other sections accurate (correct section names and field names)?
