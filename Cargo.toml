@@ -24,4 +24,5 @@ half = "2"
 rayon = "1"
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
+crc32c = "0.6"
 pyo3 = { version = "0.22", features = ["extension-module"] }
