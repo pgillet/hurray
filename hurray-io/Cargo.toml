@@ -11,6 +11,7 @@ hurray-core = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
 bytes = { workspace = true }
+crc32c = { workspace = true }
 
 [features]
 default = ["tokio"]

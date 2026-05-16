@@ -13,6 +13,9 @@
 pub mod error;
 
 #[cfg(feature = "tokio")]
+pub mod file;
+
+#[cfg(feature = "tokio")]
 pub mod stream;
 
 pub use error::{Error, Result};

@@ -44,6 +44,59 @@ pub enum Error {
          (must be 0x00 ProducerSynced)"
     )]
     InvalidCrossMachineSyncMode { index: usize, actual: u8 },
+
+    // ── File format ───────────────────────────────────────────────────────────
+    /// The file header magic is not `HRRYFILE`.
+    #[error("invalid file magic: expected HRRYFILE")]
+    InvalidFileMagic,
+
+    /// The trailer magic is not `HRRY`.
+    #[error("invalid trailer magic")]
+    InvalidTrailerMagic,
+
+    /// The container major version is higher than this reader supports.
+    #[error("unsupported container version {major}.x (reader supports 1.x)")]
+    UnsupportedContainerVersion { major: u8 },
+
+    /// A tensor name was requested but is not in the file index.
+    #[error("tensor not found: {0:?}")]
+    TensorNotFound(String),
+
+    /// Two tensors in the same file share a name.
+    #[error("duplicate tensor name: {0:?}")]
+    DuplicateTensorName(String),
+
+    /// A tensor name is empty.
+    #[error("tensor name must not be empty")]
+    TensorNameEmpty,
+
+    /// A tensor name exceeds the 65 535-byte `uint16` limit.
+    #[error("tensor name too long: {len} bytes (max 65535)")]
+    TensorNameTooLong { len: usize },
+
+    /// The index CRC-32C does not match the stored value.
+    #[error("index CRC-32C mismatch: stored 0x{stored:08X}, computed 0x{computed:08X}")]
+    IndexCrc32cMismatch { stored: u32, computed: u32 },
+
+    /// Two KV entries share the same key.
+    #[error("duplicate KV key: {0:?}")]
+    DuplicateKvKey(String),
+
+    /// A KV key is empty.
+    #[error("KV key must not be empty")]
+    KvKeyEmpty,
+
+    /// A KV key exceeds the 65 535-byte `uint16` limit.
+    #[error("KV key too long: {len} bytes (max 65535)")]
+    KvKeyTooLong { len: usize },
+
+    /// A reserved flag bit was set in the file header.
+    #[error("file header has reserved flag bits set: 0x{flags:08X}")]
+    ReservedFileFlagBits { flags: u32 },
+
+    /// The index section overlaps the trailer.
+    #[error("index section overruns trailer boundary")]
+    IndexOverrunsTrailer,
 }
 
 /// Convenience alias for `Result` with [`Error`].
