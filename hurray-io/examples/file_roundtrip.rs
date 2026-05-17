@@ -54,6 +54,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("File size: {} bytes", wire.len());
 
+    // Also write to /tmp/model.hrry so hurray-inspect can read it.
+    tokio::fs::write("/tmp/model.hrry", &wire).await?;
+    println!("Written to /tmp/model.hrry");
+
     // ── Read it back ─────────────────────────────────────────────────────────
 
     let mut reader = FileReader::open(Cursor::new(wire)).await?;
