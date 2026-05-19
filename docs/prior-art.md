@@ -343,22 +343,46 @@ encoding, parallel shard transfers, and a hook for an RDMA data plane.
 
 ---
 
+### 2.17 MLX (Apple)
+
+**What it is:** A NumPy-like array framework for Apple Silicon, designed for ML research and inference on CPU and GPU via Apple's unified memory architecture.
+
+**How it works:** Arrays live in shared memory accessible by both the CPU and GPU without any buffer copies or explicit device placement. Operations carry a device tag; buffers do not. Computation is lazy — arrays materialize on demand, enabling graph-level optimization before execution. Interop with NumPy and PyTorch is via the Python buffer protocol and `__dlpack__`; most dtypes are truly zero-copy (bf16 and f64 require conversion for NumPy).
+
+**Layout model:** Standard strided dense arrays. No tiled, blocked, or sparse layouts.
+
+**Quantization:** Quantization is an operation, not a storage dtype. `mlx.core.quantize` produces packed `uint32` weight tensors plus separate scale and bias arrays. Affine scheme: group sizes 32/64/128, 2–8 bits per element, LSB-first packing (element 0 occupies bits 0–(bits-1) of the first word). Block floating-point modes: MXFP4/MXFP8 (shared E8M0 exponent, group=32) and NVFP4 (group=16, E4M3 per-group scales, no bias). No native int4/fp8 dtypes — quantized tensors are always stored in packed `uint32` arrays.
+
+**On-disk format:** None native. MLX saves/loads `.npy`, `.npz`, `.safetensors`, and `.gguf`. This is a deliberate design choice, not an oversight.
+
+**Interchange:** In-process only. No IPC, no streaming, no cross-language ABI beyond `mlx-c` (an unofficial C wrapper).
+
+**Design insight — device is per-operation, not per-buffer:** Unlike CUDA or Metal, MLX's unified memory model eliminates the host/device buffer duality. A buffer has no device affinity; only the kernel that reads it does. This is a data point for Hurray's device-tag ADR: device ownership may be an attribute of *access* rather than of the buffer itself.
+
+**Sub-byte packing cross-reference:** MLX's documented int4 LSB-first layout (element 0 in bits 0–3 of a `uint32`) should be checked against Hurray's sub-byte packing spec in `memory-layout.md` for ecosystem compatibility.
+
+**Adoption:** Growing in the Apple Silicon developer community. Used by Hugging Face `mlx-lm`, `whisper.mlx`, and a range of on-device LLM inference tools.
+
+**Assessment:** Not an interchange format — MLX deliberately reuses existing formats and focuses on the runtime compute layer. Its key contributions to Hurray's prior art are: (1) the unified-memory "device is per-operation" model as input to the device-tag design, and (2) its multi-mode quantization packing (LSB-first uint32, affine + MXFP + NVFP4, variable group sizes) as a cross-reference for Hurray's sub-byte packing and quantization specs.
+
+---
+
 ## 3. Comparative Summary
 
-| | DLPack | Arrow | SafeTensors | GGUF | ONNX | Zarr | NetCDF | OPeNDAP | NIXL | NCCL | Arrow Flight | Hurray (goal) |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **Zero-copy runtime** | ✅ | ✅ | Partial | Partial | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ |
-| **RDMA / GPU-direct** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | Optional |
-| **Network streaming** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Partial | ❌ | ✅ | ✅ |
-| **Layout negotiation** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Language-agnostic ABI** | ✅ | ✅ | ❌ | ❌ | Partial | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | ✅ |
-| **Tiled/blocked layouts** | ❌ | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Strides** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Quantization metadata** | ❌ | ❌ | ❌ | ✅ (informal) | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Sparsity descriptors** | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Sub-byte packing** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **On-disk storage** | ❌ | Partial | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | Partial |
-| **Adoption** | High | High | High | High | High | Medium | High | Medium | Emerging | High | Medium | — |
+| | DLPack | Arrow | SafeTensors | GGUF | ONNX | Zarr | NetCDF | OPeNDAP | NIXL | NCCL | Arrow Flight | MLX | Hurray (goal) |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| **Zero-copy runtime** | ✅ | ✅ | Partial | Partial | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
+| **RDMA / GPU-direct** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Optional |
+| **Network streaming** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Partial | ❌ | ✅ | ❌ | ✅ |
+| **Layout negotiation** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Language-agnostic ABI** | ✅ | ✅ | ❌ | ❌ | Partial | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | Partial | ✅ |
+| **Tiled/blocked layouts** | ❌ | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Strides** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
+| **Quantization metadata** | ❌ | ❌ | ❌ | ✅ (informal) | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Partial | ✅ |
+| **Sparsity descriptors** | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Sub-byte packing** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
+| **On-disk storage** | ❌ | Partial | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Partial |
+| **Adoption** | High | High | High | High | High | Medium | High | Medium | Emerging | High | Medium | Medium | — |
 
 ---
 
