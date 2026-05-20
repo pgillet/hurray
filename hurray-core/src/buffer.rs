@@ -495,6 +495,174 @@ impl fmt::Display for DeviceTag {
     }
 }
 
+// ── MemoryClass ───────────────────────────────────────────────────────────────
+
+/// An implementation-private memory class byte, guaranteed to be in `0xF0`–`0xFE`.
+///
+/// Constructible only via [`MemoryClass::from_byte`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PrivateMemoryClass(u8);
+
+impl PrivateMemoryClass {
+    /// Returns the raw wire byte for this private memory class.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::MemoryClass;
+    ///
+    /// let cls = MemoryClass::from_byte(0xF1).unwrap();
+    /// if let MemoryClass::Private(p) = cls {
+    ///     assert_eq!(p.to_byte(), 0xF1);
+    /// }
+    /// ```
+    pub fn to_byte(self) -> u8 {
+        self.0
+    }
+}
+
+/// The memory access class of a buffer handle.
+///
+/// Identifies *how* a buffer is accessible — whether it is device-exclusive or
+/// can be accessed by the CPU and/or peer accelerators without copying.
+///
+/// The `memory_class` field in the binary buffer handle is a single `uint8` at
+/// offset 14. Use [`MemoryClass::from_byte`] to parse and [`MemoryClass::to_byte`]
+/// to serialize. See `docs/spec/buffer-protocol.md § Memory Class` for the
+/// normative definition.
+///
+/// | Value | Variant |
+/// |-------|---------|
+/// | `0x00` | [`Standard`][MemoryClass::Standard] |
+/// | `0x01` | [`HostPinned`][MemoryClass::HostPinned] |
+/// | `0x02` | [`Unified`][MemoryClass::Unified] |
+/// | `0x03` | [`Peer`][MemoryClass::Peer] |
+/// | `0x04`–`0xEF` | reserved → [`Error::ReservedMemoryClass`] |
+/// | `0xF0`–`0xFE` | [`Private(b)`][MemoryClass::Private] |
+/// | `0xFF` | permanently invalid → [`Error::InvalidMemoryClass`] |
+///
+/// # Examples
+///
+/// ```
+/// use hurray_core::{MemoryClass, Error};
+///
+/// assert_eq!(MemoryClass::from_byte(0x00).unwrap(), MemoryClass::Standard);
+/// assert_eq!(MemoryClass::from_byte(0x02).unwrap(), MemoryClass::Unified);
+/// assert!(matches!(MemoryClass::from_byte(0x04), Err(Error::ReservedMemoryClass(0x04))));
+/// assert!(matches!(MemoryClass::from_byte(0xFF), Err(Error::InvalidMemoryClass(0xFF))));
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MemoryClass {
+    /// Device-exclusive memory. Only the primary compute unit of the tagged device
+    /// can access this buffer without a copy. Default for all device types; backward-
+    /// compatible with pre-ADR-020 descriptors whose `_reserved[0]` byte was `0x00`.
+    Standard,
+    /// CPU-accessible, device-mapped. No hardware-managed coherency. Examples:
+    /// `cudaMallocHost`, `hipHostMalloc`, `CL_MEM_ALLOC_HOST_PTR`.
+    HostPinned,
+    /// Hardware-managed unified or coherent memory. CPU and device can access this
+    /// buffer simultaneously; the hardware ensures coherency. Examples:
+    /// `cudaMallocManaged`, ROCm HMM, Metal `MTLStorageModeShared`.
+    Unified,
+    /// Peer-to-peer device memory. Accessible by a set of peer accelerators agreed
+    /// out of band (NVLink, xGMI, PCIe BAR). Not CPU-accessible without a copy.
+    Peer,
+    /// Implementation-private memory class (`0xF0`–`0xFE`). Semantics agreed out of band.
+    Private(PrivateMemoryClass),
+}
+
+impl MemoryClass {
+    /// Parses a [`MemoryClass`] from its one-byte wire representation.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::ReservedMemoryClass`] — byte is `0x04`–`0xEF`.
+    /// - [`Error::InvalidMemoryClass`] — byte is `0xFF`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::{MemoryClass, Error};
+    ///
+    /// assert_eq!(MemoryClass::from_byte(0x00).unwrap(), MemoryClass::Standard);
+    /// assert_eq!(MemoryClass::from_byte(0x01).unwrap(), MemoryClass::HostPinned);
+    /// assert_eq!(MemoryClass::from_byte(0x02).unwrap(), MemoryClass::Unified);
+    /// assert_eq!(MemoryClass::from_byte(0x03).unwrap(), MemoryClass::Peer);
+    /// assert!(matches!(MemoryClass::from_byte(0x04), Err(Error::ReservedMemoryClass(0x04))));
+    /// assert!(matches!(MemoryClass::from_byte(0xEF), Err(Error::ReservedMemoryClass(0xEF))));
+    /// assert!(matches!(MemoryClass::from_byte(0xFF), Err(Error::InvalidMemoryClass(0xFF))));
+    /// ```
+    pub fn from_byte(b: u8) -> crate::Result<Self> {
+        match b {
+            0x00 => Ok(Self::Standard),
+            0x01 => Ok(Self::HostPinned),
+            0x02 => Ok(Self::Unified),
+            0x03 => Ok(Self::Peer),
+            0x04..=0xEF => Err(Error::ReservedMemoryClass(b)),
+            0xF0..=0xFE => Ok(Self::Private(PrivateMemoryClass(b))),
+            0xFF => Err(Error::InvalidMemoryClass(b)),
+        }
+    }
+
+    /// Returns the one-byte wire representation of this memory class.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::MemoryClass;
+    ///
+    /// assert_eq!(MemoryClass::Standard.to_byte(), 0x00);
+    /// assert_eq!(MemoryClass::HostPinned.to_byte(), 0x01);
+    /// assert_eq!(MemoryClass::Unified.to_byte(), 0x02);
+    /// assert_eq!(MemoryClass::Peer.to_byte(), 0x03);
+    /// ```
+    pub fn to_byte(self) -> u8 {
+        match self {
+            Self::Standard => 0x00,
+            Self::HostPinned => 0x01,
+            Self::Unified => 0x02,
+            Self::Peer => 0x03,
+            Self::Private(p) => p.0,
+        }
+    }
+
+    /// Returns `true` if this is an implementation-private memory class (`0xF0`–`0xFE`).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::MemoryClass;
+    ///
+    /// assert!(!MemoryClass::Standard.is_private());
+    /// assert!(MemoryClass::from_byte(0xF0).unwrap().is_private());
+    /// ```
+    pub fn is_private(self) -> bool {
+        matches!(self, Self::Private(_))
+    }
+}
+
+impl fmt::Display for MemoryClass {
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::MemoryClass;
+    ///
+    /// assert_eq!(MemoryClass::Standard.to_string(), "standard");
+    /// assert_eq!(MemoryClass::Unified.to_string(), "unified");
+    /// ```
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Standard => f.write_str("standard"),
+            Self::HostPinned => f.write_str("host_pinned"),
+            Self::Unified => f.write_str("unified"),
+            Self::Peer => f.write_str("peer"),
+            Self::Private(p) => write!(f, "private(0x{:02X})", p.0),
+        }
+    }
+}
+
 // ── BufferHandle ──────────────────────────────────────────────────────────────
 
 /// A declaration of a buffer's size, alignment, device location, and sync mode.
@@ -506,7 +674,7 @@ impl fmt::Display for DeviceTag {
 /// memory address is communicated out-of-band via the interchange protocol or
 /// the C ABI (see `docs/impl/c-ffi.md`).
 ///
-/// ## Wire layout (ADR-018 § 3)
+/// ## Wire layout (ADR-018 § 3, ADR-020)
 ///
 /// | Offset | Field | Type | Size |
 /// |--------|-------|------|------|
@@ -514,7 +682,8 @@ impl fmt::Display for DeviceTag {
 /// | 8 | `alignment` | uint32 LE | 4 |
 /// | 12 | `device_tag` | uint8 | 1 |
 /// | 13 | `sync_mode` | uint8 | 1 |
-/// | 14 | `_reserved` | uint8\[2\] | 2 |
+/// | 14 | `memory_class` | uint8 | 1 |
+/// | 15 | `_reserved` | uint8 | 1 |
 ///
 /// # Alignment rules
 ///
@@ -530,15 +699,22 @@ impl fmt::Display for DeviceTag {
 /// # Examples
 ///
 /// ```
-/// use hurray_core::{BufferHandle, DeviceTag, SyncMode, MIN_BUFFER_ALIGNMENT};
+/// use hurray_core::{BufferHandle, DeviceTag, MemoryClass, SyncMode, MIN_BUFFER_ALIGNMENT};
 ///
-/// // Non-empty CPU buffer, minimum SIMD alignment.
+/// // Non-empty CPU buffer, minimum SIMD alignment, default Standard class.
 /// let handle = BufferHandle::new(1024, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
 /// assert_eq!(handle.byte_size(), 1024);
 /// assert_eq!(handle.alignment(), 64);
 /// assert_eq!(handle.device_tag(), DeviceTag::Cpu);
 /// assert_eq!(handle.sync_mode(), SyncMode::ProducerSynced);
+/// assert_eq!(handle.memory_class(), MemoryClass::Standard);
 /// assert!(!handle.is_empty());
+///
+/// // CUDA buffer with Unified memory class.
+/// let unified = BufferHandle::with_memory_class(
+///     4096, 4096, DeviceTag::Cuda, SyncMode::ProducerSynced, MemoryClass::Unified,
+/// ).unwrap();
+/// assert_eq!(unified.memory_class(), MemoryClass::Unified);
 ///
 /// // Empty buffer — alignment 1 is valid.
 /// let empty = BufferHandle::empty(DeviceTag::Cuda);
@@ -552,6 +728,7 @@ pub struct BufferHandle {
     alignment: u32,
     device_tag: DeviceTag,
     sync_mode: SyncMode,
+    memory_class: MemoryClass,
 }
 
 impl BufferHandle {
@@ -604,6 +781,52 @@ impl BufferHandle {
         device_tag: DeviceTag,
         sync_mode: SyncMode,
     ) -> crate::Result<Self> {
+        Self::with_memory_class(
+            byte_size,
+            alignment,
+            device_tag,
+            sync_mode,
+            MemoryClass::Standard,
+        )
+    }
+
+    /// Creates a new [`BufferHandle`] with an explicit memory class.
+    ///
+    /// Identical to [`BufferHandle::new`] but accepts a [`MemoryClass`] value.
+    /// Use this constructor when the buffer's memory class is not [`MemoryClass::Standard`]
+    /// (e.g., CUDA managed memory, Metal shared storage, or peer-to-peer memory).
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::AlignmentNotPowerOfTwo`] — `alignment` is not a power of two.
+    /// - [`Error::AlignmentBelowMinimum`] — `byte_size > 0` and `alignment < 64`.
+    /// - [`Error::InvalidSyncMode`] — `device_tag` is [`DeviceTag::Cpu`] and
+    ///   `sync_mode` is not [`SyncMode::ProducerSynced`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::{BufferHandle, DeviceTag, MemoryClass, SyncMode};
+    ///
+    /// // CUDA unified (managed) memory buffer.
+    /// let handle = BufferHandle::with_memory_class(
+    ///     4096, 4096, DeviceTag::Cuda, SyncMode::ProducerSynced, MemoryClass::Unified,
+    /// ).unwrap();
+    /// assert_eq!(handle.memory_class(), MemoryClass::Unified);
+    ///
+    /// // CPU host-pinned buffer.
+    /// let pinned = BufferHandle::with_memory_class(
+    ///     512, 64, DeviceTag::Cpu, SyncMode::ProducerSynced, MemoryClass::HostPinned,
+    /// ).unwrap();
+    /// assert_eq!(pinned.memory_class(), MemoryClass::HostPinned);
+    /// ```
+    pub fn with_memory_class(
+        byte_size: u64,
+        alignment: u32,
+        device_tag: DeviceTag,
+        sync_mode: SyncMode,
+        memory_class: MemoryClass,
+    ) -> crate::Result<Self> {
         if !alignment.is_power_of_two() {
             return Err(Error::AlignmentNotPowerOfTwo { alignment });
         }
@@ -622,6 +845,7 @@ impl BufferHandle {
             alignment,
             device_tag,
             sync_mode,
+            memory_class,
         })
     }
 
@@ -651,6 +875,7 @@ impl BufferHandle {
             alignment: 1,
             device_tag,
             sync_mode: SyncMode::ProducerSynced,
+            memory_class: MemoryClass::Standard,
         }
     }
 
@@ -721,6 +946,27 @@ impl BufferHandle {
         self.sync_mode
     }
 
+    /// Returns the [`MemoryClass`] describing how this buffer is accessible.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::{BufferHandle, DeviceTag, MemoryClass, SyncMode};
+    ///
+    /// // new() defaults to Standard.
+    /// let handle = BufferHandle::new(1024, 64, DeviceTag::Cuda, SyncMode::ProducerSynced).unwrap();
+    /// assert_eq!(handle.memory_class(), MemoryClass::Standard);
+    ///
+    /// // with_memory_class() sets an explicit class.
+    /// let unified = BufferHandle::with_memory_class(
+    ///     1024, 64, DeviceTag::Cuda, SyncMode::ProducerSynced, MemoryClass::Unified,
+    /// ).unwrap();
+    /// assert_eq!(unified.memory_class(), MemoryClass::Unified);
+    /// ```
+    pub fn memory_class(self) -> MemoryClass {
+        self.memory_class
+    }
+
     /// Returns `true` if this buffer has zero bytes (`byte_size == 0`).
     ///
     /// Readers MUST NOT dereference the pointer of an empty buffer. In C ABI
@@ -741,29 +987,26 @@ impl BufferHandle {
 
 // ── validate_colocation ───────────────────────────────────────────────────────
 
-/// Checks that all buffer handles in `handles` share the same [`DeviceTag`].
+/// Checks that all buffer handles in `handles` share the same [`DeviceTag`] and [`MemoryClass`].
 ///
 /// All buffers referenced by a single tensor descriptor — the data buffer plus
-/// all quantization-parameter buffers — MUST share the same device tag. A
-/// reader MUST reject a descriptor whose buffers carry different `device_tag`
-/// values (see `docs/spec/buffer-protocol.md § Device Colocation`).
+/// all quantization-parameter buffers — MUST share the same `device_tag` AND the
+/// same `memory_class` (see `docs/spec/buffer-protocol.md § Device Colocation`).
 ///
 /// Returns the common [`DeviceTag`] on success.
 ///
 /// # Errors
 ///
-/// - [`Error::EmptyBufferList`] — `handles` is empty (at least one handle is
-///   required to determine a common device).
-/// - [`Error::DeviceTagMismatch`] — two or more handles carry different device
-///   tags; the error captures the first tag seen (`expected`) and the first
-///   mismatching tag (`found`), both as raw wire bytes.
+/// - [`Error::EmptyBufferList`] — `handles` is empty.
+/// - [`Error::DeviceTagMismatch`] — two or more handles carry different device tags.
+/// - [`Error::MemoryClassMismatch`] — two or more handles carry different memory classes.
 ///
 /// # Examples
 ///
 /// ```
-/// use hurray_core::{BufferHandle, DeviceTag, Error, SyncMode, validate_colocation};
+/// use hurray_core::{BufferHandle, DeviceTag, Error, MemoryClass, SyncMode, validate_colocation};
 ///
-/// // All handles on CPU — succeeds.
+/// // All handles on CPU, all Standard — succeeds.
 /// let handles = [
 ///     BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap(),
 ///     BufferHandle::new(256, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap(),
@@ -774,25 +1017,43 @@ impl BufferHandle {
 /// assert!(matches!(validate_colocation(&[]), Err(Error::EmptyBufferList)));
 ///
 /// // Mixed devices — error.
-/// let mixed = [
+/// let mixed_device = [
 ///     BufferHandle::new(1024, 64, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap(),
 ///     BufferHandle::new(256, 64, DeviceTag::Cuda, SyncMode::ProducerSynced).unwrap(),
 /// ];
 /// assert!(matches!(
-///     validate_colocation(&mixed),
+///     validate_colocation(&mixed_device),
 ///     Err(Error::DeviceTagMismatch { expected: 0x00, found: 0x01 })
+/// ));
+///
+/// // Mixed memory classes — error.
+/// let mixed_class = [
+///     BufferHandle::new(1024, 64, DeviceTag::Cuda, SyncMode::ProducerSynced).unwrap(),
+///     BufferHandle::with_memory_class(256, 64, DeviceTag::Cuda, SyncMode::ProducerSynced, MemoryClass::Unified).unwrap(),
+/// ];
+/// assert!(matches!(
+///     validate_colocation(&mixed_class),
+///     Err(Error::MemoryClassMismatch { expected: 0x00, found: 0x02 })
 /// ));
 /// ```
 pub fn validate_colocation(handles: &[BufferHandle]) -> crate::Result<DeviceTag> {
     let first = handles.first().ok_or(Error::EmptyBufferList)?;
     let expected_tag = first.device_tag;
-    let expected_byte = expected_tag.to_byte();
+    let expected_tag_byte = expected_tag.to_byte();
+    let expected_class = first.memory_class;
+    let expected_class_byte = expected_class.to_byte();
 
     for handle in handles.iter().skip(1) {
         if handle.device_tag != expected_tag {
             return Err(Error::DeviceTagMismatch {
-                expected: expected_byte,
+                expected: expected_tag_byte,
                 found: handle.device_tag.to_byte(),
+            });
+        }
+        if handle.memory_class != expected_class {
+            return Err(Error::MemoryClassMismatch {
+                expected: expected_class_byte,
+                found: handle.memory_class.to_byte(),
             });
         }
     }
@@ -1697,6 +1958,169 @@ mod tests {
                     .unwrap_or_else(|e| panic!("from_byte(0x{b:02X}) failed: {e}"));
                 assert_eq!(tag.to_byte(), b, "round-trip failed for byte 0x{b:02X}");
             }
+        }
+    }
+
+    // ── MemoryClass ───────────────────────────────────────────────────────────
+
+    mod memory_class {
+        use super::*;
+
+        /// Spec § buffer-protocol.md Memory Class: 0x00 decodes to Standard.
+        #[test]
+        fn from_byte_standard() {
+            assert_eq!(MemoryClass::from_byte(0x00).unwrap(), MemoryClass::Standard);
+        }
+
+        /// Spec § buffer-protocol.md Memory Class: 0x01 decodes to HostPinned.
+        #[test]
+        fn from_byte_host_pinned() {
+            assert_eq!(
+                MemoryClass::from_byte(0x01).unwrap(),
+                MemoryClass::HostPinned
+            );
+        }
+
+        /// Spec § buffer-protocol.md Memory Class: 0x02 decodes to Unified.
+        #[test]
+        fn from_byte_unified() {
+            assert_eq!(MemoryClass::from_byte(0x02).unwrap(), MemoryClass::Unified);
+        }
+
+        /// Spec § buffer-protocol.md Memory Class: 0x03 decodes to Peer.
+        #[test]
+        fn from_byte_peer() {
+            assert_eq!(MemoryClass::from_byte(0x03).unwrap(), MemoryClass::Peer);
+        }
+
+        /// 0x04 is the first reserved byte; must return ReservedMemoryClass.
+        #[test]
+        fn from_byte_reserved_lower_bound() {
+            assert!(matches!(
+                MemoryClass::from_byte(0x04),
+                Err(Error::ReservedMemoryClass(0x04))
+            ));
+        }
+
+        /// 0xEF is the upper bound of the reserved range.
+        #[test]
+        fn from_byte_reserved_upper_bound() {
+            assert!(matches!(
+                MemoryClass::from_byte(0xEF),
+                Err(Error::ReservedMemoryClass(0xEF))
+            ));
+        }
+
+        /// 0xF0 (lower bound of private range) decodes to Private(0xF0).
+        #[test]
+        fn from_byte_private_lower_bound() {
+            let cls = MemoryClass::from_byte(0xF0).unwrap();
+            assert!(cls.is_private());
+            assert_eq!(cls.to_byte(), 0xF0);
+        }
+
+        /// 0xFE (upper bound of private range) decodes to Private(0xFE).
+        #[test]
+        fn from_byte_private_upper_bound() {
+            let cls = MemoryClass::from_byte(0xFE).unwrap();
+            assert!(cls.is_private());
+            assert_eq!(cls.to_byte(), 0xFE);
+        }
+
+        /// 0xFF is permanently reserved; must return InvalidMemoryClass.
+        #[test]
+        fn from_byte_invalid_sentinel() {
+            assert!(matches!(
+                MemoryClass::from_byte(0xFF),
+                Err(Error::InvalidMemoryClass(0xFF))
+            ));
+        }
+
+        /// All four named variants round-trip through to_byte → from_byte.
+        #[test]
+        fn named_variants_round_trip() {
+            for cls in [
+                MemoryClass::Standard,
+                MemoryClass::HostPinned,
+                MemoryClass::Unified,
+                MemoryClass::Peer,
+            ] {
+                assert_eq!(MemoryClass::from_byte(cls.to_byte()).unwrap(), cls);
+            }
+        }
+
+        /// BufferHandle::new() defaults to MemoryClass::Standard.
+        #[test]
+        fn buffer_handle_new_defaults_to_standard() {
+            let h = BufferHandle::new(64, 64, DeviceTag::Cuda, SyncMode::ProducerSynced).unwrap();
+            assert_eq!(h.memory_class(), MemoryClass::Standard);
+        }
+
+        /// BufferHandle::with_memory_class() stores the given class.
+        #[test]
+        fn buffer_handle_with_memory_class_unified() {
+            let h = BufferHandle::with_memory_class(
+                64,
+                64,
+                DeviceTag::Cuda,
+                SyncMode::ProducerSynced,
+                MemoryClass::Unified,
+            )
+            .unwrap();
+            assert_eq!(h.memory_class(), MemoryClass::Unified);
+        }
+
+        /// BufferHandle::empty() always uses Standard.
+        #[test]
+        fn empty_handle_is_standard() {
+            assert_eq!(
+                BufferHandle::empty(DeviceTag::Cpu).memory_class(),
+                MemoryClass::Standard
+            );
+        }
+
+        /// validate_colocation rejects mixed memory classes.
+        #[test]
+        fn validate_colocation_rejects_mixed_memory_class() {
+            let standard =
+                BufferHandle::new(64, 64, DeviceTag::Cuda, SyncMode::ProducerSynced).unwrap();
+            let unified = BufferHandle::with_memory_class(
+                64,
+                64,
+                DeviceTag::Cuda,
+                SyncMode::ProducerSynced,
+                MemoryClass::Unified,
+            )
+            .unwrap();
+            assert!(matches!(
+                validate_colocation(&[standard, unified]),
+                Err(Error::MemoryClassMismatch {
+                    expected: 0x00,
+                    found: 0x02
+                })
+            ));
+        }
+
+        /// validate_colocation accepts uniform memory class.
+        #[test]
+        fn validate_colocation_accepts_uniform_memory_class() {
+            let a = BufferHandle::with_memory_class(
+                64,
+                64,
+                DeviceTag::Cuda,
+                SyncMode::ProducerSynced,
+                MemoryClass::Unified,
+            )
+            .unwrap();
+            let b = BufferHandle::with_memory_class(
+                128,
+                64,
+                DeviceTag::Cuda,
+                SyncMode::ProducerSynced,
+                MemoryClass::Unified,
+            )
+            .unwrap();
+            assert_eq!(validate_colocation(&[a, b]).unwrap(), DeviceTag::Cuda);
         }
     }
 
