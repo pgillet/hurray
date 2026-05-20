@@ -143,6 +143,7 @@ value `0x000000FF` is reserved and MUST NOT be used.
 | `capability_flags` | `uint64` | Bitmask of client capabilities (see [Capability Flags](#capability-flags)). |
 | `supported_layouts` | `layout_entry[layout_count]` | Layout entries the client can consume, in preference order (most preferred first). Preceded by a `uint16` count field. Each entry is encoded as defined in [Layout Entry Encoding](#layout-entry-encoding). |
 | `supported_devices` | `uint8[device_count]` | Device tags the client can accept (see [Device Tags](#device-tags)). Preceded by a `uint16` count field. |
+| `supported_memory_classes` | `uint8[class_count]` | Memory class values the client can accept (see `buffer-protocol.md` § Memory Class). Preceded by a `uint16` count field. If absent or empty, the client is assumed to support `STANDARD` (`0x00`) only. |
 
 ### SERVER_HELLO Payload
 
@@ -153,6 +154,16 @@ value `0x000000FF` is reserved and MUST NOT be used.
 | `capability_flags` | `uint64` | Bitmask of server capabilities. |
 | `supported_layouts` | `layout_entry[layout_count]` | Layout entries the server can produce (possibly via transcoding). Preceded by a `uint16` count field. Each entry is encoded as defined in [Layout Entry Encoding](#layout-entry-encoding). |
 | `supported_devices` | `uint8[device_count]` | Device tags the server can target. Preceded by a `uint16` count field. |
+| `supported_memory_classes` | `uint8[class_count]` | Memory class values the server can produce. Preceded by a `uint16` count field. If absent or empty, the server is assumed to support `STANDARD` (`0x00`) only. |
+
+> **Note (non-normative):** `supported_memory_classes` advertises which memory
+> access classes a peer can produce or consume across all devices. A server that
+> supports CUDA `UNIFIED` (`cudaMallocManaged`) and CPU `STANDARD` would list
+> `[0x00, 0x02]`. A client that cannot handle `UNIFIED` buffers lists only
+> `[0x00]`; the server MUST NOT send a `UNIFIED` buffer to such a client. Memory
+> class negotiation follows the same fallback logic as device negotiation: the
+> server SHOULD prefer the client's advertised classes and MUST report the actual
+> `memory_class` in the `TENSOR_DESCRIPTOR` buffer handle.
 
 A client MUST send a `CLIENT_HELLO` as the first message on every new connection.
 The server MUST respond with a `SERVER_HELLO` before any other message. If the server
