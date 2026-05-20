@@ -69,6 +69,31 @@ pub enum Error {
     #[error("buffer list is empty")]
     EmptyBufferList,
 
+    /// The memory class byte is `0xFF`, which is permanently reserved by the spec.
+    ///
+    /// Readers MUST reject a buffer handle whose `memory_class` is `0xFF`.
+    #[error("invalid memory class: 0x{0:02X} is permanently reserved")]
+    InvalidMemoryClass(u8),
+
+    /// The memory class byte falls in the range `0x04`–`0xEF` reserved for future spec versions.
+    ///
+    /// Readers MUST reject a buffer handle with a `memory_class` in this range.
+    #[error("reserved memory class: 0x{0:02X} is reserved for future specification versions")]
+    ReservedMemoryClass(u8),
+
+    /// All buffers in a tensor descriptor must share the same memory class.
+    ///
+    /// The `expected` and `found` fields are raw wire bytes so that the error
+    /// message is independent of which memory classes the current implementation
+    /// recognises.
+    #[error("memory class mismatch: expected 0x{expected:02X}, found 0x{found:02X}")]
+    MemoryClassMismatch {
+        /// The wire byte of the first buffer's memory class.
+        expected: u8,
+        /// The wire byte of the mismatching buffer's memory class.
+        found: u8,
+    },
+
     /// A quantization descriptor is malformed.
     #[error("invalid quantization descriptor: {0}")]
     InvalidQuantization(String),

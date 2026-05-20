@@ -60,13 +60,14 @@ pub(crate) fn encode(d: &TensorDescriptor) -> Result<Vec<u8>> {
     }
     w.write_u8(d.buffers.len() as u8);
     // Per-handle: byte_size u64 (8), alignment u32 (4), device_tag u8 (1),
-    //             sync_mode u8 (1), _reserved u8[2] — total 16 bytes (ADR-018 § 3).
+    //             sync_mode u8 (1), memory_class u8 (1), _reserved u8 (1) — 16 bytes (ADR-020).
     for handle in &d.buffers {
         w.write_u64_le(handle.byte_size());
         w.write_u32_le(handle.alignment());
         w.write_u8(handle.device_tag().to_byte());
         w.write_u8(handle.sync_mode().to_byte());
-        w.write_zeros(2); // _reserved
+        w.write_u8(handle.memory_class().to_byte());
+        w.write_zeros(1); // _reserved
     }
 
     // ── Optional sections (in spec-mandated order) ────────────────────────────
