@@ -29,7 +29,8 @@ buffer table of the tensor descriptor (see `metadata.md` § Buffer Table).
 | 8 | `alignment` | `uint32` | Minimum alignment of the buffer's base address in bytes (little-endian). MUST be a power of two; MUST be at least `64` for non-empty buffers (`byte_size > 0`); any power-of-two value (including `1`) is valid for empty buffers (`byte_size == 0`). See [§ Empty Buffers](#empty-buffers). |
 | 12 | `device_tag` | `uint8` | Device where this buffer resides. See [§ Device Tags](#device-tags). |
 | 13 | `sync_mode` | `uint8` | Producer-side synchronisation mechanism in effect. See [§ Stream and Event Synchronisation](#stream-and-event-synchronisation). |
-| 14 | `_reserved` | `uint8[2]` | MUST be `0x00`. Readers MUST reject a descriptor with non-zero reserved bytes. |
+| 14 | `memory_class` | `uint8` | Memory access class. See [§ Memory Class](#memory-class). |
+| 15 | `_reserved` | `uint8` | MUST be `0x00`. Readers MUST reject a descriptor with non-zero reserved bytes. |
 
 All multi-byte fields MUST be encoded in little-endian byte order.
 
@@ -220,8 +221,9 @@ buffer protocol invariants in this section.
 ### Device Colocation
 
 All buffers referenced by a single tensor descriptor (data buffer + all
-quantization-parameter buffers) MUST share the same `device_tag`. A reader
-MUST reject a descriptor whose buffers carry different `device_tag` values.
+quantization-parameter buffers) MUST share the same `device_tag` AND the same
+`memory_class`. A reader MUST reject a descriptor whose buffers carry different
+`device_tag` or `memory_class` values.
 
 For `TENSOR_PUT` transfers (see `interchange.md`), the client unilaterally
 declares the destination `device_tag` in the descriptor; the server MAY reject
@@ -236,6 +238,73 @@ different device.
 When buffer handles are exchanged across machines, the device selection rules
 in `interchange.md` § Device Negotiation govern which device tag is valid for a
 given transfer.
+
+---
+
+## Memory Class
+
+The `memory_class` field identifies *how* a buffer is accessible — specifically,
+whether it can be read without copying by more than one compute unit simultaneously.
+`memory_class` is orthogonal to `device_tag`: the device tag names the allocator
+or hardware domain; the memory class names the access semantics within that domain.
+
+### Memory Class Values
+
+| Value | Name | Semantics |
+|-------|------|-----------|
+| `0x00` | `STANDARD` | Device-exclusive memory. Only the primary compute unit of the tagged device can access this buffer without a copy. This is the default for all device types and is the correct value for pre-ADR-020 descriptors whose `_reserved[0]` byte is `0x00`. |
+| `0x01` | `HOST_PINNED` | CPU-accessible, device-mapped. The CPU can read and write at native cache speed. The device can access the buffer over its interconnect (PCIe, NVLink) without an explicit copy, but at reduced bandwidth compared to device-local memory. No hardware-managed coherency between CPU and device caches. |
+| `0x02` | `UNIFIED` | Hardware-managed unified or coherent memory. Both CPU and device can access this buffer at any time; the hardware (driver or MMU) ensures coherency. Physical pages may migrate. |
+| `0x03` | `PEER` | Peer-to-peer device memory. Directly accessible by a specific set of peer accelerators agreed out of band (NVLink, xGMI, PCIe BAR mapping). Not CPU-accessible without a copy. The set of peers is communicated via the interchange protocol, not this field. |
+| `0x04`–`0xEF` | (reserved) | Reserved for future specification versions. Readers MUST reject a buffer handle with a `memory_class` in this range. |
+| `0xF0`–`0xFE` | (private) | Implementation-private memory classes. Valid only when paired with a private `device_tag` (`0xF0`–`0xFE`). Semantics are agreed out of band. A reader that does not recognise the private class MUST reject the handle unless the semantics have been agreed out of band. |
+| `0xFF` | (invalid) | Reserved. Readers MUST reject a buffer handle whose `memory_class` is `0xFF`. |
+
+A reader MUST reject a buffer handle whose `memory_class` value is in the range
+`0x04`–`0xEF` or equals `0xFF`.
+
+### Per-Device Validity
+
+Not every `(device_tag, memory_class)` combination is meaningful. The following
+table defines the valid combinations. A reader MUST reject a buffer handle whose
+`(device_tag, memory_class)` pair is not listed as valid for the declared device.
+Private device tags (`0xF0`–`0xFE`) MAY be paired with any private memory class
+(`0xF0`–`0xFE`) or `STANDARD` (`0x00`); semantics are out of band.
+
+| Device | `STANDARD` | `HOST_PINNED` | `UNIFIED` | `PEER` |
+|--------|-----------|---------------|-----------|--------|
+| CPU (`0x00`) | ✓ heap / `malloc` | ✓ page-locked for GPU DMA | ✓ CPU side of a unified address space | ✗ |
+| CUDA (`0x01`) | ✓ `cudaMalloc` | ✓ `cudaMallocHost` | ✓ `cudaMallocManaged` | ✓ NVLink / PCIe P2P |
+| ROCm (`0x02`) | ✓ `hipMalloc` | ✓ `hipHostMalloc` | ✓ `hipMallocManaged` (hw-dependent) | ✓ xGMI / PCIe |
+| Metal (`0x03`) | ✓ `MTLStorageModePrivate` | ✓ `MTLStorageModeManaged` (discrete GPU only) | ✓ `MTLStorageModeShared` (Apple Silicon) | ✗ |
+| Vulkan (`0x04`) | ✓ `DEVICE_LOCAL` | ✓ `HOST_VISIBLE` | ✓ `DEVICE_LOCAL\|HOST_VISIBLE` (integrated GPU) | ✓ via external memory extension |
+| WebGPU (`0x05`) | ✓ | ✗ | ✗ | ✗ |
+| Hexagon (`0x06`) | ✓ VTCM / DDR | ✓ FastRPC shared | ✓ FastRPC coherent | ✗ |
+| Level Zero (`0x07`) | ✓ `zeMemAllocDevice` | ✓ `zeMemAllocHost` | ✓ `zeMemAllocShared` | ✓ |
+| OpenCL (`0x08`) | ✓ device `cl_mem` | ✓ `CL_MEM_ALLOC_HOST_PTR` | ✓ SVM (`clSVMAlloc`, OpenCL 2.0+) | ✗ |
+
+> **Note (non-normative):** Metal `HOST_PINNED` (`MTLStorageModeManaged`) is
+> deprecated and unavailable on Apple Silicon. Producers targeting Apple Silicon
+> MUST use `UNIFIED` (`MTLStorageModeShared`) instead. The `HOST_PINNED` value
+> remains defined for discrete Metal GPU configurations.
+
+> **Note (non-normative):** ROCm `UNIFIED` requires hardware support for
+> Heterogeneous Memory Management (HMM). Producers MUST verify hardware support
+> before tagging a buffer `UNIFIED`; consumers MAY fall back to a copy-based path
+> if `UNIFIED` is declared but the consumer's runtime does not support HMM on the
+> current device.
+
+### Backward Compatibility
+
+Existing descriptors that encode `0x00` in what was previously the first byte of
+`_reserved[2]` are implicitly `STANDARD` (`memory_class = 0x00`) — the most
+conservative and correct semantics for any pre-ADR-020 allocation. No existing
+producer or consumer is broken by this reassignment.
+
+Readers compiled before this amendment will encounter a non-zero `memory_class`
+byte and reject it at the `_reserved` byte check. This is the intended fail-safe:
+a consumer that does not understand the memory class MUST NOT silently treat a
+`UNIFIED` buffer as `STANDARD`, as doing so would yield incorrect synchronisation.
 
 ---
 
@@ -461,4 +530,6 @@ and runtime boundaries. The following invariants MUST hold at all times:
 ## Open Questions
 
 All open questions in this section are resolved. See
-`docs/adr/ADR-009-release-callback-not-normative-refcount.md` (OQ-1).
+`docs/adr/ADR-009-release-callback-not-normative-refcount.md` (OQ-1) and
+`docs/adr/ADR-020-memory-class-field.md` (memory class field, device colocation
+extension, and `supported_memory_classes` interchange advertisement).
