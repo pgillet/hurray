@@ -75,49 +75,78 @@ still implement `__dlpack__` where DLPack supports the type.
   according to the [Device Tag Mapping (Hurray ↔ DLPack)](#device-tag-mapping-hurray--dlpack)
   table below.
 
-### Device Tag Mapping (Hurray ↔ DLPack)
+### Device and Memory Class Mapping (Hurray → DLPack)
 
-The Hurray device tag values defined in `docs/spec/buffer-protocol.md` § Device
-Tags are **not** numerically aligned with DLPack's `DLDeviceType` enum. The
-binding layer is responsible for translating between the two using the table
-below.
+The correct DLPack `DLDeviceType` for a Hurray buffer is determined by the
+**combination** of `device_tag` and `memory_class`. DLPack encodes what Hurray
+separates into two orthogonal fields as a single flat enum (e.g., `kDLCUDAHost`,
+`kDLCUDAManaged`). The binding layer is responsible for the translation; neither
+raw Hurray values NOR raw DLPack integers are stored in the other system's fields.
 
-| Hurray tag | Hurray device | DLPack constant | DLPack integer |
+See ADR-020 for the rationale behind the two-field design.
+
+#### Full mapping table
+
+| Hurray `device_tag` | Hurray `memory_class` | DLPack `DLDeviceType` | DLPack int |
 |---|---|---|---|
-| `0x00` | CPU | `kDLCPU` | 1 |
-| `0x01` | CUDA | `kDLCUDA` | 2 |
-| `0x02` | ROCm | `kDLROCM` | 10 |
-| `0x03` | Metal | — | — (no DLPack equivalent; use `kDLMetal` if/when standardised) |
-| `0x04` | Vulkan | `kDLVulkan` | 7 |
-| `0x05` | WebGPU | `kDLWebGPU` | 15 |
-| `0x06` | Hexagon | `kDLHexagon` | 16 |
-| `0x07` | Intel Level Zero / oneAPI | `kDLOneAPI` | 14 |
-| `0x08` | OpenCL | `kDLOpenCL` | 4 |
-| `0xF0`–`0xFE` | Implementation-private | — | (out-of-band agreement required) |
+| `0x00` CPU | `STANDARD` | `kDLCPU` | 1 |
+| `0x00` CPU | `HOST_PINNED` | `kDLCPU` | 1 |
+| `0x00` CPU | `UNIFIED` | `kDLCPU` | 1 |
+| `0x01` CUDA | `STANDARD` | `kDLCUDA` | 2 |
+| `0x01` CUDA | `HOST_PINNED` | `kDLCUDAHost` | 3 |
+| `0x01` CUDA | `UNIFIED` | `kDLCUDAManaged` | 13 |
+| `0x01` CUDA | `PEER` | — | raise `hurray.UnsupportedError` |
+| `0x02` ROCm | `STANDARD` | `kDLROCM` | 10 |
+| `0x02` ROCm | `HOST_PINNED` | `kDLROCMHost` | 11 |
+| `0x02` ROCm | `UNIFIED` | — | raise `hurray.UnsupportedError` |
+| `0x02` ROCm | `PEER` | — | raise `hurray.UnsupportedError` |
+| `0x03` Metal | `STANDARD` | `kDLMetal` | 8 |
+| `0x03` Metal | `HOST_PINNED` | `kDLMetal` | 8 |
+| `0x03` Metal | `UNIFIED` | `kDLMetal` | 8 |
+| `0x04` Vulkan | `STANDARD` | `kDLVulkan` | 7 |
+| `0x04` Vulkan | `HOST_PINNED` | `kDLVulkan` | 7 |
+| `0x04` Vulkan | `UNIFIED` | `kDLVulkan` | 7 |
+| `0x04` Vulkan | `PEER` | — | raise `hurray.UnsupportedError` |
+| `0x05` WebGPU | `STANDARD` | `kDLWebGPU` | 15 |
+| `0x06` Hexagon | `STANDARD` | `kDLHexagon` | 16 |
+| `0x06` Hexagon | `HOST_PINNED` | `kDLHexagon` | 16 |
+| `0x06` Hexagon | `UNIFIED` | `kDLHexagon` | 16 |
+| `0x07` Level Zero | `STANDARD` | `kDLOneAPI` | 14 |
+| `0x07` Level Zero | `HOST_PINNED` | `kDLOneAPI` | 14 |
+| `0x07` Level Zero | `UNIFIED` | `kDLOneAPI` | 14 |
+| `0x07` Level Zero | `PEER` | — | raise `hurray.UnsupportedError` |
+| `0x08` OpenCL | `STANDARD` | `kDLOpenCL` | 4 |
+| `0x08` OpenCL | `HOST_PINNED` | `kDLOpenCL` | 4 |
+| `0x08` OpenCL | `UNIFIED` | `kDLOpenCL` | 4 |
+| `0xF0`–`0xFE` | any | — | raise `hurray.UnsupportedError` |
+
+Combinations not listed above (e.g., WebGPU + HOST_PINNED, which is invalid per
+the per-device validity table in ADR-020) MUST NOT occur in a conforming
+descriptor; if encountered, the binding layer SHOULD raise `hurray.UnsupportedError`.
 
 Notes on the mapping:
 
-1. Hurray's integer values are intentionally distinct from DLPack's. The Hurray
-   tag space is a contiguous `uint8` enumeration with a well-defined private
-   range at `0xF0`–`0xFE`; DLPack's `DLDeviceType` is open-ended and
-   non-contiguous. Translation is the binding layer's responsibility — Hurray
-   tag values MUST NOT be passed directly to DLPack consumers, and DLPack
-   integer values MUST NOT be stored in a Hurray buffer handle's `device_tag`
-   field.
-2. When implementing `__dlpack_device__`, the binding layer MUST translate the
-   underlying buffer's `device_tag` to a `DLDeviceType` using this table. It
-   MUST NOT return the raw Hurray tag value.
-3. Metal has no standardised DLPack constant in the v0.8 specification. A
-   binding implementation SHOULD raise an informative exception (e.g.,
-   `hurray.UnsupportedError`) when asked to expose a Metal-backed tensor via
-   `__dlpack__` / `__dlpack_device__`, OR MAY return a vendor-specific
-   `DLDeviceType` value agreed with the consuming runtime out of band. If a
-   future DLPack revision standardises `kDLMetal`, this table is updated and
-   bindings MUST switch to the standardised value.
-4. For implementation-private Hurray tags (`0xF0`–`0xFE`), the binding layer
-   MUST NOT fabricate a DLPack mapping. It SHOULD raise `hurray.UnsupportedError`
-   unless the consumer has explicitly agreed on a private DLPack mapping out of
-   band.
+1. Hurray's `device_tag` values are intentionally distinct from DLPack's
+   `DLDeviceType` integers (ADR-016). Translation is the binding layer's
+   responsibility — Hurray tag values MUST NOT be passed directly to DLPack
+   consumers, and DLPack integers MUST NOT be stored in a Hurray buffer handle.
+2. When implementing `__dlpack_device__`, the binding layer MUST derive the
+   `DLDeviceType` from the `(device_tag, memory_class)` pair using the table
+   above. It MUST NOT return the raw Hurray `device_tag` value.
+3. CPU `HOST_PINNED` and `UNIFIED` both map to `kDLCPU` because DLPack does not
+   distinguish host-pinned from ordinary host memory from the CPU's perspective.
+   The `memory_class` field carries this information for consumers that need it.
+4. Metal `STANDARD`, `HOST_PINNED`, and `UNIFIED` all map to `kDLMetal` (8)
+   because DLPack does not distinguish Metal storage modes. Consumers that need
+   to distinguish them MUST read the Hurray `memory_class` field directly. Note:
+   `HOST_PINNED` (`StorageManaged`) is deprecated on Apple Silicon; see ADR-020.
+5. ROCm `UNIFIED` has no DLPack equivalent (`kDLROCMManaged` does not exist in
+   DLPack v1.0). The binding MUST raise `hurray.UnsupportedError`.
+6. `PEER` memory has no DLPack equivalent for any device type. The binding MUST
+   raise `hurray.UnsupportedError` for any `PEER` buffer exposed via DLPack.
+7. For implementation-private device tags (`0xF0`–`0xFE`), the binding layer
+   MUST NOT fabricate a DLPack mapping. It MUST raise `hurray.UnsupportedError`
+   unless the consumer has explicitly agreed on a private mapping out of band.
 
 ## NumPy Interoperability
 
