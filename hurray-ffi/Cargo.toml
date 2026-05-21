@@ -10,4 +10,7 @@ repository.workspace = true
 hurray-core = { workspace = true }
 
 [lib]
-crate-type = ["cdylib", "staticlib"]
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[build-dependencies]
+cbindgen = "0.27"
