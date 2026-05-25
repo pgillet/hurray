@@ -10,6 +10,14 @@ built on PyO3 and targets two primary interoperability goals:
 2. **Zero-copy interop** — buffers are shared with NumPy, PyTorch, JAX, and CuPy
    without copying, via DLPack and the buffer protocol.
 
+`hurray-python` MUST be a **strict reference implementation** of the
+[Python Array API Standard](https://data-apis.org/array-api/) for all Tier 1
+element types. Where the Array API standard specifies a behaviour (return value,
+exception type, error condition), `hurray-python` MUST follow it exactly. Hurray
+extensions (Tier 2 types, quantized types, device-specific behaviours) MUST NOT
+contradict the Array API standard; they operate in the space the standard explicitly
+leaves to implementations.
+
 ## Python Array API Compliance
 
 `hurray-python` MUST expose a `hurray.Tensor` class that implements the
@@ -68,6 +76,10 @@ still implement `__dlpack__` where DLPack supports the type.
 
 - `__dlpack__()` MUST return a PyCapsule named `"dltensor"` conforming to the DLPack
   specification (v0.8 or later).
+- `__dlpack__()` MUST raise the Python built-in `BufferError` for any element type
+  not in the DLPack type enum (e.g., `int4`, `float8` variants, quantized types).
+  This follows the Python Array API Standard, which specifies `BufferError` for
+  tensors that cannot be represented in DLPack.
 - The DLPack capsule MUST reference the original buffer without copying. The buffer's
   reference count MUST be incremented when the capsule is created and decremented when
   the capsule is consumed or deleted.
