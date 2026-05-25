@@ -29,14 +29,14 @@ leaves to implementations.
 | Method | Requirement |
 |---|---|
 | `__array_namespace__(api_version=None)` | MUST return a `hurray` namespace object that implements the Array API function set. |
-| `__dlpack__(stream=None)` | MUST return a DLPack capsule for zero-copy buffer sharing. |
-| `__dlpack_device__()` | MUST return a `(device_type, device_id)` tuple consistent with the tensor's `device_tag`. |
+| `__dlpack__(stream=None)` | MUST return a DLPack capsule for zero-copy buffer sharing. See [DLPack Interoperability](#dlpack-interoperability) for stream semantics. |
+| `__dlpack_device__()` | MUST return a `(DLDeviceType, device_id)` tuple. `device_id` is passed as runtime metadata at `Tensor` construction time and defaults to `0`. See [DLPack Interoperability](#dlpack-interoperability). |
 | `dtype` | MUST return an Array API-compatible dtype object for Tier 1 types. |
-| `shape` | MUST return a tuple of ints (or `None` for dynamic dimensions). |
+| `shape` | MUST return a `Tuple[Optional[int], ...]`. Each element is an `int` for a known dimension, or `None` for a dynamic (unknown) dimension. |
 | `ndim` | MUST return the number of dimensions. |
-| `size` | MUST return the total number of elements. |
+| `size` | MUST return `Optional[int]`: the total number of elements, or `None` if one or more dimensions are dynamic (unknown). |
 | `device` | MUST return a device object consistent with `__dlpack_device__`. |
-| `T` | MUST return a transposed view (rank-2 tensors) without copying. |
+| `T` | MUST return a transposed view without copying for rank-2 tensors. MUST raise `ValueError` if the array is not rank-2. |
 
 ### Tier 1 dtype mapping
 
@@ -83,6 +83,24 @@ still implement `__dlpack__` where DLPack supports the type.
 - The DLPack capsule MUST reference the original buffer without copying. The buffer's
   reference count MUST be incremented when the capsule is created and decremented when
   the capsule is consumed or deleted.
+
+### Stream parameter semantics
+
+The `stream` parameter of `__dlpack__(stream=None)` maps to the tensor's `SyncMode`:
+
+| `stream` value | Requirement |
+|---|---|
+| `None` | The tensor MUST have `SyncMode::ProducerSynced`. The buffer is already fully written; no synchronisation is required by the consumer. |
+| `-1` | The binding layer MUST perform a device-level synchronisation (equivalent to `cudaDeviceSynchronize` on CUDA) before returning the capsule. |
+| Positive integer (stream handle) | If the tensor is `ProducerSynced`, the buffer is already ready; the stream argument MUST be ignored. Tensors with `SyncMode::Event` or `SyncMode::ConsumerStream` are out of scope for the initial Layer 8a implementation; the binding MUST raise `BufferError` for these modes. |
+
+### Device ID
+
+DLPack requires a `device_id` integer (e.g., GPU index) that is not stored in the
+Hurray wire format. The `device_id` MUST be passed as runtime metadata when
+constructing a `hurray.Tensor` and defaults to `0` (the first device of that type).
+`__dlpack_device__()` MUST return this runtime `device_id`.
+
 - `__dlpack_device__()` MUST return the correct `(DLDeviceType, device_id)` pair
   according to the [Device Tag Mapping (Hurray ↔ DLPack)](#device-tag-mapping-hurray--dlpack)
   table below.
