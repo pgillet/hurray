@@ -148,15 +148,40 @@ Notes on the mapping:
    MUST NOT fabricate a DLPack mapping. It MUST raise `hurray.UnsupportedError`
    unless the consumer has explicitly agreed on a private mapping out of band.
 
+## Buffer Lifetime and Ownership
+
+Zero-copy interop requires that the source object's buffer remains valid for the
+entire lifetime of any object that holds a pointer to it. The binding layer MUST
+enforce the following rules:
+
+- **`hurray.from_numpy(array)` → `hurray.Tensor`**: The `Tensor` MUST hold a
+  strong Python reference to the source `ndarray` for its own lifetime. The
+  `ndarray` MUST NOT be garbage-collected while the `Tensor` is alive.
+
+- **`hurray.Tensor.__array__()` → `ndarray`**: The returned `ndarray` MUST
+  reference the source `Tensor` as its `base` object (via NumPy's `base`
+  attribute or an equivalent mechanism), so that the `Tensor` is kept alive for
+  as long as the `ndarray` holds the buffer.
+
+- **`hurray.Tensor.__dlpack__()` → capsule**: The DLPack capsule destructor MUST
+  decrement the `Tensor`'s Python reference count when the capsule is consumed or
+  deleted. The reference count MUST be incremented when the capsule is created.
+  This ensures the `Tensor` (and therefore its buffer) is not freed while a
+  DLPack consumer holds the capsule.
+
+The same rules apply to `hurray.SparseTensor` and its component `Tensor` views.
+
 ## NumPy Interoperability
 
 For CPU tensors with Tier 1 element types, `hurray-python` MUST support:
 
 - `hurray.Tensor.__array__()` — MUST return a NumPy `ndarray` backed by the same
   buffer (zero-copy for C-contiguous / row-major tensors; a copy is acceptable for
-  other layouts if NumPy cannot represent them natively).
+  other layouts if NumPy cannot represent them natively). See
+  [Buffer Lifetime and Ownership](#buffer-lifetime-and-ownership).
 - `hurray.from_numpy(array)` — MUST create a `hurray.Tensor` that shares the NumPy
-  array's buffer without copying, for C-contiguous arrays.
+  array's buffer without copying, for C-contiguous arrays. See
+  [Buffer Lifetime and Ownership](#buffer-lifetime-and-ownership).
 
 ## PyTorch Interoperability
 
