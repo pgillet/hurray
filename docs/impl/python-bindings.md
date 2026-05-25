@@ -191,7 +191,21 @@ All errors from the Rust core MUST be surfaced as Python exceptions:
 | Parse / validation errors | `hurray.InvalidDescriptorError` (subclass of `ValueError`) |
 | Buffer size / alignment errors | `hurray.BufferError` (subclass of `ValueError`) |
 | Unsupported type or layout | `hurray.UnsupportedError` (subclass of `NotImplementedError`) |
-| I/O errors | `hurray.IOError` (subclass of `OSError`) |
+| File I/O errors (Layer 8b) | `hurray.FileError` (subclass of `OSError`) |
+| Stream I/O errors (Layer 8b) | `hurray.StreamError` (subclass of `OSError`) |
+
+`hurray.FileError` is raised by file-level operations (`hurray.load()`,
+`hurray.save()`): file not found, permission denied, corrupt HRRYFILE container,
+unexpected EOF.
+
+`hurray.StreamError` is raised by the streaming reader/writer: frame corruption
+mid-stream, unexpected stream termination, framing errors on a pipe or socket.
+
+Both `FileError` and `StreamError` are subclasses of `OSError`; callers that do
+not need to distinguish between the two MAY catch `OSError` directly.
+
+`FileError` and `StreamError` are introduced in Layer 8b (file I/O bridge) and
+are not present in Layer 8a (core types + DLPack).
 
 Panics from the Rust core MUST NOT propagate as Python crashes. The PyO3 binding
 layer MUST catch panics and convert them to `hurray.InternalError` (subclass of
