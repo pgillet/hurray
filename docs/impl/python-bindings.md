@@ -329,6 +329,32 @@ reserved but not yet active:
   future release.
 - `hurray.is_strict()` always returns `True` in Layer 8a.
 
+## Array API Conformance Testing
+
+`hurray-python` MUST pass the
+[Python Array API Standard conformance test suite](https://github.com/data-apis/array-api-tests)
+for all Tier 1 element types in strict mode.
+
+- The conformance suite MUST be executed as part of the CI pipeline via GitHub
+  Actions on every pull request that touches `hurray-python/`.
+- The suite MUST be run against the Array API version(s) declared in the
+  [compatibility matrix](#compatibility-matrix) (see Packaging § Compatibility
+  matrix).
+- All tests that are not explicitly skipped with documented justification MUST pass.
+  Skips MUST be declared in a `conftest.py` or equivalent file alongside the reason
+  (e.g., a feature deferred to a later layer, a known upstream test-suite bug with a
+  link to the upstream issue).
+- Conformance is tested in strict mode only. Relaxed mode makes no Array API
+  conformance claims and MUST NOT be used when running the conformance suite.
+
+> **Note (non-normative):** The array-api-tests suite is run via:
+> ```bash
+> pip install array-api-tests
+> pytest array_api_tests/ --array-module=hurray
+> ```
+> The `--array-module` flag points the suite at the `hurray` package as the
+> Array API namespace under test.
+
 ## Packaging
 
 - The package MUST be installable via `pip install hurray`.
