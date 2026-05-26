@@ -403,28 +403,22 @@ a cross-implementation performance reference.
 
 ## Compatibility Matrix
 
-The table below records which `hurray-python` release series supports which
-[Python Array API Standard](https://data-apis.org/array-api/) version and
-[DLPack](https://dmlc.github.io/dlpack/latest/) specification version.
+The `hurray-python` package MUST maintain a compatibility matrix document at
+`hurray-python/COMPAT-MATRIX.md`. This document lives alongside the code — not in
+the spec — because it changes with every release.
 
-| `hurray-python` | Array API versions | DLPack (producer) | DLPack (consumer) | CPython |
-|---|---|---|---|---|
-| 0.1.x (Layer 8a) | 2023.12 | v1.0 (`dltensor_versioned`) | v0.8 + v1.0 | ≥ 3.10 |
+The compatibility matrix MUST record, for each `hurray-python` release series:
 
-Notes:
+- The supported [Python Array API Standard](https://data-apis.org/array-api/)
+  version(s) (e.g., 2022.12, 2023.12, 2025.12).
+- The [DLPack](https://dmlc.github.io/dlpack/latest/) specification version(s)
+  supported as producer and as consumer.
+- The supported CPython version range.
 
-- **Array API 2023.12** is the minimum supported version because `hurray-python`
-  exposes `bfloat16` (added in 2023.12) and implements `size` as `Optional[int]`
-  (semantics clarified in 2023.12). Array API 2022.12 is not supported.
-- **DLPack v1.0 producer:** `__dlpack__()` emits a `DLManagedTensorVersioned` capsule
-  named `"dltensor_versioned"` conforming to DLPack v1.0.
-- **DLPack v0.8 + v1.0 consumer:** `Tensor.from_dlpack()` and `from_torch()` accept
-  both the legacy `"dltensor"` (v0.8) and the versioned `"dltensor_versioned"` (v1.0)
-  capsule names, for compatibility with older NumPy and PyTorch releases.
-- This table MUST be updated when a new `hurray-python` release adds support for a
-  new Array API version (e.g., 2025.12) or a new DLPack revision.
-- The conformance test suite (see [Array API Conformance Testing](#array-api-conformance-testing))
-  MUST be run against every Array API version listed in this table.
+The matrix MUST be updated whenever a new `hurray-python` release adds or drops
+support for a standard version. The conformance test suite (see
+[Array API Conformance Testing](#array-api-conformance-testing)) MUST be run against
+every Array API version listed in the matrix.
 
 ## Packaging
 
