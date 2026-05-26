@@ -65,8 +65,14 @@ types**, `hurray-python` MUST expose a `hurray`-namespaced dtype object (e.g.,
 `hurray.dtype.int4`, `hurray.dtype.float8_e4m3`). These MUST NOT be mapped to a
 standard Array API dtype.
 
-Tensors with non-Array-API dtypes MUST NOT implement `__array_namespace__`. They MAY
-still implement `__dlpack__` where DLPack supports the type.
+In **strict mode** (the default), tensors with Tier 2 / quantized dtypes MUST NOT
+expose `__array_namespace__` — `hasattr(tensor, '__array_namespace__')` MUST return
+`False`. In **relaxed mode**, `__array_namespace__` is present on all tensors and
+returns the `hurray` namespace. See ADR-022 and [Runtime modes](#runtime-modes) below.
+
+Tensors with Tier 2 / quantized dtypes MAY still implement `__dlpack__` where DLPack
+supports the element type. For element types outside the DLPack type enum, `__dlpack__`
+MUST raise the Python built-in `BufferError` (in both modes).
 
 ## DLPack Interoperability
 
@@ -265,6 +271,63 @@ are not present in Layer 8a (core types + DLPack).
 Panics from the Rust core MUST NOT propagate as Python crashes. The PyO3 binding
 layer MUST catch panics and convert them to `hurray.InternalError` (subclass of
 `RuntimeError`).
+
+## Runtime Modes
+
+`hurray-python` supports two runtime compliance modes (see ADR-022 for the full
+rationale and architecture):
+
+### Strict mode (default)
+
+Strict mode enforces full compliance with the Python Array API Standard for all
+operations involving Tier 1 element types. This is the default mode.
+
+- `hurray.Tensor` instances with Tier 2 / quantized dtypes MUST NOT expose
+  `__array_namespace__` — `hasattr(tensor, '__array_namespace__')` returns `False`.
+- Array-API-shaped construction APIs (`hurray.zeros`, `hurray.ones`, `hurray.asarray`,
+  etc.) MUST raise `hurray.UnsupportedError` for Tier 2 / quantized dtypes.
+- All other Array API invariants (`size`, `T`, `shape`, DLPack semantics) are
+  enforced in both modes.
+
+### Relaxed mode
+
+Relaxed mode allows the full Hurray feature set, including Tier 2 / quantized types,
+through the standard API surface. The user opts out of Array API conformance
+guarantees for the duration of the scope.
+
+- `hurray.Tensor` instances with Tier 2 / quantized dtypes expose `__array_namespace__`
+  and return the `hurray` namespace object.
+- Array-API-shaped construction APIs accept Tier 2 / quantized dtypes.
+- The `hurray` namespace object returned by `__array_namespace__` is the same module
+  in both modes; it is not extended or restricted based on mode.
+
+### Public API
+
+| Name | Signature | Description |
+|---|---|---|
+| `hurray.set_strict(strict)` | `(bool) -> None` | Set the process-wide default mode (ContextVar default). |
+| `hurray.is_strict()` | `() -> bool` | Query the current mode in the calling context. |
+| `hurray.strict()` | context manager | Enter strict mode for the duration of the `with` block. |
+| `hurray.relaxed()` | context manager | Enter relaxed mode for the duration of the `with` block. |
+
+The mode is stored in a `contextvars.ContextVar` (thread-safe and coroutine-safe).
+Each OS thread and each asyncio `Task` inherits a copy of the context on spawn;
+changes in one thread do not affect concurrent threads.
+
+> **Note (non-normative):** Threads created with the raw `threading.Thread` API
+> inherit the ContextVar *default value* (strict), not the spawning thread's current
+> mode. This is standard Python `contextvars` behaviour.
+
+### Layer 8a status
+
+Layer 8a (core types + DLPack) implements **strict mode only**. The relaxed path is
+reserved but not yet active:
+
+- `hurray.set_strict(True)` is a no-op.
+- `hurray.set_strict(False)`, `hurray.relaxed()`, and entering a relaxed scope MUST
+  raise `NotImplementedError` with a message indicating the feature is reserved for a
+  future release.
+- `hurray.is_strict()` always returns `True` in Layer 8a.
 
 ## Packaging
 
