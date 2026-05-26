@@ -338,8 +338,7 @@ for all Tier 1 element types in strict mode.
 - The conformance suite MUST be executed as part of the CI pipeline via GitHub
   Actions on every pull request that touches `hurray-python/`.
 - The suite MUST be run against the Array API version(s) declared in the
-  [compatibility matrix](#compatibility-matrix) (see Packaging § Compatibility
-  matrix).
+  [Compatibility Matrix](#compatibility-matrix).
 - All tests that are not explicitly skipped with documented justification MUST pass.
   Skips MUST be declared in a `conftest.py` or equivalent file alongside the reason
   (e.g., a feature deferred to a later layer, a known upstream test-suite bug with a
@@ -401,6 +400,31 @@ a cross-implementation performance reference.
 > of this writing. The `hurray-python` suite is designed to be structurally compatible
 > with it from the start (function naming, shape/dtype parametrisation), so that
 > upstreaming requires minimal adaptation.
+
+## Compatibility Matrix
+
+The table below records which `hurray-python` release series supports which
+[Python Array API Standard](https://data-apis.org/array-api/) version and
+[DLPack](https://dmlc.github.io/dlpack/latest/) specification version.
+
+| `hurray-python` | Array API versions | DLPack (producer) | DLPack (consumer) | CPython |
+|---|---|---|---|---|
+| 0.1.x (Layer 8a) | 2023.12 | v1.0 (`dltensor_versioned`) | v0.8 + v1.0 | ≥ 3.10 |
+
+Notes:
+
+- **Array API 2023.12** is the minimum supported version because `hurray-python`
+  exposes `bfloat16` (added in 2023.12) and implements `size` as `Optional[int]`
+  (semantics clarified in 2023.12). Array API 2022.12 is not supported.
+- **DLPack v1.0 producer:** `__dlpack__()` emits a `DLManagedTensorVersioned` capsule
+  named `"dltensor_versioned"` conforming to DLPack v1.0.
+- **DLPack v0.8 + v1.0 consumer:** `Tensor.from_dlpack()` and `from_torch()` accept
+  both the legacy `"dltensor"` (v0.8) and the versioned `"dltensor_versioned"` (v1.0)
+  capsule names, for compatibility with older NumPy and PyTorch releases.
+- This table MUST be updated when a new `hurray-python` release adds support for a
+  new Array API version (e.g., 2025.12) or a new DLPack revision.
+- The conformance test suite (see [Array API Conformance Testing](#array-api-conformance-testing))
+  MUST be run against every Array API version listed in this table.
 
 ## Packaging
 
