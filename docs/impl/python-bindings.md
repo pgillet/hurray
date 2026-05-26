@@ -355,6 +355,53 @@ for all Tier 1 element types in strict mode.
 > The `--array-module` flag points the suite at the `hurray` package as the
 > Array API namespace under test.
 
+## Benchmark Suite
+
+`hurray-python` SHOULD maintain a benchmark suite that measures performance across
+the Array API surface and Hurray-specific interop paths. The long-term goal is to
+contribute this suite to the upstream
+[Python Array API Standard benchmark project](https://data-apis.org/array-api/latest/benchmark_suite.html),
+providing a reference implementation for other Array API consumers to compare against.
+
+### Benchmark categories
+
+The suite SHOULD cover the following categories:
+
+| Category | Representative benchmarks |
+|---|---|
+| **DLPack capsule** | `__dlpack__()` round-trip (create + consume); capsule destructor overhead; `from_dlpack()` from NumPy and PyTorch. |
+| **NumPy interop** | `from_numpy()` (zero-copy); `__array__()` (zero-copy); dtype coverage (all Tier 1 types). |
+| **PyTorch interop** | `from_torch()` and `to_torch()` round-trip on CPU and CUDA. |
+| **Array API construction** | `zeros`, `ones`, `full`, `arange`, `linspace` for representative shapes and dtypes. |
+| **Array API operations** | Elementwise ops (`add`, `multiply`, `exp`); reductions (`sum`, `max`) for representative shapes. |
+| **Memory lifecycle** | `Tensor` allocation + deallocation throughput; large-tensor zero-copy overhead (GiB-scale). |
+| **SparseTensor** | COO/CSR/CSC construction; SciPy round-trip. |
+
+### Tooling
+
+- Benchmarks MUST be runnable via a standard Python benchmarking tool (e.g.,
+  `pytest-benchmark` or `airspeed-velocity (asv)`).
+- Benchmarks SHOULD report: mean, standard deviation, and minimum latency; throughput
+  in GiB/s for memory-bound operations.
+- Regression tracking (detecting performance regressions across commits) SHOULD be
+  automated in CI. Benchmarks that regress by more than 10% relative to the baseline
+  SHOULD trigger a warning in the pull request.
+- The benchmark suite MUST be runnable independently from the conformance test suite.
+
+### Contribution to the Array API Standard
+
+When the upstream
+[Python Array API Standard benchmark suite](https://data-apis.org/array-api/latest/benchmark_suite.html)
+reaches a stable format, `hurray-python` benchmarks that cover the standard's function
+set SHOULD be submitted as contributions. Benchmark results from `hurray-python`
+SHOULD be published alongside results from NumPy, PyTorch, JAX, and CuPy to provide
+a cross-implementation performance reference.
+
+> **Note (non-normative):** The upstream benchmark suite is in early development as
+> of this writing. The `hurray-python` suite is designed to be structurally compatible
+> with it from the start (function naming, shape/dtype parametrisation), so that
+> upstreaming requires minimal adaptation.
+
 ## Packaging
 
 - The package MUST be installable via `pip install hurray`.
