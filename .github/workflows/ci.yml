@@ -59,4 +59,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: cargo test --workspace --all-features
+      # extension-module strips -lpython from the linker flags (correct for .so
+      # wheels loaded by Python, fatal for test binaries that call into libpython).
+      # Run hurray-python tests separately with default features (no extension-module).
+      - run: cargo test --workspace --all-features --exclude hurray-python
+      - run: cargo test -p hurray-python
