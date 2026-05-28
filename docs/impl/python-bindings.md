@@ -52,7 +52,7 @@ leaves to implementations.
 | `int64` | `xp.int64` |
 | `uint64` | `xp.uint64` |
 | `float16` | `xp.float16` |
-| `bfloat16` | `xp.bfloat16` (Array API 2023.12+) |
+| `bfloat16` | `xp.bfloat16` (Array API 2023.12+, present in 2025.12) |
 | `float32` | `xp.float32` |
 | `float64` | `xp.float64` |
 | `complex64` | `xp.complex64` |
@@ -409,18 +409,24 @@ Both native protocol names are implemented in Layer 8c (see ADR-023).
 
 `hurray-python` MUST pass the
 [Python Array API Standard conformance test suite](https://github.com/data-apis/array-api-tests)
-for all Tier 1 element types in strict mode.
+for all Tier 1 element types in strict mode, targeting **Array API 2025.12**.
 
 - The conformance suite MUST be executed as part of the CI pipeline via GitHub
   Actions on every pull request that touches `hurray-python/`.
 - The suite MUST be run against the Array API version(s) declared in the
-  [Compatibility Matrix](#compatibility-matrix).
+  [Compatibility Matrix](#compatibility-matrix). The current target is 2025.12.
 - All tests that are not explicitly skipped with documented justification MUST pass.
   Skips MUST be declared in a `conftest.py` or equivalent file alongside the reason
   (e.g., a feature deferred to a later layer, a known upstream test-suite bug with a
   link to the upstream issue).
 - Conformance is tested in strict mode only. Relaxed mode makes no Array API
   conformance claims and MUST NOT be used when running the conformance suite.
+
+> **Note (non-normative):** 2025.12 was chosen as the minimum target (rather than
+> 2023.12) to avoid retrofitting structural decisions — in particular, multi-return
+> functions such as `broadcast_arrays` and `meshgrid` MUST return `tuple` (not
+> `list`), and this is cheapest to get right from the start. 2025.12 is a strict
+> superset of 2023.12 and 2024.12; no existing 2023.12 behaviour is broken.
 
 > **Note (non-normative):** The array-api-tests suite is run via:
 > ```bash
