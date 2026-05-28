@@ -12,15 +12,24 @@ The conformance test suite must be run against every Array API version listed he
 
 | hurray-python | Array API versions | DLPack (producer) | DLPack (consumer) | Native buffer protocol | Min `HURRAY_C_ABI_VERSION` | CPython |
 |---|---|---|---|---|---|---|
-| 0.1.x | 2023.12 | v1.0 (`dltensor_versioned`) | v0.8 + v1.0 | not yet (Layer 8c) | — | ≥ 3.10 |
+| 0.1.x | 2025.12 | v1.0 (`dltensor_versioned`) | v0.8 + v1.0 | not yet (Layer 8c) | — | ≥ 3.10 |
 
 ## Notes
 
-### Array API 2023.12
+### Array API 2025.12
 
-This is the minimum supported version. `hurray-python` exposes `bfloat16` (added in
-Array API 2023.12) and implements `size` as `Optional[int]` (semantics clarified in
-2023.12). Array API 2022.12 is not supported.
+This is the minimum and current supported version. `hurray-python` targets 2025.12
+from day one to avoid retrofitting structural decisions (e.g. multi-return functions
+MUST return `tuple`, not `list`; `permute_dims` accepts negative axes; `expand_dims`
+accepts a tuple of axes).
+
+2025.12 is a superset of 2023.12 and 2024.12. Key features inherited:
+- `bfloat16` and `size: Optional[int]` (2023.12)
+- Integer-array (fancy) indexing; scalar arguments on ~35 binary ops (2024.12)
+- `broadcast_shapes`, `isin`, `linalg.eig`/`linalg.eigvals` (2025.12)
+
+Array API 2022.12 and 2023.12 are not declared; `__array_namespace__(api_version=...)`
+calls for older versions will raise `ValueError`.
 
 ### DLPack v1.0 producer
 
