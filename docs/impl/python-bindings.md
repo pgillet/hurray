@@ -183,6 +183,63 @@ Notes on the mapping:
 7. For implementation-private device tags (`0xF0`–`0xFE`), the binding layer
    MUST NOT fabricate a DLPack mapping. It MUST raise `hurray.UnsupportedError`
    unless the consumer has explicitly agreed on a private mapping out of band.
+8. For combinations in notes 5, 6, and 7 where `hurray.UnsupportedError` is
+   raised, Hurray-aware consumers SHOULD use the native buffer interchange
+   protocol (`__hurray_buffer__`) instead. See
+   [Native Buffer Interchange Protocol](#native-buffer-interchange-protocol).
+
+## Native Buffer Interchange Protocol
+
+`hurray-python` MUST expose a native buffer interchange protocol for
+hurray-to-hurray zero-copy transfers covering `(device_tag, memory_class)`
+combinations that DLPack v1.0 cannot represent (see ADR-023).
+
+- `hurray.Tensor.__hurray_buffer__(stream=None) -> PyCapsule` — MUST return a
+  PyCapsule named `"hurray_buffer"` wrapping a `HurrayBuffer` pointer from
+  `hurray-ffi`. Available for **all** dtypes (Tier 1, Tier 2, quantized) in
+  **both** strict and relaxed modes.
+- `hurray.from_hurray_buffer(obj, /) -> hurray.Tensor` — MUST accept any object
+  whose `__hurray_buffer__` returns a valid capsule and reconstruct a
+  `hurray.Tensor` that owns the transferred buffer.
+
+### Capsule lifetime
+
+The PyCapsule lifetime rules MUST match DLPack discipline:
+
+- **Capsule name on creation:** `"hurray_buffer"`.
+- **Capsule name after consumption:** `"used_hurray_buffer"`. The consumer MUST
+  rename the capsule before taking ownership, exactly as DLPack consumers rename
+  `"dltensor"` to `"used_dltensor"`.
+- **Capsule destructor:** if the capsule is destroyed while still named
+  `"hurray_buffer"`, the destructor MUST call `hurray_buffer_destroy` on the
+  wrapped pointer. If the capsule has been consumed (renamed), the consuming
+  `Tensor` MUST call `hurray_buffer_destroy` exactly once at its own finalisation.
+- The source `Tensor`'s Python reference count MUST be incremented when the
+  capsule is created and decremented in both the destructor and consume paths.
+  See [Buffer Lifetime and Ownership](#buffer-lifetime-and-ownership).
+
+### `stream` parameter
+
+`__hurray_buffer__(stream=None)` uses the same `stream` semantics as `__dlpack__`:
+see [Stream parameter semantics](#stream-parameter-semantics).
+
+### ABI versioning
+
+The capsule context MUST include the `HURRAY_C_ABI_VERSION` constant from the
+producing `hurray-ffi` build. `hurray.from_hurray_buffer` MUST verify the version
+before dereferencing the handle; a mismatch MUST raise `hurray.UnsupportedError`.
+
+### Discovery
+
+Consumers MUST discover support by probing
+`hasattr(obj, '__hurray_buffer__')`. There is no separate capability flag on the
+`hurray` namespace.
+
+### Layer 8a / 8b status
+
+`__hurray_buffer__` and `hurray.from_hurray_buffer` are **reserved** in Layers 8a
+and 8b but NOT implemented. `hasattr(tensor, '__hurray_buffer__')` MUST return
+`False` until Layer 8c ships.
 
 ## Buffer Lifetime and Ownership
 
@@ -218,6 +275,14 @@ For CPU tensors with Tier 1 element types, `hurray-python` MUST support:
 - `hurray.from_numpy(array)` — MUST create a `hurray.Tensor` that shares the NumPy
   array's buffer without copying, for C-contiguous arrays. See
   [Buffer Lifetime and Ownership](#buffer-lifetime-and-ownership).
+
+For tensors with Tier 2 / quantized element types, `hurray.Tensor.__array__()` MUST
+raise `hurray.UnsupportedError` in **both** strict and relaxed modes. NumPy has no
+dtype for `int4`, `float8` variants, or quantized/scaled types; returning an `ndarray`
+is structurally impossible regardless of compliance mode. Relaxed mode makes
+`__array_namespace__` accessible on Tier 2 tensors but does not grant NumPy
+representability. Callers that need the raw bytes SHOULD use the buffer protocol or
+DLPack directly.
 
 ## PyTorch Interoperability
 
@@ -271,6 +336,12 @@ are not present in Layer 8a (core types + DLPack).
 Panics from the Rust core MUST NOT propagate as Python crashes. The PyO3 binding
 layer MUST catch panics and convert them to `hurray.InternalError` (subclass of
 `RuntimeError`).
+
+`hurray.from_hurray_buffer` (Layer 8c) MUST raise:
+- `hurray.BufferError` if the capsule is null, already consumed (named
+  `"used_hurray_buffer"`), or otherwise invalid.
+- `hurray.UnsupportedError` if the `HURRAY_C_ABI_VERSION` embedded in the capsule
+  does not match the consumer's linked version.
 
 ## Runtime Modes
 
@@ -328,6 +399,11 @@ reserved but not yet active:
   raise `NotImplementedError` with a message indicating the feature is reserved for a
   future release.
 - `hurray.is_strict()` always returns `True` in Layer 8a.
+- `__hurray_buffer__` is reserved but absent from `hurray.Tensor`;
+  `hasattr(tensor, '__hurray_buffer__')` MUST return `False`.
+- `hurray.from_hurray_buffer` is reserved but not present as a public name.
+
+Both native protocol names are implemented in Layer 8c (see ADR-023).
 
 ## Array API Conformance Testing
 
