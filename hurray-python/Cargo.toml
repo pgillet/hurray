@@ -23,3 +23,9 @@ numpy = { workspace = true, optional = true }
 name = "hurray"
 # cdylib: the Python extension (.so / .pyd); rlib: lets integration tests link
 crate-type = ["cdylib", "rlib"]
+
+[lints.rust]
+# PyO3 0.22 create_exception! macro emits cfg(feature = "gil-refs") into the
+# destination crate's scope. Declare it as a known value to suppress the
+# unexpected_cfgs warning that -D warnings would otherwise promote to an error.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("gil-refs"))'] }

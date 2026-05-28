@@ -14,9 +14,13 @@
 
 use pyo3::prelude::*;
 
+pub mod errors;
 mod modes;
 
 /// Python module entry point.
+///
+/// Registers all public API items: version string, runtime mode functions,
+/// context managers, and exception classes.
 ///
 /// Registers the `hurray` Python module with all public API items.
 #[pymodule]
@@ -26,5 +30,6 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(modes::is_strict, m)?)?;
     m.add_class::<modes::StrictCtx>()?;
     m.add_class::<modes::RelaxedCtx>()?;
+    errors::register(m)?;
     Ok(())
 }
