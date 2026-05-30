@@ -14,15 +14,32 @@
 
 use pyo3::prelude::*;
 
+mod device;
+mod dtype;
 pub mod errors;
 mod modes;
+mod tensor;
 
 /// Python module entry point.
 ///
 /// Registers all public API items: version string, runtime mode functions,
-/// context managers, and exception classes.
+/// context managers, exception classes, dtype/device submodules, and the
+/// `Tensor` class.
 ///
-/// Registers the `hurray` Python module with all public API items.
+/// ## Module layout
+///
+/// | Name | Kind | Phase |
+/// |------|------|-------|
+/// | `hurray.__version__` | string | 8a.1 |
+/// | `hurray.set_strict` / `hurray.is_strict` | functions | 8a.1 |
+/// | `hurray.StrictCtx` / `hurray.RelaxedCtx` | context managers | 8a.1 |
+/// | `hurray.{Invalid,Buffer,Unsupported,Internal}Error` | exceptions | 8a.1 |
+/// | `hurray.Dtype` | class | 8a.2 |
+/// | `hurray.<tier1_type>` (e.g. `hurray.float32`) | `Dtype` constants | 8a.2 |
+/// | `hurray.dtype` | submodule | 8a.2 |
+/// | `hurray.Device` | class | 8a.2 |
+/// | `hurray.device` | submodule | 8a.2 |
+/// | `hurray.Tensor` | class | 8a.2 |
 #[pymodule]
 fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -31,5 +48,8 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<modes::StrictCtx>()?;
     m.add_class::<modes::RelaxedCtx>()?;
     errors::register(m)?;
+    dtype::register(m)?;
+    device::register(m)?;
+    tensor::register(m)?;
     Ok(())
 }
