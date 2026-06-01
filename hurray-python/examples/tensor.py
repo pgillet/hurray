@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 8a.2 smoke test: hurray.Tensor scaffold"""
+"""Smoke test: hurray.Tensor — construction, properties, and error paths."""
 import struct
 import hurray
 

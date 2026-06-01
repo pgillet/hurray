@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 8a.2 smoke test: hurray.Dtype"""
+"""Smoke test: hurray.Dtype — element type constants and properties."""
 import hurray
 
 # Tier 1 at top level

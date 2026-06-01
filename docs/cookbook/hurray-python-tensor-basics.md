@@ -1,18 +1,10 @@
-# Layer 8a.2 — Python Bindings: Dtype, Device, and Tensor Scaffold
+# hurray-python: Dtype, Device, and Tensor
 
-This entry covers three new items shipped in Phase 8a.2:
+This entry covers three foundational Python types:
 
 - `hurray.Dtype` — element type descriptor class + `hurray.dtype` submodule
 - `hurray.Device` — device descriptor class + `hurray.device` submodule
-- `hurray.Tensor` — tensor scaffold: constructor, properties, `__repr__`
-
-## Overview
-
-Phase 8a.2 builds the structural foundation for the Python API. The primary goal
-is to expose Hurray's core type system to Python in a way that is consistent with
-the Array API Standard naming conventions while leaving zero-copy DLPack interop
-(`__dlpack__`) and full Array API compliance (`__array_namespace__`) for later
-phases.
+- `hurray.Tensor` — tensor constructor and core properties
 
 ## Dtype system
 
@@ -221,22 +213,6 @@ dimension maps to `None` in the Python shape tuple and `size` returns `None`:
 # t.size == None
 ```
 
-## What is NOT in Phase 8a.2
-
-The following items are intentionally absent and will be added in later phases:
-
-| Feature | Phase |
-|---------|-------|
-| `Tensor.__array_namespace__` | 8a.3 — Array API compliance |
-| `Tensor.__dlpack__` / `__dlpack_device__` | 8a.3 — zero-copy DLPack |
-| `Tensor.__array__` | 8a.3 — NumPy interop |
-| Zero-copy buffer (`__hurray_buffer__`) | 8c |
-| `Tensor.T` (transpose) | 8a.4 — raises `NotImplementedError` for now |
-| `hurray.asarray`, `hurray.zeros`, etc. | 8b — Array API creation functions |
-
-`hasattr(tensor, '__array_namespace__')` returns `False` in Phase 8a.2. This is
-intentional — the Tensor class does not yet claim Array API conformance.
-
 ## Running the examples
 
 Build the wheel with maturin, then run:
@@ -245,9 +221,9 @@ Build the wheel with maturin, then run:
 cd hurray-python
 maturin develop           # build + install in-place (requires a venv)
 
-python examples/02_dtype.py
-python examples/03_device.py
-python examples/04_tensor.py
+python examples/dtype.py
+python examples/device.py
+python examples/tensor.py
 ```
 
 All three examples print a confirmation line and exit with code 0 on success.

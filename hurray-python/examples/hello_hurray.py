@@ -2,7 +2,7 @@
 Smoke test: import hurray, check version, and verify runtime mode API.
 
 Run after `maturin develop`:
-    python examples/00_hello_hurray.py
+    python examples/hello_hurray.py
 """
 
 import hurray

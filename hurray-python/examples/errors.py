@@ -2,7 +2,7 @@
 Smoke test: verify the hurray exception hierarchy.
 
 Run after `maturin develop`:
-    python examples/01_errors.py
+    python examples/errors.py
 """
 
 import hurray
