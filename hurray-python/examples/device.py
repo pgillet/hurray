@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Phase 8a.2 smoke test: hurray.Device"""
+"""Smoke test: hurray.Device — device constants and construction."""
 import hurray
 
 # Well-known constant

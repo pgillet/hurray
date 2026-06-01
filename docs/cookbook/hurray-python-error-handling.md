@@ -1,4 +1,4 @@
-# Layer 8a.1 — Python Bindings: Error Hierarchy + Panic Conversion
+# hurray-python Error Handling
 
 This entry covers the `hurray` Python exception hierarchy and the `catch_panic`
 utility for converting Rust panics to typed Python exceptions.
