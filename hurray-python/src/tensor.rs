@@ -1,28 +1,21 @@
-//! Python bindings for the Hurray tensor scaffold.
+//! Python bindings for the Hurray tensor type.
 //!
-//! Exposes [`Tensor`] as `hurray.Tensor` — a Python class that holds a tensor
-//! descriptor and an owned copy of the element data buffer.
+//! Exposes [`Tensor`] as `hurray.Tensor`: a Python class that holds a tensor
+//! descriptor, a buffer (owned or borrowed), and Python-side dtype/device handles.
 //!
-//! ## Phase 8a.2 scope
+//! ## Buffer ownership (D2)
 //!
-//! This phase implements the constructor, shape/dtype/device/ndim/size properties,
-//! and the `__repr__` dunder. The following are intentionally absent and will land
-//! in later phases:
+//! The buffer is stored in a [`BufferStore`] enum:
+//! - `Owned` — copied from the caller-supplied bytes at construction time.
+//! - `Borrowed` — zero-copy pointer into a NumPy array or similar source,
+//!   with a strong Python reference keeping the source alive.
 //!
-//! - `__array_namespace__` — 8a.3 (Array API compliance)
-//! - `__dlpack__` / `__dlpack_device__` — 8a.3 (zero-copy DLPack)
-//! - `__array__` — 8a.3 (NumPy interop)
-//! - `__hurray_buffer__` — 8c (internal buffer protocol)
-//! - `Tensor.T` — 8a.4 (transpose view)
-//!
-//! ## Buffer ownership (D1)
-//!
-//! The buffer is copied into a `Vec<u8>` at construction time. Zero-copy sharing
-//! via `__dlpack__` lands in Phase 8a.3.
+//! See `buffer.rs` for the full safety contract.
 
-// PyO3 0.22 macro expansion emits a redundant .into() on PyErr for functions
-// returning PyResult<()> — suppress the false positive across this module.
+// PyO3 0.22 macro expansion emits a redundant .into() on PyErr — suppress.
 #![allow(clippy::useless_conversion)]
+
+use std::os::raw::c_void;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
@@ -32,11 +25,13 @@ use hurray_core::{
     DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR, DYNAMIC, MIN_BUFFER_ALIGNMENT,
 };
 
+use crate::buffer::BufferStore;
 use crate::device::Device;
+use crate::dlpack;
 use crate::dtype::Dtype;
-use crate::errors::{BufferError, InvalidDescriptorError};
+use crate::errors::{BufferError, CopyRequiredError, InvalidDescriptorError, UnsupportedError};
 
-/// A Hurray tensor: element type, shape, device, and owned data buffer.
+/// A Hurray tensor: element type, shape, device, and a data buffer.
 ///
 /// ## Construction
 ///
@@ -51,20 +46,11 @@ use crate::errors::{BufferError, InvalidDescriptorError};
 /// | `shape` | `list[int]` | — |
 /// | `device` | `hurray.Device` | `hurray.device.cpu` |
 ///
-/// ## Buffer copy (Phase 8a.2)
+/// ## Zero-copy interop
 ///
-/// The buffer is **copied** into an owned `Vec<u8>` at construction time.
-/// Zero-copy sharing via `__dlpack__` and `__hurray_buffer__` will be added in
-/// Phases 8a.3 and 8c respectively. Until then callers should not rely on the
-/// buffer identity being preserved.
-///
-/// ## What is NOT present in Phase 8a.2
-///
-/// - `__array_namespace__` — `hasattr(tensor, '__array_namespace__')` returns `False` (D2)
-/// - `__dlpack__` / `__dlpack_device__` — lands in Phase 8a.3
-/// - `__array__` — lands in Phase 8a.3
-/// - `__hurray_buffer__` — lands in Phase 8c
-/// - `Tensor.T` — raises `NotImplementedError` (D6)
+/// Use [`hurray.from_numpy`] or [`hurray.from_torch`] to create tensors that share
+/// the source buffer without copying. The `Tensor` holds a strong Python reference
+/// to the source object so its buffer remains valid.
 ///
 /// ## Examples (Python)
 ///
@@ -79,17 +65,16 @@ use crate::errors::{BufferError, InvalidDescriptorError};
 /// assert t.size == 6
 /// assert t.dtype == hurray.float32
 /// assert t.device.kind == "cpu"
-/// assert not hasattr(t, "__array_namespace__")
 /// ```
 #[pyclass(name = "Tensor")]
 #[derive(Debug)]
 pub struct Tensor {
     /// Tensor descriptor carrying element type, shape, layout, and buffer metadata.
     pub descriptor: TensorDescriptor,
-    /// Owned copy of the element data buffer (D1: zero-copy deferred to Phase 8a.3).
-    pub buffer: Vec<u8>,
-    /// Python-side dtype handle; holds the same object the caller passed in, so
-    /// `tensor.dtype is hurray.float32` holds when the user passes a singleton (D3).
+    /// Element data buffer — owned copy or zero-copy borrowed reference (D2).
+    pub buffer: BufferStore,
+    /// Python-side dtype handle; holds the caller's object so
+    /// `tensor.dtype is hurray.float32` holds when the user passes a singleton.
     pub dtype_py: Py<Dtype>,
     /// Python-side device handle (kept alive alongside the descriptor).
     pub device_py: Py<Device>,
@@ -129,8 +114,8 @@ impl Tensor {
         let device_py: Py<Device> = match device {
             Some(d) => d,
             None => {
-                // Default to hurray.device.cpu — retrieve via sys.modules so
-                // we get the singleton already constructed by device::register.
+                // Default to hurray.device.cpu — retrieve the singleton via sys.modules
+                // so `tensor.device is hurray.device.cpu` holds.
                 let sys = py.import_bound("sys")?;
                 let modules = sys.getattr("modules")?;
                 let device_mod = modules.get_item("hurray.device")?;
@@ -140,7 +125,7 @@ impl Tensor {
         };
 
         // Retain the caller's Dtype object so `tensor.dtype is hurray.float32`
-        // holds when the user passes a registered singleton constant (D3).
+        // holds when the user passes a registered singleton constant.
         let dtype_py: Py<Dtype> = dtype.clone().unbind();
 
         // ── 2. Parse and validate shape ──────────────────────────────────────
@@ -161,8 +146,6 @@ impl Tensor {
             .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
 
         // ── 3. Extract buffer bytes ──────────────────────────────────────────
-        // Try &[u8] first (zero-copy for bytes/bytearray in CPython);
-        // fall back to PyBytes extraction.
         let buf_bytes: &[u8] = if let Ok(b) = buffer.extract::<&[u8]>() {
             b
         } else if let Ok(b) = buffer.downcast::<PyBytes>() {
@@ -174,8 +157,6 @@ impl Tensor {
         };
 
         // ── 4. Validate buffer size ──────────────────────────────────────────
-        // element_count is None for DYNAMIC shapes; buffer size cannot be validated
-        // until all dims are resolved. Deferred to access time (Phase 8a.3+).
         let element_count = hurray_shape.element_count().unwrap_or(0);
         let expected = buffer_size_bytes(dtype.get().inner, element_count);
         if (buf_bytes.len() as u64) < expected {
@@ -230,7 +211,7 @@ impl Tensor {
 
         Ok(Self {
             descriptor,
-            buffer: buf_bytes.to_vec(),
+            buffer: BufferStore::from_slice(buf_bytes),
             dtype_py,
             device_py,
         })
@@ -252,8 +233,8 @@ impl Tensor {
 
     /// The shape of this tensor as a tuple of `int` (or `None` for dynamic dims).
     ///
-    /// Dynamic dimensions (represented as `u64::MAX` in the wire format) are
-    /// mapped to `None`. All other dimensions are returned as Python `int`.
+    /// Dynamic dimensions (`DYNAMIC = u64::MAX` in the wire format) are mapped to
+    /// `None`. All other dimensions are returned as Python `int`.
     ///
     /// ## Examples
     ///
@@ -272,8 +253,7 @@ impl Tensor {
                 if dim == DYNAMIC {
                     py.None()
                 } else {
-                    // dim is u64; use it directly so dims > i64::MAX are not truncated.
-                    // Python int is arbitrary-precision and handles the full u64 range.
+                    // dim is u64; Python int is arbitrary-precision so no truncation.
                     dim.to_object(py)
                 }
             })
@@ -294,8 +274,6 @@ impl Tensor {
     }
 
     /// Total number of logical elements, or `None` if any dimension is dynamic.
-    ///
-    /// Returns `None` when the shape contains any `DYNAMIC` dimension (D7).
     ///
     /// ## Examples
     ///
@@ -321,19 +299,230 @@ impl Tensor {
 
     /// Transpose view — **not yet implemented**.
     ///
-    /// Raises `NotImplementedError` with a message pointing to Phase 8a.4 (D6).
+    /// Raises `NotImplementedError`; lands in a future pass.
     #[getter(T)]
     pub fn t(&self) -> PyResult<()> {
         Err(pyo3::exceptions::PyNotImplementedError::new_err(
-            "Tensor.T is not yet implemented; lands in Phase 8a.4",
+            "Tensor.T is not yet implemented",
         ))
+    }
+
+    // ── DLPack protocol ───────────────────────────────────────────────────────
+
+    /// Return a DLPack v1.0 capsule (`"dltensor_versioned"`) for zero-copy buffer sharing.
+    ///
+    /// The capsule wraps a `DLManagedTensorVersioned` that holds a strong Python
+    /// reference to this `Tensor`, keeping the buffer alive for the capsule's lifetime.
+    ///
+    /// ## Parameters
+    ///
+    /// - `stream` — accepted for API compatibility but ignored; all tensors are
+    ///   `ProducerSynced` in this pass (D6). GPU stream synchronisation is deferred.
+    /// - `max_version`, `dl_device`, `copy` — accepted for forward-compatibility (D8);
+    ///   not yet honored.
+    ///
+    /// ## Errors
+    ///
+    /// - `builtins.BufferError` — element type not in DLPack (e.g. `bool`, `int4`) (D9).
+    /// - `hurray.UnsupportedError` — layout cannot be expressed as DLPack strides.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import numpy as np, hurray
+    ///
+    /// buf = bytes(24)
+    /// t = hurray.Tensor(buf, hurray.float32, [2, 3])
+    /// capsule = t.__dlpack__()
+    /// arr = np.from_dlpack(capsule)
+    /// assert arr.shape == (2, 3)
+    /// ```
+    #[pyo3(signature = (*, stream=None, max_version=None, dl_device=None, copy=None))]
+    pub fn __dlpack__(
+        slf: &Bound<'_, Self>,
+        // D6: stream accepted but ignored; all tensors are ProducerSynced in this pass.
+        // D8: max_version, dl_device, copy accepted for forward-compat; not yet honored.
+        stream: Option<PyObject>,
+        max_version: Option<PyObject>,
+        dl_device: Option<PyObject>,
+        copy: Option<PyObject>,
+    ) -> PyResult<PyObject> {
+        // Suppress unused-variable warnings for intentionally-ignored parameters.
+        let _ = (stream, max_version, dl_device, copy);
+        let py = slf.py();
+        let t = slf.borrow();
+
+        let (dev_tag, mem_class, dev_id) = {
+            let dev = t.device_py.borrow(py);
+            (dev.tag, dev.memory_class, dev.device_id)
+        };
+
+        let device_type = dlpack::device_to_dlpack(dev_tag, mem_class)?;
+        let data_ptr = t.buffer.as_ptr() as *mut c_void;
+        let shape = t.descriptor.shape.dims();
+
+        // Keep the Tensor alive for the capsule's entire lifetime via a strong ref.
+        let tensor_obj: PyObject = slf.clone().into_any().unbind();
+
+        dlpack::build_capsule(
+            py,
+            tensor_obj,
+            data_ptr,
+            t.descriptor.element_type,
+            shape,
+            &t.descriptor.layout,
+            device_type,
+            dev_id,
+        )
+    }
+
+    /// Return the `(DLDeviceType, device_id)` tuple for this tensor.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// device_type, device_id = t.__dlpack_device__()
+    /// assert device_type == 1  # kDLCPU
+    /// ```
+    pub fn __dlpack_device__(&self, py: Python<'_>) -> PyResult<Py<PyTuple>> {
+        let dev = self.device_py.borrow(py);
+        let device_type = dlpack::device_to_dlpack(dev.tag, dev.memory_class)?;
+        let tup = PyTuple::new_bound(py, [device_type, dev.device_id]).unbind();
+        Ok(tup)
+    }
+
+    // ── NumPy interop ─────────────────────────────────────────────────────────
+
+    /// Return a NumPy `ndarray` backed by this tensor's buffer (zero-copy via DLPack).
+    ///
+    /// Only supported for CPU tensors with Tier 1 element types. The returned array
+    /// shares the buffer — modifying it will modify this tensor's data.
+    ///
+    /// ## Parameters
+    ///
+    /// - `dtype` — if supplied, the returned array will be cast to this NumPy dtype.
+    /// - `copy` — if `False`, raises `CopyRequiredError` when a cast is needed (NumPy
+    ///   2.0 convention, NEP 47) (D4).
+    ///
+    /// ## Errors
+    ///
+    /// - `hurray.UnsupportedError` — non-CPU tensor or Tier 2 / quantized dtype.
+    /// - `builtins.BufferError` — element type not representable in DLPack (e.g. bool).
+    /// - `hurray.CopyRequiredError` — `copy=False` but a dtype cast is required (D4).
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import struct, numpy as np, hurray
+    ///
+    /// buf = struct.pack("6f", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
+    /// t = hurray.Tensor(buf, hurray.float32, [2, 3])
+    /// arr = t.__array__()
+    /// assert arr.shape == (2, 3)
+    /// assert arr.dtype == np.float32
+    /// ```
+    #[pyo3(signature = (dtype = None, copy = None))]
+    pub fn __array__(
+        slf: &Bound<'_, Self>,
+        dtype: Option<PyObject>,
+        // D4: copy=False + cast needed → CopyRequiredError (NumPy 2.0 NEP 47 convention).
+        copy: Option<PyObject>,
+    ) -> PyResult<PyObject> {
+        let py = slf.py();
+        let t = slf.borrow();
+
+        // Only CPU tensors — non-CPU would require device→host copy which NumPy can't do.
+        {
+            let dev = t.device_py.borrow(py);
+            if dev.tag != hurray_core::DeviceTag::Cpu {
+                return Err(UnsupportedError::new_err(
+                    "__array__ requires a CPU tensor; non-CPU tensors cannot be \
+                     converted to NumPy without a device→host copy",
+                ));
+            }
+        }
+
+        // Only Tier 1 types (NumPy has no dtype for int4, float8, quantized types).
+        if !is_tier1(t.descriptor.element_type) {
+            return Err(UnsupportedError::new_err(format!(
+                "__array__ is not supported for '{}'; NumPy has no equivalent dtype",
+                crate::dtype::element_type_name(t.descriptor.element_type),
+            )));
+        }
+
+        // Use DLPack as the bridge to NumPy — numpy.from_dlpack creates a zero-copy
+        // view and registers its own finaliser that calls the DLPack deleter, which
+        // holds a strong ref back to this Tensor. The memory chain is:
+        //   ndarray → DLPack capsule → deleter → Tensor → BufferStore
+        drop(t); // release borrow before calling __dlpack__
+        let capsule = Tensor::__dlpack__(slf, None, None, None, None)?;
+
+        let np = py.import_bound("numpy")?;
+        let arr = np.call_method1("from_dlpack", (capsule,))?;
+
+        // Handle dtype cast request (D4).
+        if let Some(target_dtype) = dtype {
+            let target_dtype_bound = target_dtype.bind(py);
+            // Check whether a cast would actually change the dtype.
+            let arr_dtype = arr.getattr("dtype")?;
+            let needs_cast = !arr_dtype.eq(target_dtype_bound)?;
+            if needs_cast {
+                // D4: copy=False and cast required → raise CopyRequiredError.
+                let copy_false = copy
+                    .as_ref()
+                    .map(|c| c.bind(py).eq(false).unwrap_or(false))
+                    .unwrap_or(false);
+                if copy_false {
+                    return Err(CopyRequiredError::new_err(
+                        "copy=False was requested but a dtype cast is required; \
+                         remove copy=False or pass dtype=None to allow the cast",
+                    ));
+                }
+                let cast = arr.call_method1("astype", (target_dtype_bound,))?;
+                return Ok(cast.into());
+            }
+        }
+
+        Ok(arr.into())
+    }
+
+    // ── PyTorch interop ───────────────────────────────────────────────────────
+
+    /// Return a `torch.Tensor` sharing this tensor's buffer (zero-copy via DLPack).
+    ///
+    /// `torch` is imported at call time — `import hurray` does not require PyTorch
+    /// to be installed (D7).
+    ///
+    /// ## Errors
+    ///
+    /// - `ImportError` — PyTorch is not installed.
+    /// - `builtins.BufferError` — element type not representable in DLPack.
+    /// - `hurray.UnsupportedError` — device/layout not supported via DLPack.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    /// t = hurray.Tensor(bytes(16), hurray.float32, [4])
+    /// torch_t = t.to_torch()
+    /// ```
+    pub fn to_torch(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+        let py = slf.py();
+        // D7: import torch at call time to avoid a hard dependency at module load.
+        let torch = py.import_bound("torch").map_err(|_| {
+            pyo3::exceptions::PyImportError::new_err(
+                "torch is not installed; install it with: pip install torch",
+            )
+        })?;
+        let capsule = Tensor::__dlpack__(slf, None, None, None, None)?;
+        let dlpack_mod = torch.getattr("utils")?.getattr("dlpack")?;
+        let torch_tensor = dlpack_mod.call_method1("from_dlpack", (capsule,))?;
+        Ok(torch_tensor.into())
     }
 
     // ── Dunders ───────────────────────────────────────────────────────────────
 
     /// Tensors are unhashable — mutable objects must not be used as dict keys.
-    ///
-    /// Raises `TypeError: unhashable type: 'Tensor'`.
     fn __hash__(&self) -> PyResult<isize> {
         Err(pyo3::exceptions::PyTypeError::new_err(
             "unhashable type: 'Tensor'",
@@ -353,6 +542,30 @@ impl Tensor {
     }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Return true for Array API Tier 1 element types (those NumPy can represent).
+pub(crate) fn is_tier1(ty: hurray_core::ElementType) -> bool {
+    use hurray_core::ElementType::*;
+    matches!(
+        ty,
+        Bool | Int8
+            | Int16
+            | Int32
+            | Int64
+            | Uint8
+            | Uint16
+            | Uint32
+            | Uint64
+            | Float16
+            | BFloat16
+            | Float32
+            | Float64
+            | Complex64
+            | Complex128
+    )
+}
+
 // ── Registration ──────────────────────────────────────────────────────────────
 
 /// Register `Tensor` on the `hurray` module.
@@ -368,21 +581,18 @@ mod tests {
     use super::*;
     use hurray_core::{DeviceTag, ElementType, MemoryClass};
     use pyo3::Python;
+    use std::os::raw::c_int;
 
     fn init() {
         pyo3::prepare_freethreaded_python();
     }
 
-    /// Build a minimal `hurray` Python module, register dtype + device + tensor,
-    /// and return it as a `Py<PyModule>`. Used to drive tests that need the full
-    /// module graph (so `hurray.device.cpu` is resolvable).
     fn build_module(py: Python<'_>) -> Bound<'_, pyo3::types::PyModule> {
         let m = pyo3::types::PyModule::new_bound(py, "hurray").unwrap();
         crate::errors::register(&m).unwrap();
         crate::dtype::register(&m).unwrap();
         crate::device::register(&m).unwrap();
         register(&m).unwrap();
-        // Register the module itself so sub-module lookups work.
         let sys = py.import_bound("sys").unwrap();
         let modules = sys.getattr("modules").unwrap();
         modules.set_item("hurray", &m).unwrap();
@@ -390,7 +600,6 @@ mod tests {
     }
 
     fn float32_buf_2x3() -> Vec<u8> {
-        // 6 × f32 = 24 bytes
         let floats: [f32; 6] = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0];
         floats.iter().flat_map(|f| f.to_le_bytes()).collect()
     }
@@ -414,9 +623,9 @@ mod tests {
 
             assert_eq!(tensor.ndim(), 2);
             assert_eq!(tensor.size(), Some(6));
-
-            let shape_tuple = tensor.shape(py).unwrap();
-            let shape_repr = shape_tuple
+            let shape_repr = tensor
+                .shape(py)
+                .unwrap()
                 .bind(py)
                 .repr()
                 .unwrap()
@@ -424,10 +633,7 @@ mod tests {
                 .unwrap()
                 .to_owned();
             assert_eq!(shape_repr, "(2, 3)");
-
-            let dtype_obj = tensor.dtype(py);
-            let dtype_ref = dtype_obj.borrow(py);
-            assert_eq!(dtype_ref.name(), "float32");
+            assert_eq!(tensor.dtype(py).borrow(py).name(), "float32");
         });
     }
 
@@ -436,7 +642,6 @@ mod tests {
         init();
         Python::with_gil(|py| {
             let _m = build_module(py);
-            // 8 elements × 4 bits = 32 bits = 4 bytes.
             let buf: Vec<u8> = vec![0xAB, 0xCD, 0xEF, 0x12];
             let py_buf = PyBytes::new_bound(py, &buf);
             let dtype = Py::new(
@@ -448,10 +653,8 @@ mod tests {
             .unwrap();
             let tensor = Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![8], None)
                 .expect("int4 construction should succeed");
-
             assert_eq!(tensor.size(), Some(8));
-            let dtype_obj = tensor.dtype(py);
-            assert!(dtype_obj.borrow(py).is_sub_byte());
+            assert!(tensor.dtype(py).borrow(py).is_sub_byte());
         });
     }
 
@@ -460,7 +663,7 @@ mod tests {
         init();
         Python::with_gil(|py| {
             let _m = build_module(py);
-            let buf: Vec<u8> = vec![0u8; 12]; // too small for 6 × f32 = 24 bytes
+            let buf: Vec<u8> = vec![0u8; 12];
             let py_buf = PyBytes::new_bound(py, &buf);
             let dtype = Py::new(
                 py,
@@ -470,12 +673,8 @@ mod tests {
             )
             .unwrap();
             let result = Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None);
-            assert!(result.is_err(), "undersized buffer should return Err");
-            let err = result.unwrap_err();
-            assert!(
-                err.is_instance_of::<BufferError>(py),
-                "should be BufferError"
-            );
+            assert!(result.is_err());
+            assert!(result.unwrap_err().is_instance_of::<BufferError>(py));
         });
     }
 
@@ -494,12 +693,10 @@ mod tests {
             )
             .unwrap();
             let result = Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![-1, 3], None);
-            assert!(result.is_err(), "negative dim should return Err");
-            let err = result.unwrap_err();
-            assert!(
-                err.is_instance_of::<InvalidDescriptorError>(py),
-                "should be InvalidDescriptorError"
-            );
+            assert!(result.is_err());
+            assert!(result
+                .unwrap_err()
+                .is_instance_of::<InvalidDescriptorError>(py));
         });
     }
 
@@ -522,37 +719,9 @@ mod tests {
                 Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap(),
             )
             .unwrap();
-            // `__array_namespace__` must NOT be present (D2).
-            let has_attr = tensor.bind(py).hasattr("__array_namespace__").unwrap();
             assert!(
-                !has_attr,
-                "__array_namespace__ must not be on Tensor in 8a.2"
-            );
-        });
-    }
-
-    #[test]
-    fn no_dlpack() {
-        init();
-        Python::with_gil(|py| {
-            let _m = build_module(py);
-            let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
-            let dtype = Py::new(
-                py,
-                Dtype {
-                    inner: ElementType::Float32,
-                },
-            )
-            .unwrap();
-            let tensor = Py::new(
-                py,
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap(),
-            )
-            .unwrap();
-            assert!(
-                !tensor.bind(py).hasattr("__dlpack__").unwrap(),
-                "__dlpack__ must not be on Tensor in 8a.2"
+                !tensor.bind(py).hasattr("__array_namespace__").unwrap(),
+                "__array_namespace__ must not be present yet"
             );
         });
     }
@@ -578,7 +747,7 @@ mod tests {
             .unwrap();
             assert!(
                 !tensor.bind(py).hasattr("__hurray_buffer__").unwrap(),
-                "__hurray_buffer__ must not be on Tensor in 8a.2"
+                "__hurray_buffer__ must not be present until Layer 8c"
             );
         });
     }
@@ -599,13 +768,11 @@ mod tests {
             .unwrap();
             let tensor =
                 Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
-            let result = tensor.t();
-            assert!(result.is_err(), "Tensor.T should raise NotImplementedError");
-            let err = result.unwrap_err();
-            assert!(
-                err.is_instance_of::<pyo3::exceptions::PyNotImplementedError>(py),
-                "should be NotImplementedError"
-            );
+            assert!(tensor.t().is_err());
+            assert!(tensor
+                .t()
+                .unwrap_err()
+                .is_instance_of::<pyo3::exceptions::PyNotImplementedError>(py));
         });
     }
 
@@ -626,11 +793,8 @@ mod tests {
             let tensor =
                 Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
             let r = tensor.__repr__(py).unwrap();
-            assert!(r.contains("(2, 3)"), "repr should contain shape: got '{r}'");
-            assert!(
-                r.contains("float32"),
-                "repr should contain dtype name: got '{r}'"
-            );
+            assert!(r.contains("(2, 3)"), "repr should contain shape");
+            assert!(r.contains("float32"), "repr should contain dtype");
         });
     }
 
@@ -650,8 +814,7 @@ mod tests {
             .unwrap();
             let tensor =
                 Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
-            let dev = tensor.device_py.borrow(py);
-            assert_eq!(dev.kind(), "cpu");
+            assert_eq!(tensor.device_py.borrow(py).kind(), "cpu");
         });
     }
 
@@ -686,31 +849,17 @@ mod tests {
                 Some(cuda_device),
             )
             .unwrap();
-            let dev = tensor.device_py.borrow(py);
-            assert_eq!(dev.kind(), "cuda");
+            assert_eq!(tensor.device_py.borrow(py).kind(), "cuda");
         });
     }
 
     #[test]
     fn shape_dynamic_dim() {
-        // TODO: expose DYNAMIC dim creation via TensorDescriptor in Phase 8a.3
-        // when descriptor creation from wire format is added. For now verify that
-        // the DYNAMIC constant maps to None in the shape getter by building a
-        // descriptor directly.
         init();
         Python::with_gil(|py| {
             let _m = build_module(py);
-
-            // Build a descriptor with a DYNAMIC dimension by-hand (bypassing
-            // Tensor::new which requires non-negative dims from Python i64).
             let shape = Shape::new(vec![1, DYNAMIC, 768]).unwrap();
-            let buffer = BufferHandle::new(
-                0, // empty buffer — DYNAMIC size unknown
-                1,
-                DeviceTag::Cpu,
-                SyncMode::ProducerSynced,
-            )
-            .unwrap();
+            let buffer = BufferHandle::new(0, 1, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
             let descriptor = TensorDescriptor::new(
                 DESCRIPTOR_VERSION_MAJOR,
                 DESCRIPTOR_VERSION_MINOR,
@@ -743,21 +892,13 @@ mod tests {
             .unwrap();
             let tensor = Tensor {
                 descriptor,
-                buffer: vec![],
+                buffer: BufferStore::from_slice(&[]),
                 dtype_py,
                 device_py,
             };
-
-            // shape getter must map DYNAMIC to None.
             let shape_tuple = tensor.shape(py).unwrap();
-            let shape_bound = shape_tuple.bind(py);
-            let dim1 = shape_bound.get_item(1).unwrap();
-            assert!(
-                dim1.is_none(),
-                "DYNAMIC dimension should map to None in Python shape"
-            );
-
-            // size() must be None when any dim is DYNAMIC.
+            let dim1 = shape_tuple.bind(py).get_item(1).unwrap();
+            assert!(dim1.is_none(), "DYNAMIC dimension should map to None");
             assert_eq!(tensor.size(), None);
         });
     }
@@ -778,28 +919,16 @@ mod tests {
             .unwrap();
             let tensor =
                 Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
-            let result = tensor.__hash__();
-            assert!(result.is_err(), "Tensor.__hash__ must raise TypeError");
-            let err = result.unwrap_err();
-            assert!(
-                err.is_instance_of::<pyo3::exceptions::PyTypeError>(py),
-                "error should be TypeError"
-            );
+            let err = tensor.__hash__().unwrap_err();
+            assert!(err.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
         });
     }
 
-    /// Smoke-test: Tensor construction fails gracefully when `sys.modules`
-    /// does not contain `hurray.device` (i.e. device::register was not called).
     #[test]
-    fn construction_without_device_module_fails_gracefully() {
+    fn dlpack_device_cpu() {
         init();
         Python::with_gil(|py| {
-            // Minimal module without device::register.
-            let m = pyo3::types::PyModule::new_bound(py, "hurray_bare").unwrap();
-            crate::errors::register(&m).unwrap();
-            crate::dtype::register(&m).unwrap();
-            // Intentionally do NOT call device::register or tensor::register.
-
+            let _m = build_module(py);
             let buf = float32_buf_2x3();
             let py_buf = PyBytes::new_bound(py, &buf);
             let dtype = Py::new(
@@ -809,11 +938,112 @@ mod tests {
                 },
             )
             .unwrap();
-            // This call will fail because `hurray.device` is not in sys.modules.
-            // We just verify it doesn't panic — it may return Ok or Err depending on
-            // whether a stale `hurray.device` entry is still in sys.modules from a
-            // previous test. Either outcome is acceptable.
+            let tensor =
+                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
+            let tup = tensor.__dlpack_device__(py).unwrap();
+            let tup_bound = tup.bind(py);
+            let device_type: c_int = tup_bound.get_item(0).unwrap().extract().unwrap();
+            let device_id: i32 = tup_bound.get_item(1).unwrap().extract().unwrap();
+            assert_eq!(device_type, 1, "kDLCPU = 1");
+            assert_eq!(device_id, 0);
+        });
+    }
+
+    #[test]
+    fn dlpack_capsule_created() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            let buf = float32_buf_2x3();
+            let py_buf = PyBytes::new_bound(py, &buf);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Float32,
+                },
+            )
+            .unwrap();
+            let tensor_py = Py::new(
+                py,
+                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap(),
+            )
+            .unwrap();
+            let bound = tensor_py.bind(py);
+            let capsule = Tensor::__dlpack__(bound, None, None, None, None).unwrap();
+            // Verify it's a capsule by checking Python type name.
+            let type_name = capsule.bind(py).get_type().name().unwrap().to_string();
+            assert_eq!(type_name, "PyCapsule");
+        });
+    }
+
+    #[test]
+    fn dlpack_bool_raises_buffer_error() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            // 1 byte can hold 8 bools in Hurray's 1-bit packed format.
+            let buf: Vec<u8> = vec![0u8; 1];
+            let py_buf = PyBytes::new_bound(py, &buf);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Bool,
+                },
+            )
+            .unwrap();
+            let tensor_py = Py::new(
+                py,
+                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![8], None).unwrap(),
+            )
+            .unwrap();
+            let bound = tensor_py.bind(py);
+            let result = Tensor::__dlpack__(bound, None, None, None, None);
+            assert!(result.is_err());
+            // D9: must be builtins.BufferError.
+            assert!(result
+                .unwrap_err()
+                .is_instance_of::<pyo3::exceptions::PyBufferError>(py));
+        });
+    }
+
+    #[test]
+    fn construction_without_device_module_fails_gracefully() {
+        init();
+        Python::with_gil(|py| {
+            let m = pyo3::types::PyModule::new_bound(py, "hurray_bare").unwrap();
+            crate::errors::register(&m).unwrap();
+            crate::dtype::register(&m).unwrap();
+            let buf = float32_buf_2x3();
+            let py_buf = PyBytes::new_bound(py, &buf);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Float32,
+                },
+            )
+            .unwrap();
             let _ = Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None);
+        });
+    }
+
+    #[test]
+    fn buffer_store_is_owned_after_construction() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            let buf = float32_buf_2x3();
+            let py_buf = PyBytes::new_bound(py, &buf);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Float32,
+                },
+            )
+            .unwrap();
+            let tensor =
+                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
+            assert!(matches!(tensor.buffer, BufferStore::Owned(_)));
+            assert_eq!(tensor.buffer.len(), 24); // 6 × f32 = 24 bytes
         });
     }
 }

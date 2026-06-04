@@ -14,9 +14,12 @@
 
 use pyo3::prelude::*;
 
+pub(crate) mod buffer;
 mod device;
+pub(crate) mod dlpack;
 mod dtype;
 pub mod errors;
+mod interop;
 mod modes;
 mod tensor;
 
@@ -51,5 +54,6 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     dtype::register(m)?;
     device::register(m)?;
     tensor::register(m)?;
+    interop::register(m)?;
     Ok(())
 }
