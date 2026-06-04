@@ -9,8 +9,9 @@
 //! ```text
 //! ValueError
 //! ├── hurray.InvalidDescriptorError  — parse / validation errors
-//! └── hurray.BufferError             — buffer size / alignment errors
-//!                                      (distinct from builtins.BufferError)
+//! ├── hurray.BufferError             — buffer size / alignment errors
+//! │                                    (distinct from builtins.BufferError)
+//! └── hurray.CopyRequiredError       — copy=False requested but copy is needed
 //! NotImplementedError
 //! └── hurray.UnsupportedError        — unsupported element type or layout
 //! RuntimeError
@@ -44,6 +45,16 @@ pyo3::create_exception!(
 
 pyo3::create_exception!(
     hurray,
+    CopyRequiredError,
+    pyo3::exceptions::PyValueError,
+    "Raised when ``copy=False`` is passed to ``__array__`` but a copy is required\n\
+     (e.g. a dtype cast is needed). Subclass of :exc:`ValueError`.\n\n\
+     This follows the NumPy 2.0 ``__array__`` convention (NEP 47): the caller\n\
+     requested zero-copy but the conversion cannot be done without copying."
+);
+
+pyo3::create_exception!(
+    hurray,
     UnsupportedError,
     pyo3::exceptions::PyNotImplementedError,
     "Raised when an element type, memory layout, or device combination is\n\
@@ -67,6 +78,10 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.py().get_type_bound::<InvalidDescriptorError>(),
     )?;
     m.add("BufferError", m.py().get_type_bound::<BufferError>())?;
+    m.add(
+        "CopyRequiredError",
+        m.py().get_type_bound::<CopyRequiredError>(),
+    )?;
     m.add(
         "UnsupportedError",
         m.py().get_type_bound::<UnsupportedError>(),
@@ -136,6 +151,16 @@ mod tests {
         Python::with_gil(|py| {
             let err = BufferError::new_err("misaligned");
             assert!(err.is_instance_of::<BufferError>(py));
+            assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+        });
+    }
+
+    #[test]
+    fn copy_required_error_is_value_error() {
+        init_python();
+        Python::with_gil(|py| {
+            let err = CopyRequiredError::new_err("cast required");
+            assert!(err.is_instance_of::<CopyRequiredError>(py));
             assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
         });
     }

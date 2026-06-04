@@ -80,8 +80,8 @@ MUST raise the Python built-in `BufferError` (in both modes).
 `float16`, `bfloat16`, `float32`, `float64`, `int8`, `uint8`, `int16`, `uint16`,
 `int32`, `uint32`, `int64`, `uint64`, `complex64`, `complex128`, `bool`.
 
-- `__dlpack__()` MUST return a PyCapsule named `"dltensor"` conforming to the DLPack
-  specification (v0.8 or later).
+- `__dlpack__()` MUST return a PyCapsule named `"dltensor_versioned"` conforming to the DLPack
+  specification (v1.0 or later).
 - `__dlpack__()` MUST raise the Python built-in `BufferError` for any element type
   not in the DLPack type enum (e.g., `int4`, `float8` variants, quantized types).
   This follows the Python Array API Standard, which specifies `BufferError` for
