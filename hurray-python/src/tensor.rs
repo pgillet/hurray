@@ -542,6 +542,104 @@ impl Tensor {
     }
 }
 
+// ── Crate-internal constructors ───────────────────────────────────────────────
+
+impl Tensor {
+    /// Construct a `Tensor` that borrows a slice of another Python object's buffer.
+    ///
+    /// `base` is a strong Python reference to the object that owns the allocation.
+    /// The Tensor holds `base` alive for its own lifetime, ensuring the pointer
+    /// remains valid (zero-copy borrow, same pattern as `from_numpy`).
+    ///
+    /// # Safety
+    ///
+    /// `ptr` must point to at least `len` bytes of valid memory for as long as
+    /// `base` is alive.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// # use pyo3::prelude::*;
+    /// # use hurray_core::{ElementType, Shape, DeviceTag, MemoryClass};
+    /// # Python::with_gil(|py| -> PyResult<()> {
+    /// // Internal use: called from sparse.rs to expose component buffers.
+    /// # Ok(())
+    /// # });
+    /// ```
+    // All eight arguments are structurally necessary for zero-copy construction;
+    // grouping them into a struct would add overhead without clarity benefit.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_borrowed_view(
+        py: Python<'_>,
+        element_type: hurray_core::ElementType,
+        shape: hurray_core::Shape,
+        device_tag: hurray_core::DeviceTag,
+        memory_class: hurray_core::MemoryClass,
+        base: Py<PyAny>,
+        ptr: *mut u8,
+        len: usize,
+    ) -> PyResult<Self> {
+        use crate::errors::{BufferError, InvalidDescriptorError};
+        use hurray_core::{
+            LayoutDescriptor, SyncMode, DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR,
+        };
+
+        // Use MIN_BUFFER_ALIGNMENT (64) for non-empty buffers: Python/NumPy/SciPy
+        // allocators always produce at least 64-byte-aligned data, so declaring
+        // this alignment is correct and satisfies hurray-core's enforcement.
+        let alignment = if len == 0 { 1 } else { MIN_BUFFER_ALIGNMENT };
+        let buffer_handle = BufferHandle::with_memory_class(
+            len as u64,
+            alignment,
+            device_tag,
+            SyncMode::ProducerSynced,
+            memory_class,
+        )
+        .map_err(|e| BufferError::new_err(format!("invalid buffer parameters: {e}")))?;
+
+        let descriptor = TensorDescriptor::new(
+            DESCRIPTOR_VERSION_MAJOR,
+            DESCRIPTOR_VERSION_MINOR,
+            element_type,
+            shape,
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![buffer_handle],
+            None,
+            None,
+            None,
+            None,
+        )
+        .map_err(|e| InvalidDescriptorError::new_err(format!("invalid tensor descriptor: {e}")))?;
+
+        let dtype_py = Py::new(
+            py,
+            crate::dtype::Dtype {
+                inner: element_type,
+            },
+        )?;
+        let device_py = Py::new(
+            py,
+            crate::device::Device {
+                tag: device_tag,
+                memory_class,
+                device_id: 0,
+            },
+        )?;
+
+        // SAFETY: ptr points into base's allocation; base is kept alive by the
+        // BufferStore, ensuring ptr remains valid for the Tensor's lifetime.
+        let buffer = unsafe { BufferStore::borrowed(ptr, len, base) };
+
+        Ok(Self {
+            descriptor,
+            buffer,
+            dtype_py,
+            device_py,
+        })
+    }
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Return true for Array API Tier 1 element types (those NumPy can represent).

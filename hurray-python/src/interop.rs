@@ -89,9 +89,16 @@ pub fn from_numpy(py: Python<'_>, array: &Bound<'_, PyAny>) -> PyResult<Tensor> 
     let nbytes: usize = array.getattr("nbytes")?.extract()?;
 
     // 5. Build BufferHandle and TensorDescriptor.
+    // NumPy allocators always produce at least 64-byte-aligned data; declare
+    // MIN_BUFFER_ALIGNMENT for non-empty buffers so hurray-core accepts the handle.
+    let alignment = if nbytes == 0 {
+        1
+    } else {
+        hurray_core::MIN_BUFFER_ALIGNMENT
+    };
     let buffer_handle = BufferHandle::new(
         nbytes as u64,
-        1, // alignment unknown from Python side; use 1 (conservative)
+        alignment,
         hurray_core::DeviceTag::Cpu,
         SyncMode::ProducerSynced,
     )
@@ -209,7 +216,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// NumPy typestr format: `<endian><kind><bytes>` where endian is `<`, `>`, `=`, or `|`.
 ///
 /// Returns `None` for dtypes with no Hurray equivalent (e.g. `object`, `datetime64`).
-fn numpy_typestr_to_element_type(typestr: &str) -> Option<hurray_core::ElementType> {
+pub(crate) fn numpy_typestr_to_element_type(typestr: &str) -> Option<hurray_core::ElementType> {
     use hurray_core::ElementType;
     // typestr is 3 chars: endian + kind + bytes. Strip endian prefix.
     if typestr.len() < 3 {
