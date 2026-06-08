@@ -21,6 +21,8 @@ mod dtype;
 pub mod errors;
 mod interop;
 mod modes;
+mod scipy_interop;
+mod sparse;
 mod tensor;
 
 /// Python module entry point.
@@ -43,6 +45,8 @@ mod tensor;
 /// | `hurray.Device` | class | 8a.2 |
 /// | `hurray.device` | submodule | 8a.2 |
 /// | `hurray.Tensor` | class | 8a.2 |
+/// | `hurray.SparseTensor` | class | 8a.4 |
+/// | `hurray.from_scipy` | function | 8a.4 |
 #[pymodule]
 fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -55,5 +59,7 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     device::register(m)?;
     tensor::register(m)?;
     interop::register(m)?;
+    sparse::register(m)?;
+    scipy_interop::register(m)?;
     Ok(())
 }
