@@ -191,7 +191,7 @@ pub fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Tensor>
 /// Renames the capsule from `"dltensor_versioned"` to `"used_dltensor_versioned"`
 /// (taking ownership) and registers a Python finalizer that calls the DLPack
 /// `deleter` when the resulting `Tensor` is garbage collected.
-fn from_dlpack_capsule(py: Python<'_>, capsule: PyObject) -> PyResult<Tensor> {
+pub(crate) fn from_dlpack_capsule(py: Python<'_>, capsule: PyObject) -> PyResult<Tensor> {
     // Use numpy.from_dlpack to do the heavy lifting: it handles capsule ownership,
     // producer synchronisation, and produces a CPU ndarray we can then wrap.
     let np = py.import_bound("numpy")?;

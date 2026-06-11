@@ -520,6 +520,50 @@ impl Tensor {
         Ok(torch_tensor.into())
     }
 
+    // ── Array API namespace ───────────────────────────────────────────────────
+
+    /// Return the Array API namespace (the `hurray` module) for this tensor.
+    ///
+    /// Raises `AttributeError` for Tier 2 dtypes in strict mode so that
+    /// `hasattr(tensor, "__array_namespace__")` logic gated on calling this
+    /// method behaves correctly for non-compliant tensors.
+    ///
+    /// Supported `api_version` values: `None`, `"2025.12"`. Other versions
+    /// raise `ValueError`.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    /// t = hurray.zeros([3, 3])
+    /// ns = t.__array_namespace__()
+    /// assert ns is hurray
+    /// ```
+    #[pyo3(signature = (*, api_version = None))]
+    pub fn __array_namespace__(
+        &self,
+        py: Python<'_>,
+        api_version: Option<&str>,
+    ) -> PyResult<PyObject> {
+        // Raise AttributeError for Tier 2 types — these tensors do not comply
+        // with the Array API, so consumers that call this method should fail.
+        if !is_tier1(self.descriptor.element_type) {
+            return Err(pyo3::exceptions::PyAttributeError::new_err(format!(
+                "__array_namespace__ is not available for Tier 2 dtype '{}' in strict mode",
+                crate::dtype::element_type_name(self.descriptor.element_type)
+            )));
+        }
+        match api_version {
+            None | Some("2025.12") => {}
+            Some(v) => {
+                return Err(pyo3::exceptions::PyValueError::new_err(format!(
+                    "unsupported api_version '{v}'; hurray implements '2025.12'"
+                )));
+            }
+        }
+        Ok(py.import_bound("hurray")?.into_any().unbind())
+    }
+
     // ── Dunders ───────────────────────────────────────────────────────────────
 
     /// Tensors are unhashable — mutable objects must not be used as dict keys.
@@ -799,7 +843,7 @@ mod tests {
     }
 
     #[test]
-    fn no_array_namespace() {
+    fn array_namespace_tier1_present() {
         init();
         Python::with_gil(|py| {
             let _m = build_module(py);
@@ -817,9 +861,84 @@ mod tests {
                 Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap(),
             )
             .unwrap();
+            // Tier 1 tensor must expose __array_namespace__ and return the hurray module.
             assert!(
-                !tensor.bind(py).hasattr("__array_namespace__").unwrap(),
-                "__array_namespace__ must not be present yet"
+                tensor.bind(py).hasattr("__array_namespace__").unwrap(),
+                "__array_namespace__ must be present for Tier 1 tensors"
+            );
+            let ns = tensor
+                .bind(py)
+                .call_method0("__array_namespace__")
+                .expect("__array_namespace__() should succeed for Tier 1");
+            let hurray_mod = py.import_bound("hurray").unwrap();
+            assert!(
+                ns.is(&hurray_mod),
+                "__array_namespace__() should return the hurray module"
+            );
+        });
+    }
+
+    #[test]
+    fn array_namespace_tier2_raises_attribute_error() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            let buf = vec![0xABu8, 0xCDu8, 0xEFu8, 0x12u8];
+            let py_buf = PyBytes::new_bound(py, &buf);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Int4,
+                },
+            )
+            .unwrap();
+            let tensor = Py::new(
+                py,
+                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![8], None).unwrap(),
+            )
+            .unwrap();
+            // Tier 2 tensor: calling __array_namespace__() must raise AttributeError.
+            let result = tensor.bind(py).call_method0("__array_namespace__");
+            assert!(result.is_err());
+            assert!(
+                result
+                    .unwrap_err()
+                    .is_instance_of::<pyo3::exceptions::PyAttributeError>(py),
+                "Tier 2 tensor must raise AttributeError from __array_namespace__()"
+            );
+        });
+    }
+
+    #[test]
+    fn array_namespace_unsupported_version_raises_value_error() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            let buf = float32_buf_2x3();
+            let py_buf = PyBytes::new_bound(py, &buf);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Float32,
+                },
+            )
+            .unwrap();
+            let tensor = Py::new(
+                py,
+                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap(),
+            )
+            .unwrap();
+            let kwargs = pyo3::types::PyDict::new_bound(py);
+            kwargs.set_item("api_version", "2020.01").unwrap();
+            let result = tensor
+                .bind(py)
+                .call_method("__array_namespace__", (), Some(&kwargs));
+            assert!(result.is_err());
+            assert!(
+                result
+                    .unwrap_err()
+                    .is_instance_of::<pyo3::exceptions::PyValueError>(py),
+                "Unknown api_version must raise ValueError"
             );
         });
     }

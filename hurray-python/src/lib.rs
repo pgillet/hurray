@@ -15,6 +15,7 @@
 use pyo3::prelude::*;
 
 pub(crate) mod buffer;
+mod creation;
 mod device;
 pub(crate) mod dlpack;
 mod dtype;
@@ -47,6 +48,11 @@ mod tensor;
 /// | `hurray.Tensor` | class | 8a.2 |
 /// | `hurray.SparseTensor` | class | 8a.4 |
 /// | `hurray.from_scipy` | function | 8a.4 |
+/// | `hurray.zeros` / `hurray.ones` / `hurray.full` / `hurray.empty` | functions | 8a.5 |
+/// | `hurray.zeros_like` / `hurray.ones_like` / `hurray.full_like` / `hurray.empty_like` | functions | 8a.5 |
+/// | `hurray.arange` / `hurray.linspace` / `hurray.eye` | functions | 8a.5 |
+/// | `hurray.asarray` / `hurray.from_dlpack` | functions | 8a.5 |
+/// | `hurray.Tensor.__array_namespace__` | method | 8a.5 |
 #[pymodule]
 fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -61,5 +67,6 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     interop::register(m)?;
     sparse::register(m)?;
     scipy_interop::register(m)?;
+    creation::register(m)?;
     Ok(())
 }
