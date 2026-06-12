@@ -573,16 +573,99 @@ impl Tensor {
         ))
     }
 
+    /// Return a developer-friendly string representation.
+    ///
+    /// For Tier 1 CPU tensors the data values are formatted using NumPy's
+    /// `array2string`. Tier 2 types and non-CPU devices fall back to a
+    /// metadata-only form: `hurray.Tensor(shape=…, dtype=…, device=…)`.
+    ///
+    /// ```python
+    /// import hurray
+    /// t = hurray.ones([2, 3], dtype=hurray.float32)
+    /// print(repr(t))
+    /// # hurray.Tensor([[1. 1. 1.]
+    /// #  [1. 1. 1.]], dtype=float32)
+    /// ```
     fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let et = self.descriptor.element_type;
+        let dtype_name = crate::dtype::element_type_name(et);
+        let dev = self.device_py.borrow(py);
+        let is_cpu = dev.tag == hurray_core::DeviceTag::Cpu;
+
+        // Show data values for Tier 1 CPU tensors; fall back on any error (e.g.
+        // bfloat16 has no numpy dtype; non-CPU requires a device copy).
+        if is_tier1(et) && is_cpu {
+            if let Ok(data_str) = self.numpy_data_string(py) {
+                return Ok(format!("hurray.Tensor({data_str}, dtype={dtype_name})"));
+            }
+        }
+
+        // Fallback: metadata only.
         let shape_tuple = self.shape(py)?;
         let shape_str = shape_tuple.bind(py).repr()?.to_str()?.to_owned();
-        let dtype_name = crate::dtype::element_type_name(self.descriptor.element_type);
-        let dev = self.device_py.borrow(py);
-        let device_repr = crate::device::device_repr(&dev);
+        let device_str = crate::device::device_repr(&dev);
         Ok(format!(
-            "hurray.Tensor(shape={shape_str}, dtype=hurray.Dtype('{dtype_name}'), \
-             device={device_repr})"
+            "hurray.Tensor(shape={shape_str}, dtype={dtype_name}, device={device_str})"
         ))
+    }
+
+    /// Return a human-readable string of the tensor data.
+    ///
+    /// For Tier 1 CPU tensors this is the bare NumPy-style array string
+    /// (no `hurray.Tensor(…)` wrapper). Falls back to `__repr__` for Tier 2
+    /// types or non-CPU devices.
+    ///
+    /// ```python
+    /// import hurray
+    /// t = hurray.arange(4, dtype=hurray.float32)
+    /// print(str(t))   # [0. 1. 2. 3.]
+    /// ```
+    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        let et = self.descriptor.element_type;
+        let dev = self.device_py.borrow(py);
+        if is_tier1(et) && dev.tag == hurray_core::DeviceTag::Cpu {
+            if let Ok(s) = self.numpy_data_string(py) {
+                return Ok(s);
+            }
+        }
+        drop(dev);
+        self.__repr__(py)
+    }
+}
+
+// ── Display helpers ───────────────────────────────────────────────────────────
+
+impl Tensor {
+    /// Format tensor data as a NumPy-style string via `numpy.array2string`.
+    ///
+    /// Returns `Err` for types with no NumPy equivalent (e.g. bfloat16).
+    fn numpy_data_string(&self, py: Python<'_>) -> PyResult<String> {
+        let et = self.descriptor.element_type;
+        let dtype_str = crate::creation::to_numpy_dtype_name(et).ok_or_else(|| {
+            pyo3::exceptions::PyValueError::new_err("no numpy dtype for this element type")
+        })?;
+
+        let np = py.import_bound("numpy")?;
+
+        // SAFETY: GIL is held; Borrowed base is kept alive by self.buffer.
+        let bytes = unsafe { self.buffer.as_slice() };
+        let py_bytes = pyo3::types::PyBytes::new_bound(py, bytes);
+
+        let kw = pyo3::types::PyDict::new_bound(py);
+        kw.set_item("dtype", dtype_str)?;
+        let arr_1d = np.call_method("frombuffer", (py_bytes,), Some(&kw))?;
+
+        let shape: Vec<i64> = self
+            .descriptor
+            .shape
+            .dims()
+            .iter()
+            .map(|&d| d as i64)
+            .collect();
+        let arr = arr_1d.call_method1("reshape", (shape,))?;
+
+        np.call_method1("array2string", (&arr,))?
+            .extract::<String>()
     }
 }
 
@@ -994,7 +1077,10 @@ mod tests {
     }
 
     #[test]
-    fn repr_contains_shape_and_dtype() {
+    fn repr_shows_tensor_prefix_and_dtype() {
+        // Tests the guaranteed structure of repr.  Whether data values are shown
+        // depends on numpy being importable at runtime; that path is covered by
+        // examples/display.py which runs under maturin develop (with numpy present).
         init();
         Python::with_gil(|py| {
             let _m = build_module(py);
@@ -1010,8 +1096,64 @@ mod tests {
             let tensor =
                 Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
             let r = tensor.__repr__(py).unwrap();
-            assert!(r.contains("(2, 3)"), "repr should contain shape");
+            assert!(
+                r.starts_with("hurray.Tensor("),
+                "repr should have hurray.Tensor prefix"
+            );
             assert!(r.contains("float32"), "repr should contain dtype");
+            // dtype must not use the old verbose hurray.Dtype('...') wrapper
+            assert!(!r.contains("hurray.Dtype"), "repr dtype should be unquoted");
+        });
+    }
+
+    #[test]
+    fn repr_fallback_for_tier2_tensor() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            // Int4 has no numpy dtype — repr must fall back to metadata-only form.
+            let buf = vec![0x21u8]; // two int4 nibbles
+            let py_buf = PyBytes::new_bound(py, &buf);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Int4,
+                },
+            )
+            .unwrap();
+            let tensor = Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2], None).unwrap();
+            let r = tensor.__repr__(py).unwrap();
+            assert!(r.contains("shape="), "fallback repr should include shape=");
+            assert!(r.contains("int4"), "fallback repr should include dtype");
+            assert!(!r.contains("0x"), "fallback repr should not show raw bytes");
+        });
+    }
+
+    #[test]
+    fn str_is_non_empty_for_tier1() {
+        // When numpy is present __str__ returns a bare array string (tested via
+        // examples/display.py).  Without numpy it falls back to __repr__ — both
+        // paths must return a non-empty, non-panicking string.
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            let buf = float32_buf_2x3();
+            let py_buf = PyBytes::new_bound(py, &buf);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Float32,
+                },
+            )
+            .unwrap();
+            let tensor =
+                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
+            let s = tensor.__str__(py).unwrap();
+            assert!(!s.is_empty(), "__str__ must not be empty");
+            assert!(
+                s.contains("float32") || s.contains("1."),
+                "__str__ should contain dtype or data"
+            );
         });
     }
 

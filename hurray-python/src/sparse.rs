@@ -547,17 +547,35 @@ impl SparseTensor {
         ))
     }
 
+    /// Return a developer-friendly string representation.
+    ///
+    /// ```python
+    /// import hurray
+    /// import scipy.sparse as sp
+    /// m = sp.csr_matrix(([1.0, 2.0], ([0, 1], [1, 0])), shape=(2, 2))
+    /// t = hurray.from_scipy(m)
+    /// print(repr(t))
+    /// # hurray.SparseTensor(format='csr', shape=(2, 2), nnz=2, dtype=float64)
+    /// ```
     pub fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         let shape_tuple = self.shape(py)?;
         let shape_str = shape_tuple.bind(py).repr()?.to_str()?.to_owned();
         let dtype_name = crate::dtype::element_type_name(self.descriptor.element_type);
         Ok(format!(
-            "hurray.SparseTensor(format='{}', shape={}, nnz={}, dtype=hurray.Dtype('{}'))",
+            "hurray.SparseTensor(format='{}', shape={}, nnz={}, dtype={})",
             self.format.as_str(),
             shape_str,
             self.nnz(),
             dtype_name,
         ))
+    }
+
+    /// Return the same string as `__repr__`.
+    ///
+    /// Sparse tensors display as metadata only — element-wise printing would
+    /// require reconstructing a dense or COO view, which is left to the caller.
+    pub fn __str__(&self, py: Python<'_>) -> PyResult<String> {
+        self.__repr__(py)
     }
 }
 
@@ -890,6 +908,22 @@ mod tests {
             assert!(r.contains("csr"), "repr should contain format");
             assert!(r.contains("float32"), "repr should contain dtype");
             assert!(r.contains("nnz=4"), "repr should contain nnz");
+            // dtype must not be wrapped in hurray.Dtype('...')
+            assert!(!r.contains("hurray.Dtype"), "repr dtype should be unquoted");
+        });
+    }
+
+    #[test]
+    fn sparse_str_equals_repr() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            let sparse = make_csr(py);
+            assert_eq!(
+                sparse.__repr__(py).unwrap(),
+                sparse.__str__(py).unwrap(),
+                "__str__ and __repr__ must be identical for SparseTensor"
+            );
         });
     }
 
