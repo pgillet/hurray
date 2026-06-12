@@ -328,7 +328,7 @@ fn f64_to_bytes(v: f64, et: ElementType) -> Vec<u8> {
 
 /// Convert a Hurray `ElementType` to the corresponding NumPy dtype name, or None
 /// for types that NumPy does not natively support (e.g. `bfloat16`).
-fn to_numpy_dtype_name(et: ElementType) -> Option<&'static str> {
+pub(crate) fn to_numpy_dtype_name(et: ElementType) -> Option<&'static str> {
     use ElementType::*;
     match et {
         Bool => Some("bool"),
