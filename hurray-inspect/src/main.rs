@@ -3,8 +3,8 @@
 //! # Usage
 //!
 //! ```text
-//! hurray-inspect <file>
-//! hurray-inspect -          # read from stdin
+//! hurray-inspect [--data[=hex|numpy]] <file>
+//! hurray-inspect -                           # read from stdin
 //! ```
 //!
 //! Auto-detects the file type:
@@ -12,12 +12,19 @@
 //! - **HRRYFILE container** (magic `HRRYFILE`): displays the file header,
 //!   trailer, index, KV metadata section, and each tensor's descriptor.
 //! - **Raw tensor descriptor** (magic `HRRY`): displays the descriptor fields.
+//!
+//! With `--data` (or `--data=numpy`), tensor buffer values are printed after each
+//! descriptor in NumPy-style nested bracket notation.  With `--data=hex`, the raw
+//! buffer bytes are printed as a hex table.  For raw descriptors the buffer bytes
+//! must immediately follow the descriptor in the same file.
 
 use std::{
     env, fs,
     io::{self, Read},
     process,
 };
+
+use half::{bf16, f16};
 
 use hurray_core::{
     descriptor::TensorDescriptor,
@@ -35,7 +42,7 @@ enum Error {
     Parse(#[from] hurray_core::Error),
     #[error("malformed HRRYFILE: {0}")]
     Hrryfile(String),
-    #[error("usage: hurray-inspect <file>  (use '-' for stdin)")]
+    #[error("usage: hurray-inspect [--data[=hex|numpy]] <file>  (use '-' for stdin)")]
     Usage,
 }
 
@@ -128,6 +135,239 @@ fn le_i64(b: &[u8]) -> i64 {
 fn le_f64(b: &[u8]) -> f64 {
     // SAFETY: take() guarantees exactly 8 bytes
     f64::from_le_bytes(b[..8].try_into().unwrap())
+}
+
+// ── Data display mode ──────────────────────────────────────────────────────────
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DataMode {
+    None,
+    Hex,
+    Numpy,
+}
+
+// ── Value formatting ───────────────────────────────────────────────────────────
+
+/// Format a single float as a string, adding a trailing `.` when the value
+/// has no fractional part (matching NumPy's display convention).
+fn format_float(v: f64) -> String {
+    if v.is_nan() {
+        return "nan".into();
+    }
+    if v.is_infinite() {
+        return if v > 0.0 { "inf".into() } else { "-inf".into() };
+    }
+    let s = format!("{v}");
+    if s.contains('.') || s.contains('e') || s.contains('E') {
+        s
+    } else {
+        format!("{s}.")
+    }
+}
+
+/// Decode a fixed-width little-endian integer at element index `idx`.
+macro_rules! read_le {
+    ($data:expr, $idx:expr, $n:expr, $ty:ty) => {{
+        let i = ($idx * $n) as usize;
+        if i + $n <= $data.len() {
+            <$ty>::from_le_bytes($data[i..i + $n].try_into().unwrap()).to_string()
+        } else {
+            "?".into()
+        }
+    }};
+}
+
+/// Decode and format the element at logical index `idx` from `data`.
+///
+/// For Tier 2 sub-byte types the raw byte(s) are shown as hex.  Complex types
+/// are formatted as `(real+imagj)`.
+fn format_scalar(et: hurray_core::ElementType, data: &[u8], idx: u64) -> String {
+    use hurray_core::ElementType::*;
+
+    match et {
+        Bool => {
+            let byte = (idx / 8) as usize;
+            let bit = (idx % 8) as u8;
+            if byte < data.len() {
+                if (data[byte] >> bit) & 1 == 1 {
+                    "True".into()
+                } else {
+                    "False".into()
+                }
+            } else {
+                "?".into()
+            }
+        }
+        Int8 => {
+            let i = idx as usize;
+            if i < data.len() {
+                (data[i] as i8).to_string()
+            } else {
+                "?".into()
+            }
+        }
+        Uint8 => {
+            let i = idx as usize;
+            if i < data.len() {
+                data[i].to_string()
+            } else {
+                "?".into()
+            }
+        }
+        Int16 => read_le!(data, idx, 2, i16),
+        Uint16 => read_le!(data, idx, 2, u16),
+        Int32 => read_le!(data, idx, 4, i32),
+        Uint32 => read_le!(data, idx, 4, u32),
+        Int64 => read_le!(data, idx, 8, i64),
+        Uint64 => read_le!(data, idx, 8, u64),
+        Float16 => {
+            let i = (idx * 2) as usize;
+            if i + 2 <= data.len() {
+                let bits = u16::from_le_bytes(data[i..i + 2].try_into().unwrap());
+                format_float(f16::from_bits(bits).to_f64())
+            } else {
+                "?".into()
+            }
+        }
+        BFloat16 => {
+            let i = (idx * 2) as usize;
+            if i + 2 <= data.len() {
+                let bits = u16::from_le_bytes(data[i..i + 2].try_into().unwrap());
+                format_float(bf16::from_bits(bits).to_f64())
+            } else {
+                "?".into()
+            }
+        }
+        Float32 => {
+            let i = (idx * 4) as usize;
+            if i + 4 <= data.len() {
+                format_float(f32::from_le_bytes(data[i..i + 4].try_into().unwrap()) as f64)
+            } else {
+                "?".into()
+            }
+        }
+        Float64 => {
+            let i = (idx * 8) as usize;
+            if i + 8 <= data.len() {
+                format_float(f64::from_le_bytes(data[i..i + 8].try_into().unwrap()))
+            } else {
+                "?".into()
+            }
+        }
+        Complex64 => {
+            let i = (idx * 8) as usize;
+            if i + 8 <= data.len() {
+                let re = f32::from_le_bytes(data[i..i + 4].try_into().unwrap());
+                let im = f32::from_le_bytes(data[i + 4..i + 8].try_into().unwrap());
+                format!("({}+{}j)", format_float(re as f64), format_float(im as f64))
+            } else {
+                "?".into()
+            }
+        }
+        Complex128 => {
+            let i = (idx * 16) as usize;
+            if i + 16 <= data.len() {
+                let re = f64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+                let im = f64::from_le_bytes(data[i + 8..i + 16].try_into().unwrap());
+                format!("({}+{}j)", format_float(re), format_float(im))
+            } else {
+                "?".into()
+            }
+        }
+        // Tier 2: show raw hex bytes.
+        _ => {
+            let bw = et.bit_width();
+            if bw == 0 || bw >= 8 {
+                let n = bw.div_ceil(8).max(1) as usize;
+                let i = (idx * n as u64) as usize;
+                if i + n <= data.len() {
+                    hex_str(&data[i..i + n])
+                } else {
+                    "?".into()
+                }
+            } else {
+                // Sub-byte: decode the packed nibble/bits for this element.
+                let elements_per_byte = 8 / bw as u64;
+                let byte_i = (idx / elements_per_byte) as usize;
+                let bit_off = ((idx % elements_per_byte) * bw as u64) as u8;
+                let mask = (1u8 << bw) - 1;
+                if byte_i < data.len() {
+                    let raw = (data[byte_i] >> bit_off) & mask;
+                    format!("0x{raw:01X}")
+                } else {
+                    "?".into()
+                }
+            }
+        }
+    }
+}
+
+/// Maximum number of elements shown before truncation (matches NumPy default).
+const NUMPY_THRESHOLD: u64 = 1000;
+
+/// Format tensor data as a NumPy-style nested-bracket string.
+///
+/// Elements beyond `NUMPY_THRESHOLD` are elided with `...`.
+fn format_numpy(et: hurray_core::ElementType, shape: &[u64], data: &[u8]) -> String {
+    let total: u64 = if shape.is_empty() {
+        1
+    } else {
+        shape.iter().product()
+    };
+
+    if total == 0 {
+        return "[]".to_string();
+    }
+
+    if shape.is_empty() {
+        return format_scalar(et, data, 0);
+    }
+
+    if total > NUMPY_THRESHOLD {
+        let head = 3u64.min(total);
+        let tail = 3u64.min(total - head);
+        let mut parts: Vec<String> = (0..head).map(|i| format_scalar(et, data, i)).collect();
+        parts.push("...".into());
+        for i in (total - tail)..total {
+            parts.push(format_scalar(et, data, i));
+        }
+        return format!("[{}]  # shape={shape:?}, {total} elements", parts.join(" "));
+    }
+
+    format_numpy_dim(et, shape, data, 0, 0)
+}
+
+/// Recursively build nested-bracket notation for dimension `depth`.
+fn format_numpy_dim(
+    et: hurray_core::ElementType,
+    shape: &[u64],
+    data: &[u8],
+    depth: usize,
+    offset: u64,
+) -> String {
+    let ndim = shape.len();
+
+    if depth == ndim - 1 {
+        // Innermost dimension: single row of space-separated values.
+        let parts: Vec<String> = (0..shape[depth])
+            .map(|i| format_scalar(et, data, offset + i))
+            .collect();
+        return format!("[{}]", parts.join(" "));
+    }
+
+    let stride: u64 = shape[depth + 1..].iter().product();
+    let parts: Vec<String> = (0..shape[depth])
+        .map(|i| format_numpy_dim(et, shape, data, depth + 1, offset + i * stride))
+        .collect();
+
+    // Between groups: blank line for all but the two innermost dims (numpy style).
+    let indent = " ".repeat(depth + 1);
+    let sep = if ndim - depth > 2 {
+        format!("\n\n{indent}")
+    } else {
+        format!("\n{indent}")
+    };
+    format!("[{}]", parts.join(&sep))
 }
 
 // ── FReader — sequential cursor over a file byte slice ────────────────────────
@@ -714,7 +954,51 @@ fn parse_kv_section(
     Ok(())
 }
 
-fn inspect_hrryfile_inner(data: &[u8], rows: &mut Vec<Row>) -> Result<()> {
+// ── Data section rows ──────────────────────────────────────────────────────────
+
+/// Append rows displaying the tensor buffer `buf` in the chosen `DataMode`.
+///
+/// `buf_file_offset` is the byte offset of `buf` within the file — used for
+/// the offset column in hex-mode rows.
+fn append_data_rows(
+    rows: &mut Vec<Row>,
+    desc: &TensorDescriptor,
+    buf: &[u8],
+    buf_file_offset: usize,
+    mode: DataMode,
+) {
+    let et = desc.element_type;
+    let shape = desc.shape.dims();
+    rows.push(section_row(&format!(
+        "TENSOR DATA ({}, shape={shape:?}, {} bytes)",
+        et,
+        buf.len()
+    )));
+    match mode {
+        DataMode::Hex => {
+            for (i, chunk) in buf.chunks(16).enumerate() {
+                rows.push(Row {
+                    offset: buf_file_offset + i * 16,
+                    bytes: chunk.to_vec(),
+                    field: String::new(),
+                });
+            }
+        }
+        DataMode::Numpy => {
+            let s = format_numpy(et, shape, buf);
+            for line in s.lines() {
+                rows.push(Row {
+                    offset: 0,
+                    bytes: vec![],
+                    field: line.to_string(),
+                });
+            }
+        }
+        DataMode::None => {}
+    }
+}
+
+fn inspect_hrryfile_inner(data: &[u8], rows: &mut Vec<Row>, data_mode: DataMode) -> Result<()> {
     let file_size = data.len();
 
     if file_size < FILE_HEADER_SIZE + TRAILER_SIZE {
@@ -967,11 +1251,31 @@ fn inspect_hrryfile_inner(data: &[u8], rows: &mut Vec<Row>) -> Result<()> {
         })?;
 
         match TensorDescriptor::decode(desc_data) {
-            Ok(desc) => rows.extend(rows_from_descriptor(
-                desc_data,
-                &desc,
-                entry.descriptor_offset,
-            )),
+            Ok(desc) => {
+                rows.extend(rows_from_descriptor(
+                    desc_data,
+                    &desc,
+                    entry.descriptor_offset,
+                ));
+                if data_mode != DataMode::None {
+                    let data_start = entry.data_offset as usize;
+                    let data_end = data_start.saturating_add(entry.data_length as usize);
+                    if data_end <= data.len() && entry.data_length > 0 {
+                        append_data_rows(
+                            rows,
+                            &desc,
+                            &data[data_start..data_end],
+                            data_start,
+                            data_mode,
+                        );
+                    } else {
+                        rows.push(section_row(&format!(
+                            "TENSOR DATA {:?}: not available (data outside file bounds)",
+                            entry.name
+                        )));
+                    }
+                }
+            }
             Err(e) => rows.push(Row {
                 offset: entry.descriptor_offset,
                 bytes: vec![],
@@ -983,9 +1287,9 @@ fn inspect_hrryfile_inner(data: &[u8], rows: &mut Vec<Row>) -> Result<()> {
     Ok(())
 }
 
-fn inspect_hrryfile(data: &[u8]) -> (Vec<Row>, Option<Error>) {
+fn inspect_hrryfile(data: &[u8], data_mode: DataMode) -> (Vec<Row>, Option<Error>) {
     let mut rows = Vec::new();
-    match inspect_hrryfile_inner(data, &mut rows) {
+    match inspect_hrryfile_inner(data, &mut rows, data_mode) {
         Ok(()) => (rows, None),
         Err(e) => (rows, Some(e)),
     }
@@ -993,14 +1297,28 @@ fn inspect_hrryfile(data: &[u8]) -> (Vec<Row>, Option<Error>) {
 
 // ── Raw descriptor inspection ─────────────────────────────────────────────────
 
-fn inspect(data: &[u8]) -> (Vec<Row>, Option<Error>) {
+fn inspect(data: &[u8], data_mode: DataMode) -> (Vec<Row>, Option<Error>) {
     // Dispatch to HRRYFILE container path when the file magic matches.
     if data.len() >= 8 && &data[..8] == FILE_MAGIC {
-        return inspect_hrryfile(data);
+        return inspect_hrryfile(data, data_mode);
     }
 
     match TensorDescriptor::decode(data) {
-        Ok(desc) => (rows_from_descriptor(data, &desc, 0), None),
+        Ok(desc) => {
+            let desc_len = u32::from_le_bytes(data[6..10].try_into().unwrap_or([0u8; 4])) as usize;
+            let mut rows = rows_from_descriptor(data, &desc, 0);
+            if data_mode != DataMode::None {
+                let buf = data.get(desc_len..).unwrap_or(&[]);
+                if buf.is_empty() {
+                    rows.push(section_row(
+                        "TENSOR DATA: not present in this file (descriptor only)",
+                    ));
+                } else {
+                    append_data_rows(&mut rows, &desc, buf, desc_len, data_mode);
+                }
+            }
+            (rows, None)
+        }
         Err(e) => {
             // Show the magic bytes (if present) so the caller can see what was read,
             // then let the error message explain why parsing failed.
@@ -1079,22 +1397,38 @@ fn print_table(rows: &[Row]) {
 
 // ── Entry point ────────────────────────────────────────────────────────────────
 
-fn run() -> Result<()> {
-    let args: Vec<String> = env::args().collect();
-    if args.len() != 2 {
-        return Err(Error::Usage);
+fn parse_args(args: &[String]) -> Result<(String, DataMode)> {
+    let mut path: Option<String> = None;
+    let mut data_mode = DataMode::None;
+
+    for arg in args.iter().skip(1) {
+        if arg == "--data" || arg == "--data=numpy" {
+            data_mode = DataMode::Numpy;
+        } else if arg == "--data=hex" {
+            data_mode = DataMode::Hex;
+        } else if (arg.starts_with('-') && arg != "-") || path.is_some() {
+            return Err(Error::Usage);
+        } else {
+            path = Some(arg.clone());
+        }
     }
 
-    let path = &args[1];
+    path.map(|p| (p, data_mode)).ok_or(Error::Usage)
+}
+
+fn run() -> Result<()> {
+    let args: Vec<String> = env::args().collect();
+    let (path, data_mode) = parse_args(&args)?;
+
     let data: Vec<u8> = if path == "-" {
         let mut buf = Vec::new();
         io::stdin().read_to_end(&mut buf)?;
         buf
     } else {
-        fs::read(path)?
+        fs::read(&path)?
     };
 
-    let (rows, err) = inspect(&data);
+    let (rows, err) = inspect(&data, data_mode);
     print_table(&rows);
 
     if let Some(e) = err {
@@ -1115,5 +1449,164 @@ fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e}");
         process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hurray_core::ElementType;
+
+    // Build a minimal raw HRRY descriptor for testing.
+    fn make_raw_descriptor(et: ElementType, dims: &[u64]) -> Vec<u8> {
+        use hurray_core::{
+            BufferHandle, LayoutDescriptor, MemoryClass, Shape, SyncMode, TensorDescriptor,
+            DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR,
+        };
+        let shape = Shape::new(dims.to_vec()).unwrap();
+        let n: u64 = dims.iter().product();
+        let byte_size = hurray_core::buffer_size_bytes(et, n);
+        let bh = BufferHandle::with_memory_class(
+            byte_size,
+            64,
+            hurray_core::DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+            MemoryClass::Standard,
+        )
+        .unwrap();
+        let desc = TensorDescriptor::new(
+            DESCRIPTOR_VERSION_MAJOR,
+            DESCRIPTOR_VERSION_MINOR,
+            et,
+            shape,
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![bh],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        desc.encode().unwrap()
+    }
+
+    #[test]
+    fn format_float_adds_dot() {
+        assert_eq!(format_float(1.0), "1.");
+        assert_eq!(format_float(1.5), "1.5");
+        assert_eq!(format_float(f64::NAN), "nan");
+        assert_eq!(format_float(f64::INFINITY), "inf");
+        assert_eq!(format_float(f64::NEG_INFINITY), "-inf");
+    }
+
+    #[test]
+    fn format_scalar_float32() {
+        let data = 1.0f32.to_le_bytes();
+        assert_eq!(format_scalar(ElementType::Float32, &data, 0), "1.");
+    }
+
+    #[test]
+    fn format_scalar_int32() {
+        let data = 42i32.to_le_bytes();
+        assert_eq!(format_scalar(ElementType::Int32, &data, 0), "42");
+    }
+
+    #[test]
+    fn format_scalar_bool_true() {
+        let data = [0b0000_0001u8];
+        assert_eq!(format_scalar(ElementType::Bool, &data, 0), "True");
+        assert_eq!(format_scalar(ElementType::Bool, &data, 1), "False");
+    }
+
+    #[test]
+    fn format_numpy_1d_int32() {
+        let data: Vec<u8> = [1i32, 2, 3].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let s = format_numpy(ElementType::Int32, &[3], &data);
+        assert_eq!(s, "[1 2 3]");
+    }
+
+    #[test]
+    fn format_numpy_2d_float32() {
+        let data: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let s = format_numpy(ElementType::Float32, &[2, 2], &data);
+        assert!(s.starts_with("[[1. 2.]"), "got: {s}");
+        assert!(s.contains("[3. 4.]"), "got: {s}");
+    }
+
+    #[test]
+    fn format_numpy_truncates_large() {
+        let n = 2000u64;
+        let data: Vec<u8> = (0..n).flat_map(|i| (i as i32).to_le_bytes()).collect();
+        let s = format_numpy(ElementType::Int32, &[n], &data);
+        assert!(s.contains("..."), "expected truncation: {s}");
+    }
+
+    #[test]
+    fn parse_args_no_data() {
+        let args = ["prog", "file.hrry"].map(String::from);
+        let (path, mode) = parse_args(&args).unwrap();
+        assert_eq!(path, "file.hrry");
+        assert_eq!(mode, DataMode::None);
+    }
+
+    #[test]
+    fn parse_args_data_numpy() {
+        let args = ["prog", "--data", "file.hrry"].map(String::from);
+        let (path, mode) = parse_args(&args).unwrap();
+        assert_eq!(path, "file.hrry");
+        assert_eq!(mode, DataMode::Numpy);
+    }
+
+    #[test]
+    fn parse_args_data_hex() {
+        let args = ["prog", "--data=hex", "file.hrry"].map(String::from);
+        let (_, mode) = parse_args(&args).unwrap();
+        assert_eq!(mode, DataMode::Hex);
+    }
+
+    #[test]
+    fn parse_args_unknown_flag_is_error() {
+        let args = ["prog", "--foo", "file.hrry"].map(String::from);
+        assert!(parse_args(&args).is_err());
+    }
+
+    #[test]
+    fn inspect_raw_descriptor_no_data() {
+        let desc_bytes = make_raw_descriptor(ElementType::Float32, &[2, 3]);
+        let (rows, err) = inspect(&desc_bytes, DataMode::None);
+        assert!(err.is_none());
+        assert!(rows.iter().any(|r| r.field.contains("float32")));
+    }
+
+    #[test]
+    fn inspect_raw_descriptor_numpy_mode_no_buffer() {
+        let desc_bytes = make_raw_descriptor(ElementType::Float32, &[2, 3]);
+        let (rows, err) = inspect(&desc_bytes, DataMode::Numpy);
+        assert!(err.is_none());
+        // Buffer not present → section note, no panic
+        assert!(rows
+            .iter()
+            .any(|r| r.field.contains("TENSOR DATA") || r.field.contains("not present")));
+    }
+
+    #[test]
+    fn inspect_raw_descriptor_numpy_mode_with_buffer() {
+        let mut file = make_raw_descriptor(ElementType::Float32, &[3]);
+        // Append the 3 float32 values [1, 2, 3] after the descriptor.
+        for v in [1.0f32, 2.0, 3.0] {
+            file.extend_from_slice(&v.to_le_bytes());
+        }
+        let (rows, err) = inspect(&file, DataMode::Numpy);
+        assert!(err.is_none());
+        let all = rows
+            .iter()
+            .map(|r| r.field.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("[1. 2. 3.]"), "expected numpy row in: {all}");
     }
 }
