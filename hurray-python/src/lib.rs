@@ -20,6 +20,7 @@ mod device;
 pub(crate) mod dlpack;
 mod dtype;
 pub mod errors;
+mod file_io;
 mod interop;
 mod modes;
 mod scipy_interop;
@@ -53,6 +54,8 @@ mod tensor;
 /// | `hurray.arange` / `hurray.linspace` / `hurray.eye` | functions | 8a.5 |
 /// | `hurray.asarray` / `hurray.from_dlpack` | functions | 8a.5 |
 /// | `hurray.Tensor.__array_namespace__` | method | 8a.5 |
+/// | `hurray.load` / `hurray.save` | functions | 8b |
+/// | `hurray.FileError` / `hurray.StreamError` | exceptions | 8b |
 #[pymodule]
 fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -68,5 +71,6 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     sparse::register(m)?;
     scipy_interop::register(m)?;
     creation::register(m)?;
+    file_io::register(m)?;
     Ok(())
 }

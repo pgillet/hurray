@@ -16,9 +16,11 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 hurray-core = { workspace = true }
+hurray-io = { workspace = true }
 half = { workspace = true }
 pyo3 = { workspace = true, features = ["abi3-py310"] }
 numpy = { workspace = true, optional = true }
+tokio = { workspace = true }
 
 [lib]
 name = "hurray"
