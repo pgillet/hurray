@@ -16,6 +16,9 @@
 //! └── hurray.UnsupportedError        — unsupported element type or layout
 //! RuntimeError
 //! └── hurray.InternalError           — unexpected Rust panics
+//! OSError
+//! ├── hurray.FileError               — HRRYFILE I/O errors (Layer 8b)
+//! └── hurray.StreamError             — streaming framing errors (Layer 8b)
 //! ```
 
 // PyO3 0.22 macro expansion emits a redundant .into() on PyErr — false positive.
@@ -71,6 +74,24 @@ pyo3::create_exception!(
      If you see this exception, please file a bug report."
 );
 
+pyo3::create_exception!(
+    hurray,
+    FileError,
+    pyo3::exceptions::PyOSError,
+    "Raised by ``hurray.load()`` and ``hurray.save()`` for file-level errors:\n\
+     file not found, permission denied, corrupt HRRYFILE container, unexpected EOF.\n\
+     Subclass of :exc:`OSError`."
+);
+
+pyo3::create_exception!(
+    hurray,
+    StreamError,
+    pyo3::exceptions::PyOSError,
+    "Raised by the streaming reader/writer for framing errors:\n\
+     frame corruption mid-stream, unexpected stream termination.\n\
+     Subclass of :exc:`OSError`."
+);
+
 /// Register all exception classes on the `hurray` module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
@@ -87,6 +108,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.py().get_type_bound::<UnsupportedError>(),
     )?;
     m.add("InternalError", m.py().get_type_bound::<InternalError>())?;
+    m.add("FileError", m.py().get_type_bound::<FileError>())?;
+    m.add("StreamError", m.py().get_type_bound::<StreamError>())?;
     Ok(())
 }
 
@@ -202,6 +225,26 @@ mod tests {
     fn catch_panic_passes_through_ok() {
         let result: PyResult<i32> = catch_panic(|| Ok(42));
         assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn file_error_is_os_error() {
+        init_python();
+        Python::with_gil(|py| {
+            let err = FileError::new_err("file not found");
+            assert!(err.is_instance_of::<FileError>(py));
+            assert!(err.is_instance_of::<pyo3::exceptions::PyOSError>(py));
+        });
+    }
+
+    #[test]
+    fn stream_error_is_os_error() {
+        init_python();
+        Python::with_gil(|py| {
+            let err = StreamError::new_err("framing error");
+            assert!(err.is_instance_of::<StreamError>(py));
+            assert!(err.is_instance_of::<pyo3::exceptions::PyOSError>(py));
+        });
     }
 
     #[test]

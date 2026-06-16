@@ -17,6 +17,7 @@ authors = ["Hurray Contributors"]
 
 [workspace.dependencies]
 hurray-core = { path = "hurray-core" }
+hurray-io = { path = "hurray-io" }
 hurray-ffi = { path = "hurray-ffi" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
