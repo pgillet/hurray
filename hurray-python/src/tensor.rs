@@ -391,6 +391,83 @@ impl Tensor {
         Ok(tup)
     }
 
+    // ── Native buffer protocol ────────────────────────────────────────────────
+
+    /// Return a `"hurray_buffer"` PyCapsule for zero-copy buffer sharing between
+    /// Hurray-aware Python extensions (ADR-023, Layer 8c).
+    ///
+    /// Unlike `__dlpack__`, this protocol preserves the full Hurray descriptor
+    /// (device tag, memory class, sync mode, element type, shape, layout) without
+    /// flattening to DLPack's `DLDeviceType` enum. Available on all dtypes and
+    /// in both strict and relaxed modes.
+    ///
+    /// ## Parameters
+    ///
+    /// - `stream` — accepted for API parity with `__dlpack__`; all tensors are
+    ///   `ProducerSynced` in this pass, so the value is noted but not acted on.
+    ///
+    /// ## Errors
+    ///
+    /// - `hurray.BufferError` — tensor has no buffer handles (should not occur in practice).
+    /// - `hurray.InvalidDescriptorError` — descriptor could not be encoded.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// t = hurray.Tensor(bytes(16), hurray.float32, [4])
+    /// cap = t.__hurray_buffer__()
+    /// t2 = hurray.from_hurray_buffer(t)
+    /// assert t2.shape == t.shape
+    /// assert t2.dtype == t.dtype
+    /// ```
+    #[pyo3(signature = (stream = None))]
+    pub fn __hurray_buffer__(
+        slf: &Bound<'_, Self>,
+        // ProducerSynced: stream hint accepted for API parity; not acted on in this pass.
+        stream: Option<PyObject>,
+    ) -> PyResult<PyObject> {
+        let _ = stream;
+        let py = slf.py();
+        let t = slf.borrow();
+
+        let first_buf = t.descriptor.buffers.first().ok_or_else(|| {
+            BufferError::new_err(
+                "tensor has no buffer handles; cannot produce a native buffer capsule",
+            )
+        })?;
+
+        let data_ptr = t.buffer.as_ptr() as *mut c_void;
+        // Use alignment=1 for empty buffers to satisfy hurray_buffer_from_ptr's null-check.
+        let byte_size = t.buffer.len() as u64;
+        let alignment = if byte_size == 0 {
+            1
+        } else {
+            first_buf.alignment()
+        };
+        let device_tag = first_buf.device_tag();
+        let sync_mode = first_buf.sync_mode();
+        let memory_class = first_buf.memory_class();
+
+        // Encode descriptor before releasing the borrow.
+        let descriptor = &t.descriptor;
+        // Strong reference to the Tensor; kept alive via the capsule context.
+        let tensor_obj: PyObject = slf.clone().into_any().unbind();
+
+        crate::native_buffer::build_capsule(
+            py,
+            tensor_obj,
+            descriptor,
+            data_ptr,
+            byte_size,
+            alignment,
+            device_tag,
+            sync_mode,
+            memory_class,
+        )
+    }
+
     // ── NumPy interop ─────────────────────────────────────────────────────────
 
     /// Return a NumPy `ndarray` backed by this tensor's buffer (zero-copy via DLPack).
@@ -1027,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn no_hurray_buffer() {
+    fn hurray_buffer_capsule_is_present() {
         init();
         Python::with_gil(|py| {
             let _m = build_module(py);
@@ -1046,9 +1123,19 @@ mod tests {
             )
             .unwrap();
             assert!(
-                !tensor.bind(py).hasattr("__hurray_buffer__").unwrap(),
-                "__hurray_buffer__ must not be present until Layer 8c"
+                tensor.bind(py).hasattr("__hurray_buffer__").unwrap(),
+                "__hurray_buffer__ must be present in Layer 8c"
             );
+            // Calling __hurray_buffer__() must return a PyCapsule without panicking.
+            let capsule = tensor
+                .bind(py)
+                .call_method0("__hurray_buffer__")
+                .expect("__hurray_buffer__ must not raise");
+            // SAFETY: capsule is a borrowed Python object from the call above.
+            let is_valid = unsafe {
+                pyo3::ffi::PyCapsule_IsValid(capsule.as_ptr(), c"hurray_buffer".as_ptr())
+            };
+            assert_eq!(is_valid, 1, "capsule must be named 'hurray_buffer'");
         });
     }
 
