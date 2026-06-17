@@ -303,6 +303,7 @@ version = "0.1.0"
 dependencies = [
  "half",
  "hurray-core",
+ "hurray-ffi",
  "hurray-io",
  "numpy",
  "pyo3",

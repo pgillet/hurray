@@ -23,6 +23,7 @@ pub mod errors;
 mod file_io;
 mod interop;
 mod modes;
+mod native_buffer;
 mod scipy_interop;
 mod sparse;
 mod tensor;
@@ -49,6 +50,8 @@ mod tensor;
 /// | `hurray.Tensor` | class | 8a.2 |
 /// | `hurray.SparseTensor` | class | 8a.4 |
 /// | `hurray.from_scipy` | function | 8a.4 |
+/// | `hurray.from_hurray_buffer` | function | 8c |
+/// | `hurray.Tensor.__hurray_buffer__` | method | 8c |
 /// | `hurray.zeros` / `hurray.ones` / `hurray.full` / `hurray.empty` | functions | 8a.5 |
 /// | `hurray.zeros_like` / `hurray.ones_like` / `hurray.full_like` / `hurray.empty_like` | functions | 8a.5 |
 /// | `hurray.arange` / `hurray.linspace` / `hurray.eye` | functions | 8a.5 |
@@ -70,6 +73,7 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     interop::register(m)?;
     sparse::register(m)?;
     scipy_interop::register(m)?;
+    native_buffer::register(m)?;
     creation::register(m)?;
     file_io::register(m)?;
     Ok(())

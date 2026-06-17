@@ -16,6 +16,7 @@ extension-module = ["pyo3/extension-module"]
 
 [dependencies]
 hurray-core = { workspace = true }
+hurray-ffi = { workspace = true }
 hurray-io = { workspace = true }
 half = { workspace = true }
 pyo3 = { workspace = true, features = ["abi3-py310"] }
