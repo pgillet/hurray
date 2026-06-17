@@ -213,7 +213,7 @@ impl Mxfp {
         // MXFP requires shape_axis > 0 AND exact divisibility by block_size.
         // Stricter than per-block-affine which uses div_ceil — exact divisibility
         // required by MXFP spec (mxfp.md § Validity Constraints).
-        if shape_axis == 0 || !shape_axis.is_multiple_of(self.block_size as u64) {
+        if shape_axis == 0 || shape_axis % self.block_size as u64 != 0 {
             return Err(Error::QuantizationShapeMismatch {
                 axis: self.axis,
                 shape_axis,
