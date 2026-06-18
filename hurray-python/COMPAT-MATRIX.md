@@ -12,7 +12,7 @@ The conformance test suite must be run against every Array API version listed he
 
 | hurray-python | Array API versions | DLPack (producer) | DLPack (consumer) | Native buffer protocol | Min `HURRAY_C_ABI_VERSION` | CPython |
 |---|---|---|---|---|---|---|
-| 0.1.x | 2025.12 | v1.0 (`dltensor_versioned`) | v0.8 + v1.0 | not yet (Layer 8c) | — | ≥ 3.10 |
+| 0.1.x | 2025.12 | v1.0 (`dltensor_versioned`) | v0.8 + v1.0 | yes (Layer 8c) | 2 | ≥ 3.10 |
 
 ## Notes
 
@@ -45,7 +45,7 @@ the legacy `"dltensor"` (DLPack v0.8) and the versioned `"dltensor_versioned"`
 ### Native buffer protocol
 
 The `__hurray_buffer__` / `hurray.from_hurray_buffer` protocol is implemented in
-Layer 8c. Until then, `hasattr(tensor, '__hurray_buffer__')` returns `False` and
-the "Native buffer protocol" column reads "not yet". When Layer 8c ships, this
-column will record `"yes"` and the minimum `HURRAY_C_ABI_VERSION` required by
-the capsule payload format.
+Layer 8c (shipped in 0.1.x). The minimum `HURRAY_C_ABI_VERSION` required by the
+capsule payload format is **2** (the version at Layer 8c ship time). Consumers MUST
+verify the version before dereferencing the handle; a mismatch raises
+`hurray.UnsupportedError`. See ADR-023 for the full protocol specification.
