@@ -55,8 +55,8 @@ fn resolve_device(device: Option<&Bound<'_, PyAny>>) -> PyResult<(DeviceTag, Mem
 }
 
 /// Reject Tier 2 types in strict mode with `UnsupportedError`.
-fn check_tier1_strict(ty: ElementType) -> PyResult<()> {
-    if is_strict() && !is_tier1(ty) {
+fn check_tier1_strict(py: Python<'_>, ty: ElementType) -> PyResult<()> {
+    if is_strict(py)? && !is_tier1(ty) {
         return Err(UnsupportedError::new_err(format!(
             "dtype '{}' is a Tier 2 type and is not supported in strict mode",
             crate::dtype::element_type_name(ty)
@@ -374,7 +374,7 @@ pub fn zeros(
     device: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Tensor> {
     let et = resolve_dtype(dtype)?;
-    check_tier1_strict(et)?;
+    check_tier1_strict(py, et)?;
     let (dtag, mc) = resolve_device(device)?;
     let s = parse_shape(shape)?;
     let n = s.element_count().unwrap_or(0);
@@ -404,7 +404,7 @@ pub fn ones(
     device: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Tensor> {
     let et = resolve_dtype(dtype)?;
-    check_tier1_strict(et)?;
+    check_tier1_strict(py, et)?;
     let (dtag, mc) = resolve_device(device)?;
     let s = parse_shape(shape)?;
     let n = s.element_count().unwrap_or(0);
@@ -440,7 +440,7 @@ pub fn full(
     } else {
         infer_scalar_dtype(fill_value)?
     };
-    check_tier1_strict(et)?;
+    check_tier1_strict(py, et)?;
     let (dtag, mc) = resolve_device(device)?;
     let s = parse_shape(shape)?;
     let n = s.element_count().unwrap_or(0);
@@ -470,7 +470,7 @@ pub fn empty(
     device: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Tensor> {
     let et = resolve_dtype(dtype)?;
-    check_tier1_strict(et)?;
+    check_tier1_strict(py, et)?;
     let (dtag, mc) = resolve_device(device)?;
     let s = parse_shape(shape)?;
     let n = s.element_count().unwrap_or(0);
@@ -507,7 +507,7 @@ pub fn zeros_like(
     } else {
         xr.descriptor.element_type
     };
-    check_tier1_strict(et)?;
+    check_tier1_strict(py, et)?;
     let (dtag, mc) = if device.is_some() {
         resolve_device(device)?
     } else {
@@ -548,7 +548,7 @@ pub fn ones_like(
     } else {
         xr.descriptor.element_type
     };
-    check_tier1_strict(et)?;
+    check_tier1_strict(py, et)?;
     let (dtag, mc) = if device.is_some() {
         resolve_device(device)?
     } else {
@@ -590,7 +590,7 @@ pub fn full_like(
     } else {
         xr.descriptor.element_type
     };
-    check_tier1_strict(et)?;
+    check_tier1_strict(py, et)?;
     let (dtag, mc) = if device.is_some() {
         resolve_device(device)?
     } else {
@@ -631,7 +631,7 @@ pub fn empty_like(
     } else {
         xr.descriptor.element_type
     };
-    check_tier1_strict(et)?;
+    check_tier1_strict(py, et)?;
     let (dtag, mc) = if device.is_some() {
         resolve_device(device)?
     } else {
@@ -700,7 +700,7 @@ pub fn arange(
     } else {
         ElementType::Int64
     };
-    check_tier1_strict(et)?;
+    check_tier1_strict(py, et)?;
 
     // Count = max(0, ceil((stop - start) / step)).
     let raw_count = ((eff_stop - eff_start) / eff_step).ceil();
@@ -759,7 +759,7 @@ pub fn linspace(
     }
     let n = num as u64;
     let et = resolve_dtype(dtype)?;
-    check_tier1_strict(et)?;
+    check_tier1_strict(py, et)?;
     if et == ElementType::Bool {
         return Err(UnsupportedError::new_err(
             "linspace does not support dtype=bool",
@@ -835,7 +835,7 @@ pub fn eye(
     };
 
     let et = resolve_dtype(dtype)?;
-    check_tier1_strict(et)?;
+    check_tier1_strict(py, et)?;
     let (dtag, mc) = resolve_device(device)?;
 
     let s = Shape::new(vec![rows, cols])
@@ -922,7 +922,7 @@ pub fn asarray(
     let _ = device; // accepted for Array API compat; only CPU is supported in this version
     let target_et = dtype.map(|d| resolve_dtype(Some(d))).transpose()?;
     if let Some(et) = target_et {
-        check_tier1_strict(et)?;
+        check_tier1_strict(py, et)?;
         if et == ElementType::BFloat16 {
             return Err(UnsupportedError::new_err(
                 "asarray does not support bfloat16: NumPy has no native bfloat16 dtype. \
