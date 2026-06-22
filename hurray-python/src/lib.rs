@@ -9,8 +9,8 @@
 //! ## Runtime modes
 //!
 //! This package defaults to **strict mode**, which enforces full Array API compliance.
-//! Relaxed mode (allowing Tier 2 / quantized types through the Array API surface)
-//! is reserved for a future release. See ADR-022.
+//! Use `set_strict(False)`, `relaxed()`, or `RelaxedCtx` to allow Tier 2 / quantized
+//! types through the Array API surface. See ADR-022.
 
 use pyo3::prelude::*;
 
@@ -40,6 +40,7 @@ mod tensor;
 /// |------|------|-------|
 /// | `hurray.__version__` | string | 8a.1 |
 /// | `hurray.set_strict` / `hurray.is_strict` | functions | 8a.1 |
+/// | `hurray.strict` / `hurray.relaxed` | factory functions | 8d |
 /// | `hurray.StrictCtx` / `hurray.RelaxedCtx` | context managers | 8a.1 |
 /// | `hurray.{Invalid,Buffer,Unsupported,Internal}Error` | exceptions | 8a.1 |
 /// | `hurray.Dtype` | class | 8a.2 |
@@ -64,6 +65,8 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(modes::set_strict, m)?)?;
     m.add_function(wrap_pyfunction!(modes::is_strict, m)?)?;
+    m.add_function(wrap_pyfunction!(modes::strict, m)?)?;
+    m.add_function(wrap_pyfunction!(modes::relaxed, m)?)?;
     m.add_class::<modes::StrictCtx>()?;
     m.add_class::<modes::RelaxedCtx>()?;
     errors::register(m)?;
