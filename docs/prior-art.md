@@ -610,15 +610,17 @@ across engines, versions, parallelism strategies, and storage tiers.
 
 ### 3.8 Design implications for Hurray
 
-- **Block-paged layout descriptor (planned).** The PagedAttention KV cache is the
-  motivating case for a Hurray `block-paged` layout tag (a `TODO.md` item; no
-  `docs/spec/layouts/` file exists yet). It would encode fixed page size, the page
-  table (logical sequence position → physical page ID), per-sequence page lists, and
-  copy-on-write page sharing across sequences. With it, a paged KV cache becomes a
-  *first-class Hurray tensor*: a consumer reads the descriptor and knows the page
-  size, head/layer organization, dtype, and quantization without out-of-band
-  agreement — turning TRT-LLM's bespoke "layout conversion during transmission" (§3.4)
-  into a general, descriptor-driven transform.
+- **Block-paged layout descriptor (specified, Draft).** The PagedAttention KV cache is
+  the motivating case for the Hurray `block-paged` layout tag (`0x0B`), now specified in
+  [ADR-024](adr/ADR-024-block-paged-indirected-layout.md) and
+  [`docs/spec/layouts/block-paged.md`](spec/layouts/block-paged.md) (Draft). It encodes
+  fixed page size, the block table (logical sequence position → physical page ID),
+  per-sequence page lists (addressed CSR-style by a `seq_ptr` offset array), and
+  prefix sharing across sequences (expressed as aliased page IDs in the block table).
+  With it, a paged KV cache becomes a *first-class Hurray tensor*: a consumer reads the
+  descriptor and knows the page size, head/layer organization, dtype, and quantization
+  without out-of-band agreement — turning TRT-LLM's bespoke "layout conversion during
+  transmission" (§3.4) into a general, descriptor-driven transform.
 
 - **Native buffer protocol (ADR-023).** Hurray's `__hurray_buffer__` /
   `from_hurray_buffer` zero-copy handoff lets these engines wrap their existing paged

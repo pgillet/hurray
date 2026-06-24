@@ -73,6 +73,15 @@ established in `metadata.md` § Fixed Header and § Version Compatibility; this
 section does not duplicate them, it only classifies the changes that justify
 each rule.
 
+> **Note (non-normative):** During the pre-`1.0` draft period the descriptor,
+> container, and quantization-scheme version values remain fixed at their initial
+> `1.0` values; all features added while the specification is in draft accumulate
+> into that initial `1.0`. The minor- and major-increment rules in this section
+> govern only changes made AFTER the first stable (non-draft) release is published.
+> Adding a new layout, scheme, or tag during the draft period therefore does not
+> bump `version_minor`. This does not weaken the post-release increment rules, which
+> apply in full once `1.0` is published.
+
 ### Container Version (`container_version_major` / `container_version_minor`)
 
 The container version describes the wire encoding of the Hurray file format as
