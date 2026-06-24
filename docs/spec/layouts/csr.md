@@ -67,9 +67,10 @@ violate them, unless operating in permissive mode.
 
 All buffers MUST satisfy the alignment requirements in `buffer-protocol.md`.
 
+For CSR tensors, `byte_offset` MUST be set to `0x0000000000000000`.
+
 > **Note (non-normative):** The `byte_offset` field in the common descriptor header
 > is not meaningful for CSR — there is no single "first element" at a fixed offset.
-> For CSR tensors, `byte_offset` MUST be set to `0x0000000000000000`.
 
 ## Element Lookup
 

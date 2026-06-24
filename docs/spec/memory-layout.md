@@ -57,7 +57,26 @@ MAY accept the descriptor but MUST NOT dereference or interpret the tensor data 
 | COO (Coordinate) | `0x07` | 1 | Sparse | [layouts/coo.md](layouts/coo.md) |
 | CSR (Compressed Sparse Row) | `0x08` | 1 | Sparse | [layouts/csr.md](layouts/csr.md) |
 | CSC (Compressed Sparse Column) | `0x09` | 1 | Sparse | [layouts/csc.md](layouts/csc.md) |
+| CSF (Compressed Sparse Fiber) | `0x0A` | 1 | Sparse | (reserved — planned) |
+| Block-paged | `0x0B` | 1 | Indirected | [layouts/block-paged.md](layouts/block-paged.md) |
 | Hilbert curve | `0x40` | 2 | Dense | [layouts/hilbert.md](layouts/hilbert.md) |
+
+The **Type** column classifies each layout's addressing model:
+
+- **Dense** — every logical element exists and maps to a physical position by an affine
+  stride formula.
+- **Sparse** — only stored (non-zero) elements are materialised; unstored coordinates
+  are implicitly zero.
+- **Indirected** — every logical element exists (no implicit zeros), but the mapping from
+  a logical index to a physical position is non-affine and resolved through an index
+  structure (e.g. a block table) rather than an affine stride formula.
+
+> **Note (non-normative):** Rows marked "(reserved — planned)" name a tag that is
+> earmarked for a layout whose spec section does not yet exist. A reader treats such a tag
+> exactly as it treats any unrecognised tag: it MUST reject a descriptor bearing that tag
+> unless operating in permissive mode, in which case it MUST NOT dereference the tensor
+> data buffer (see the unrecognised-tag rule above). The reservation only records intent
+> so the tag is not reassigned before the layout is specified.
 
 Writers choose the layout. Hurray imposes no requirement on which layout a writer
 selects; any layout from the table above (or from the extension range, by prior
@@ -90,9 +109,11 @@ the dimension's size is not statically known and MUST be resolved before use.
 For sub-byte types (`bool`, `int4`, `uint4`, `int2`, `uint2`), `byte_offset` MUST
 point to a byte boundary.
 
-For **sparse layouts** (COO, CSR, and future sparse tags), the concept of a "first
-element at a fixed offset" does not apply. For sparse tensors, `byte_offset` MUST
-be set to `0x0000000000000000`.
+For **sparse layouts** (COO, CSR, CSC, and future sparse tags) and **indirected
+layouts** (block-paged, and future indirected tags), the concept of a "first element at
+a fixed offset" does not apply: the first logical element is located through an index
+structure, not at a fixed offset. For these tensors, `byte_offset` MUST be set to
+`0x0000000000000000`.
 
 ---
 
@@ -165,6 +186,14 @@ For **dense layouts** (tags `0x01`–`0x06`, `0x40`), the buffer table MUST cont
 For **sparse layouts** (tags `0x07`, `0x08`, `0x09`, and future sparse tags), the
 buffer table MUST contain the number of entries specified by that layout's individual
 spec file. Each buffer holds a distinct component array (values, indices, pointers).
+
+For **indirected layouts** (tag `0x0B`, and future indirected tags), the buffer table
+MUST contain at least **three** entries (`buffer_count >= 3`): a values buffer plus the
+index/pointer buffers that resolve the logical-to-physical mapping. For block-paged
+(`0x0B`) these are buffer 0 = `page_pool`, buffer 1 = `block_table`, and buffer 2 =
+`seq_ptr`. When the tensor is quantized, the quantization-parameter buffers follow at
+indices 3 and up, per `quantization.md` § Buffer Table Placement Rules. See that
+layout's individual spec file for the exact buffer table.
 
 ---
 
