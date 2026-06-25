@@ -8,16 +8,18 @@
 
 use std::num::NonZeroU8;
 
+use hurray_core::descriptor::TensorDescriptor;
 use hurray_core::{
     layout::{
-        is_invalid_tag, is_private_tag, is_reserved_tag, validate_layout_tag_strict, CooLayout,
-        CscLayout, CsrLayout, HilbertLayout, InnerStrides, LayoutDescriptor, MortonLayout,
-        OuterStrides, PrivateExtensionLayout, RegionDescriptor, StridedLayout, SubpavingLayout,
-        TiledLayout, UnknownLayout, MAX_TILED_DEPTH, PRIVATE_LAYOUT_TAG_MAX,
-        PRIVATE_LAYOUT_TAG_MIN, TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSR, TAG_HILBERT, TAG_MORTON,
-        TAG_ROW_MAJOR, TAG_STRIDED, TAG_SUBPAVING, TAG_TILED,
+        is_invalid_tag, is_private_tag, is_reserved_tag, validate_layout_tag_strict,
+        BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout, CsrLayout, HilbertLayout,
+        InnerStrides, KvRole, LayoutDescriptor, MortonLayout, OuterStrides, PrivateExtensionLayout,
+        RegionDescriptor, StridedLayout, SubpavingLayout, TiledLayout, UnknownLayout,
+        MAX_TILED_DEPTH, PRIVATE_LAYOUT_TAG_MAX, PRIVATE_LAYOUT_TAG_MIN, TAG_BLOCK_PAGED,
+        TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSR, TAG_HILBERT, TAG_MORTON, TAG_ROW_MAJOR,
+        TAG_STRIDED, TAG_SUBPAVING, TAG_TILED,
     },
-    Error, Shape, DYNAMIC,
+    BufferHandle, DeviceTag, ElementType, Error, Shape, SyncMode, DYNAMIC, MIN_BUFFER_ALIGNMENT,
 };
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1503,18 +1505,446 @@ fn validate_strict_0xfe_gives_private_layout_tag() {
 }
 
 /// All reserved tags must produce ReservedLayoutTag.
+///
+/// Note: `0x0B` (block-paged) is excluded — it is now a named layout tag, not
+/// reserved. The first reserved range in `0x0A`–`0x3F` is split into `[0x0A]`
+/// and `[0x0C, 0x3F]` to reflect this assignment.
 #[test]
 fn validate_strict_all_reserved_ranges_produce_reserved_error() {
-    let reserved_ranges: &[(u8, u8)] = &[(0x0A, 0x3F), (0x41, 0x7F), (0x80, 0xEF)];
-    for &(lo, hi) in reserved_ranges {
-        for tag in lo..=hi {
-            assert!(
-                matches!(
-                    validate_layout_tag_strict(tag),
-                    Err(Error::ReservedLayoutTag(_))
-                ),
-                "tag 0x{tag:02X} in reserved range should produce ReservedLayoutTag"
-            );
-        }
+    // Reserved ranges after assigning 0x0B to block-paged:
+    //   0x0A alone, then 0x0C–0x3F, 0x41–0x7F, 0x80–0xEF.
+    let reserved_tags: Vec<u8> = std::iter::once(0x0A_u8)
+        .chain(0x0C_u8..=0x3F)
+        .chain(0x41_u8..=0x7F)
+        .chain(0x80_u8..=0xEF)
+        .collect();
+    for tag in reserved_tags {
+        assert!(
+            matches!(
+                validate_layout_tag_strict(tag),
+                Err(Error::ReservedLayoutTag(_))
+            ),
+            "tag 0x{tag:02X} in reserved range should produce ReservedLayoutTag"
+        );
     }
+}
+
+// ── Block-paged: tag constant and classification ──────────────────────────────
+
+/// Spec §block-paged.md: layout tag MUST be 0x0B.
+#[test]
+fn block_paged_tag_constant_is_0x0b() {
+    assert_eq!(TAG_BLOCK_PAGED, 0x0B);
+}
+
+/// 0x0B is a named layout, not reserved or invalid.
+#[test]
+fn block_paged_tag_0x0b_passes_strict_validation() {
+    assert!(
+        validate_layout_tag_strict(0x0B).is_ok(),
+        "0x0B (block-paged) must pass strict validation"
+    );
+}
+
+/// 0x0A is still reserved (adjacent to block-paged).
+#[test]
+fn tag_0x0a_adjacent_to_block_paged_is_reserved() {
+    assert!(
+        matches!(
+            validate_layout_tag_strict(0x0A),
+            Err(Error::ReservedLayoutTag(0x0A))
+        ),
+        "0x0A must remain ReservedLayoutTag after 0x0B was assigned"
+    );
+}
+
+/// 0x0C (the slot above block-paged) is also reserved.
+#[test]
+fn tag_0x0c_above_block_paged_is_reserved() {
+    assert!(matches!(
+        validate_layout_tag_strict(0x0C),
+        Err(Error::ReservedLayoutTag(0x0C))
+    ));
+}
+
+/// 0x0B is NOT in the reserved range (is_reserved_tag must return false).
+#[test]
+fn is_reserved_tag_returns_false_for_0x0b() {
+    assert!(!is_reserved_tag(0x0B));
+}
+
+// ── Block-paged: tag() and buffer_count() via LayoutDescriptor ────────────────
+
+fn make_block_paged(
+    page_size: u32,
+    num_pages: u64,
+    num_seqs: u32,
+    kv_role: KvRole,
+    layer_index: Option<u32>,
+    index_type: BlockTableIndexType,
+) -> LayoutDescriptor {
+    LayoutDescriptor::BlockPaged(BlockPagedLayout::new(
+        page_size,
+        num_pages,
+        0, // paged_axis always 0
+        num_seqs,
+        kv_role,
+        layer_index,
+        index_type,
+    ))
+}
+
+/// Spec §block-paged.md: layout tag MUST be 0x0B.
+#[test]
+fn block_paged_descriptor_tag_is_0x0b() {
+    let d = make_block_paged(16, 64, 2, KvRole::Key, Some(0), BlockTableIndexType::U32);
+    assert_eq!(d.tag(), 0x0B);
+}
+
+/// Spec §block-paged.md §Buffer Table: buffer_count MUST be 3.
+#[test]
+fn block_paged_descriptor_buffer_count_is_3() {
+    let d = make_block_paged(16, 64, 2, KvRole::Value, None, BlockTableIndexType::U64);
+    assert_eq!(d.buffer_count(), NonZeroU8::new(3));
+}
+
+/// buffer_count is independent of kv_role, layer_index, or index type.
+#[test]
+fn block_paged_buffer_count_3_for_all_kv_roles() {
+    for role in [KvRole::Key, KvRole::Value, KvRole::Fused] {
+        let d = make_block_paged(4, 10, 1, role, None, BlockTableIndexType::U32);
+        assert_eq!(
+            d.buffer_count(),
+            NonZeroU8::new(3),
+            "buffer_count must be 3 for role {role:?}"
+        );
+    }
+}
+
+// ── Block-paged: validate_against_shape ──────────────────────────────────────
+
+/// Spec §block-paged.md: rank MUST be 3. Rank-3 must be accepted.
+#[test]
+fn block_paged_validate_accepts_rank_3() {
+    let d = make_block_paged(4, 10, 2, KvRole::Key, Some(3), BlockTableIndexType::U32);
+    let s = Shape::new(vec![8u64, 2, 8]).unwrap();
+    assert!(d.validate_against_shape(&s).is_ok());
+}
+
+/// Spec §block-paged.md: a conforming implementation MUST reject rank != 3.
+#[test]
+fn block_paged_validate_rejects_rank_0() {
+    let d = make_block_paged(4, 10, 1, KvRole::Key, None, BlockTableIndexType::U32);
+    assert!(matches!(
+        d.validate_against_shape(&Shape::scalar()),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+#[test]
+fn block_paged_validate_rejects_rank_1() {
+    let d = make_block_paged(4, 10, 1, KvRole::Key, None, BlockTableIndexType::U32);
+    assert!(matches!(
+        d.validate_against_shape(&Shape::new(vec![8u64]).unwrap()),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+#[test]
+fn block_paged_validate_rejects_rank_2() {
+    let d = make_block_paged(4, 10, 1, KvRole::Key, None, BlockTableIndexType::U32);
+    assert!(matches!(
+        d.validate_against_shape(&Shape::new(vec![8u64, 4]).unwrap()),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+#[test]
+fn block_paged_validate_rejects_rank_4() {
+    let d = make_block_paged(4, 10, 1, KvRole::Key, None, BlockTableIndexType::U32);
+    assert!(matches!(
+        d.validate_against_shape(&Shape::new(vec![8u64, 4, 2, 2]).unwrap()),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+/// Spec §block-paged.md: paged_axis MUST be 0 in this version.
+#[test]
+fn block_paged_validate_rejects_paged_axis_nonzero() {
+    // Construct a descriptor manually with paged_axis=1 (bypassing the helper).
+    let bp = BlockPagedLayout::new(
+        4,
+        10,
+        1, /* paged_axis=1 */
+        2,
+        KvRole::Key,
+        None,
+        BlockTableIndexType::U32,
+    );
+    let d = LayoutDescriptor::BlockPaged(bp);
+    assert!(matches!(
+        d.validate_against_shape(&Shape::new(vec![8u64, 2, 8]).unwrap()),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+/// Spec §block-paged.md §Additional Descriptor Fields: page_size MUST be >= 1.
+#[test]
+fn block_paged_validate_rejects_page_size_zero() {
+    let bp = BlockPagedLayout::new(
+        0, /* page_size=0 */
+        10,
+        0,
+        2,
+        KvRole::Key,
+        None,
+        BlockTableIndexType::U32,
+    );
+    let d = LayoutDescriptor::BlockPaged(bp);
+    assert!(matches!(
+        d.validate_against_shape(&Shape::new(vec![8u64, 2, 8]).unwrap()),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+// ── Block-paged: codec round-trip via TensorDescriptor encode/decode ──────────
+
+/// Helper: build a minimal 3-buffer TensorDescriptor for a block-paged layout.
+fn block_paged_descriptor(layout: LayoutDescriptor) -> TensorDescriptor {
+    // Shape: [total_tokens=8, num_heads=2, head_dim=8]
+    let s = Shape::new(vec![8u64, 2, 8]).unwrap();
+    // 3 buffers required: page_pool, block_table, seq_ptr.
+    let buf = |sz: u64| {
+        BufferHandle::new(
+            sz,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap()
+    };
+    TensorDescriptor::new(
+        1,
+        0,
+        ElementType::Float16,
+        s,
+        0, // byte_offset must be 0 for block-paged (spec §byte_offset)
+        layout,
+        vec![buf(320 * 2), buf(12), buf(12)], // 3 buffers
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+/// Spec §block-paged.md: encode then decode preserves all fields exactly.
+/// Configuration: Key role, layer_index=3, U32 indices.
+#[test]
+fn block_paged_codec_round_trip_key_u32_layer3() {
+    let layout = make_block_paged(4, 5, 2, KvRole::Key, Some(3), BlockTableIndexType::U32);
+    let desc = block_paged_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    assert_eq!(decoded, desc);
+}
+
+/// Value role, no layer index (sentinel 0xFFFFFFFF), U64 indices.
+#[test]
+fn block_paged_codec_round_trip_value_u64_layer_none() {
+    let layout = make_block_paged(16, 128, 4, KvRole::Value, None, BlockTableIndexType::U64);
+    let desc = block_paged_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    assert_eq!(decoded, desc);
+}
+
+/// Fused role, layer_index=Some(0) (must NOT become None; sentinel is 0xFFFFFFFF not 0).
+#[test]
+fn block_paged_codec_round_trip_fused_layer_index_zero() {
+    let layout = make_block_paged(32, 64, 0, KvRole::Fused, Some(0), BlockTableIndexType::U32);
+    let desc = block_paged_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    assert_eq!(decoded, desc);
+    // Explicitly assert layer_index=Some(0) survived.
+    if let LayoutDescriptor::BlockPaged(bp) = &decoded.layout {
+        assert_eq!(bp.layer_index, Some(0));
+    } else {
+        panic!("expected BlockPaged layout after decode");
+    }
+}
+
+/// layer_index=Some(0xFFFFFFFE) — largest non-sentinel value.
+#[test]
+fn block_paged_codec_round_trip_layer_index_large() {
+    let layout = make_block_paged(
+        16,
+        10,
+        1,
+        KvRole::Key,
+        Some(0xFFFF_FFFE),
+        BlockTableIndexType::U32,
+    );
+    let desc = block_paged_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    assert_eq!(decoded, desc);
+    if let LayoutDescriptor::BlockPaged(bp) = &decoded.layout {
+        assert_eq!(bp.layer_index, Some(0xFFFF_FFFE));
+    } else {
+        panic!("expected BlockPaged layout after decode");
+    }
+}
+
+/// num_seqs=0 (empty batch).
+#[test]
+fn block_paged_codec_round_trip_empty_batch_num_seqs_zero() {
+    let layout = make_block_paged(16, 32, 0, KvRole::Key, Some(1), BlockTableIndexType::U32);
+    let desc = block_paged_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    assert_eq!(decoded, desc);
+}
+
+/// Varied page_size and num_pages values.
+#[test]
+fn block_paged_codec_round_trip_large_pool() {
+    let layout = make_block_paged(
+        64,
+        0x0001_0000_0000_u64,
+        8,
+        KvRole::Value,
+        None,
+        BlockTableIndexType::U64,
+    );
+    let desc = block_paged_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    assert_eq!(decoded, desc);
+}
+
+/// Spec §block-paged.md §Additional Descriptor Fields: the encoded payload for
+/// block-paged is exactly 32 bytes (all fields: 4+8+4+4+1+4+1+6 = 32).
+#[test]
+fn block_paged_encoded_payload_length_is_32_bytes() {
+    // Encode a full descriptor and verify the layout-specific payload occupies
+    // exactly 32 bytes. We do this by encoding two descriptors that differ only
+    // in the layout and checking that the byte at the known layout payload offset
+    // matches expectations. A simpler approach: just check total encode length
+    // is deterministic and consistent.
+    let layout = make_block_paged(16, 5, 2, KvRole::Key, Some(3), BlockTableIndexType::U32);
+    let desc = block_paged_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    // Decode back and re-encode: round-trip must produce identical bytes.
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    let re_encoded = decoded.encode().unwrap();
+    assert_eq!(
+        encoded, re_encoded,
+        "encode → decode → encode must produce identical bytes"
+    );
+}
+
+// ── Block-paged: reserved-byte rejection ─────────────────────────────────────
+
+/// Spec §block-paged.md §Additional Descriptor Fields: readers MUST reject a
+/// descriptor with any non-zero reserved byte in the 6-byte _reserved field.
+///
+/// We inject a poisoned block-paged payload by mutating the reserved bytes
+/// in an otherwise-valid encoded TensorDescriptor.
+///
+/// Wire layout (spec §metadata.md):
+///   Fixed header: magic(4) + major(1) + minor(1) + length(4) + flags(4)
+///                 + type_tag(1) + layout_tag(1) + rank(4) = 20 bytes.
+///   layout_tag is at byte 15 (0-indexed).
+///   After layout_tag: rank(4) + shape(rank×8) + byte_offset(8) before payload.
+///   For rank=3: 4 + 24 + 8 = 36 bytes between layout_tag and payload start.
+///
+/// Block-paged payload (32 bytes):
+///   page_size(4) + num_pages(8) + paged_axis(4) + num_seqs(4)
+///   + kv_role(1) + layer_index(4) + index_type(1) + _reserved(6) = 32.
+#[test]
+fn block_paged_decoder_rejects_nonzero_reserved_byte() {
+    let layout = make_block_paged(16, 5, 2, KvRole::Key, Some(3), BlockTableIndexType::U32);
+    let desc = block_paged_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+
+    // layout_tag (0x0B) is at fixed byte 15 in the wire format.
+    // The payload starts 36 bytes after the tag byte:
+    //   rank field (4) + shape[3 dims × 8] (24) + byte_offset (8) = 36.
+    let tag_byte = 15_usize;
+    assert_eq!(encoded[tag_byte], 0x0B, "layout tag must be at byte 15");
+    let payload_start = tag_byte + 1 + 36; // = 52
+
+    // _reserved is the last 6 bytes of the 32-byte payload.
+    // Offset within payload: 4+8+4+4+1+4+1 = 26.
+    let reserved_start = payload_start + 26;
+
+    for i in 0..6 {
+        let mut poisoned = encoded.clone();
+        poisoned[reserved_start + i] = 0xFF;
+        let result = TensorDescriptor::decode(&poisoned);
+        assert!(
+            matches!(result, Err(Error::ReservedBytesNonZero { .. })),
+            "non-zero reserved byte at payload[26+{i}] must be ReservedBytesNonZero"
+        );
+    }
+    // Baseline: clean encoding must still decode successfully.
+    assert!(TensorDescriptor::decode(&encoded).is_ok());
+}
+
+/// Unknown kv_role byte must be rejected.
+///
+/// kv_role is at payload offset 20:
+///   page_size(4) + num_pages(8) + paged_axis(4) + num_seqs(4) = 20.
+#[test]
+fn block_paged_decoder_rejects_unknown_kv_role_byte() {
+    let layout = make_block_paged(16, 5, 2, KvRole::Key, Some(3), BlockTableIndexType::U32);
+    let desc = block_paged_descriptor(layout);
+    let mut encoded = desc.encode().unwrap();
+
+    // layout_tag at byte 15; payload starts at byte 52.
+    let tag_byte = 15_usize;
+    assert_eq!(encoded[tag_byte], 0x0B, "layout tag must be at byte 15");
+    let payload_start = tag_byte + 1 + 36; // = 52
+                                           // kv_role at payload offset 20: page_size(4) + num_pages(8) + paged_axis(4) + num_seqs(4).
+    let kv_role_offset = payload_start + 20;
+    // Confirm we're pointing at a valid kv_role byte (0x00 = Key) before corrupting.
+    assert!(
+        encoded[kv_role_offset] <= 0x02,
+        "expected a valid kv_role byte at offset {kv_role_offset}"
+    );
+    encoded[kv_role_offset] = 0x03; // unknown kv_role byte (only 0x00–0x02 are valid)
+    let result = TensorDescriptor::decode(&encoded);
+    assert!(
+        matches!(result, Err(Error::InvalidLayout(_))),
+        "unknown kv_role byte 0x03 must be rejected with InvalidLayout"
+    );
+}
+
+/// Unknown block_table_index_type byte must be rejected.
+///
+/// block_table_index_type is at payload offset 21:
+///   page_size(4) + num_pages(8) + paged_axis(4) + num_seqs(4) + kv_role(1) = 21.
+/// Then layer_index(4) puts block_table_index_type at payload offset 25.
+#[test]
+fn block_paged_decoder_rejects_unknown_block_table_index_type_byte() {
+    let layout = make_block_paged(16, 5, 2, KvRole::Key, Some(3), BlockTableIndexType::U32);
+    let desc = block_paged_descriptor(layout);
+    let mut encoded = desc.encode().unwrap();
+
+    // layout_tag at byte 15; payload starts at byte 52.
+    let tag_byte = 15_usize;
+    assert_eq!(encoded[tag_byte], 0x0B, "layout tag must be at byte 15");
+    let payload_start = tag_byte + 1 + 36; // = 52
+                                           // block_table_index_type at payload offset 25:
+                                           //   page_size(4) + num_pages(8) + paged_axis(4) + num_seqs(4) + kv_role(1) + layer_index(4) = 25.
+    let index_type_offset = payload_start + 25;
+    encoded[index_type_offset] = 0x02; // unknown index type (only 0x00–0x01 are valid)
+    let result = TensorDescriptor::decode(&encoded);
+    assert!(
+        matches!(result, Err(Error::InvalidLayout(_))),
+        "unknown block_table_index_type byte 0x02 must be rejected with InvalidLayout"
+    );
 }

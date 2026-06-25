@@ -11,7 +11,9 @@
 //! |-------|-----------|
 //! | `0x00` | Reserved (permanently invalid) |
 //! | `0x01`–`0x09` | Core named layouts (Tier 1) |
-//! | `0x0A`–`0x3F` | Reserved for future specification versions |
+//! | `0x0A` | Reserved for future specification versions |
+//! | `0x0B` | Block-paged indirect layout (Tier 1) |
+//! | `0x0C`–`0x3F` | Reserved for future specification versions |
 //! | `0x40` | Hilbert curve layout (Tier 2) |
 //! | `0x41`–`0x7F` | Reserved for future specification versions |
 //! | `0x80`–`0xEF` | Reserved for future specification versions |
@@ -32,6 +34,7 @@
 //! See `docs/spec/memory-layout.md` for the normative definition.
 
 pub mod addressing;
+pub mod block_paged;
 pub mod col_major;
 pub mod coo;
 pub mod csc;
@@ -46,6 +49,7 @@ pub mod tiled;
 pub mod unknown;
 
 pub use addressing::{byte_address_from_element_offset, ElementAddress, SubpavingLocation};
+pub use block_paged::{BlockPagedLayout, BlockTableIndexType, KvRole};
 pub use coo::CooLayout;
 pub use csc::CscLayout;
 pub use csr::CsrLayout;
@@ -83,6 +87,8 @@ pub const TAG_COO: u8 = 0x07;
 pub const TAG_CSR: u8 = 0x08;
 /// Layout tag for CSC (Compressed Sparse Column) layout.
 pub const TAG_CSC: u8 = 0x09;
+/// Layout tag for block-paged indirect layout.
+pub const TAG_BLOCK_PAGED: u8 = 0x0B;
 /// Layout tag for Hilbert curve layout.
 pub const TAG_HILBERT: u8 = 0x40;
 
@@ -105,7 +111,9 @@ pub fn is_invalid_tag(tag: u8) -> bool {
 }
 
 /// Returns `true` if `tag` falls in a range reserved for future specification
-/// versions (`0x0A`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`).
+/// versions (`0x0A`, `0x0C`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`).
+///
+/// Tag `0x0B` (block-paged) is NOT reserved — it is a named layout tag.
 ///
 /// # Examples
 ///
@@ -113,6 +121,8 @@ pub fn is_invalid_tag(tag: u8) -> bool {
 /// use hurray_core::layout::is_reserved_tag;
 ///
 /// assert!(is_reserved_tag(0x0A));
+/// assert!(!is_reserved_tag(0x0B)); // block-paged — named tag
+/// assert!(is_reserved_tag(0x0C));
 /// assert!(is_reserved_tag(0x3F));
 /// assert!(is_reserved_tag(0x41));
 /// assert!(is_reserved_tag(0xEF));
@@ -121,7 +131,8 @@ pub fn is_invalid_tag(tag: u8) -> bool {
 /// ```
 #[inline]
 pub fn is_reserved_tag(tag: u8) -> bool {
-    matches!(tag, 0x0A..=0x3F | 0x41..=0x7F | 0x80..=0xEF)
+    // 0x0B is TAG_BLOCK_PAGED — a named layout, not reserved.
+    matches!(tag, 0x0A | 0x0C..=0x3F | 0x41..=0x7F | 0x80..=0xEF)
 }
 
 /// Returns `true` if `tag` is in the private-extension range (`0xF0`–`0xFE`).
@@ -173,7 +184,7 @@ pub fn validate_layout_tag_strict(tag: u8) -> Result<()> {
         t if is_reserved_tag(t) => Err(Error::ReservedLayoutTag(tag)),
         t if is_private_tag(t) => Err(Error::PrivateLayoutTag(tag)),
         TAG_ROW_MAJOR | TAG_COL_MAJOR | TAG_STRIDED | TAG_TILED | TAG_MORTON | TAG_SUBPAVING
-        | TAG_COO | TAG_CSR | TAG_CSC | TAG_HILBERT => Ok(()),
+        | TAG_COO | TAG_CSR | TAG_CSC | TAG_BLOCK_PAGED | TAG_HILBERT => Ok(()),
         _ => Err(Error::UnknownLayoutTag(tag)),
     }
 }
@@ -250,6 +261,15 @@ pub enum LayoutDescriptor {
     /// CSC (Compressed Sparse Column) layout. Tag `0x09`. Buffer count = 3.
     Csc(CscLayout),
 
+    /// Block-paged indirect layout. Tag `0x0B`. Buffer count = 3 (+ optional quant buffers).
+    ///
+    /// Stores a KV-cache tensor whose paged axis is divided into fixed-size pages
+    /// drawn from a shared page pool, with a block table mapping logical page
+    /// positions to physical page IDs. Designed for PagedAttention KV caches.
+    ///
+    /// See `docs/spec/layouts/block-paged.md`.
+    BlockPaged(BlockPagedLayout),
+
     /// Hilbert curve layout. Tag `0x40`.
     Hilbert(HilbertLayout),
 
@@ -295,6 +315,7 @@ impl LayoutDescriptor {
             Self::Coo(_) => TAG_COO,
             Self::Csr(_) => TAG_CSR,
             Self::Csc(_) => TAG_CSC,
+            Self::BlockPaged(_) => TAG_BLOCK_PAGED,
             Self::Hilbert(_) => TAG_HILBERT,
             Self::PrivateExtension(p) => p.tag,
             Self::Unknown(u) => u.tag,
@@ -312,12 +333,13 @@ impl LayoutDescriptor {
     /// |--------|-------------|
     /// | RowMajor, ColMajor, Strided, Tiled, Morton, Subpaving, Hilbert | 1 |
     /// | COO | 2 |
-    /// | CSR, CSC | 3 |
+    /// | CSR, CSC, BlockPaged | 3 |
     /// | PrivateExtension, Unknown | `None` |
     ///
-    /// > **Note:** Quantization-parameter buffers are counted separately in the
-    /// > tensor descriptor's buffer table. This method returns only the layout's
-    /// > own requirement.
+    /// > **Note:** This is the layout's **minimum** buffer count, not the total size
+    /// > of the tensor descriptor's buffer table. Quantization-parameter buffers are
+    /// > counted separately and appended after the layout's own buffers (so a quantized
+    /// > block-paged tensor has `3 + n` buffers, matching the spec's `buffer_count >= 3`).
     ///
     /// # Examples
     ///
@@ -352,8 +374,8 @@ impl LayoutDescriptor {
             // COO: values + indices.
             Self::Coo(_) => NonZeroU8::new(2),
 
-            // CSR / CSC: values + index array + pointer array.
-            Self::Csr(_) | Self::Csc(_) => NonZeroU8::new(3),
+            // CSR / CSC / BlockPaged: values + index array + pointer array.
+            Self::Csr(_) | Self::Csc(_) | Self::BlockPaged(_) => NonZeroU8::new(3),
 
             // Private and unknown: buffer requirements are not known statically.
             Self::PrivateExtension(_) | Self::Unknown(_) => None,
@@ -546,6 +568,33 @@ impl LayoutDescriptor {
                 Ok(())
             }
 
+            Self::BlockPaged(bp) => {
+                // Spec: block-paged is defined only for rank-3 tensors.
+                if shape.rank() != 3 {
+                    return Err(Error::InvalidLayout(format!(
+                        "block-paged layout requires rank 3, got rank {}",
+                        shape.rank()
+                    )));
+                }
+                // Spec: paged_axis MUST be 0 in this version.
+                if bp.paged_axis != 0 {
+                    return Err(Error::InvalidLayout(format!(
+                        "block-paged layout: paged_axis must be 0, got {}",
+                        bp.paged_axis
+                    )));
+                }
+                // Spec: page_size MUST be >= 1.
+                if bp.page_size < 1 {
+                    return Err(Error::InvalidLayout(
+                        "block-paged layout: page_size must be >= 1".to_string(),
+                    ));
+                }
+                // kv_role and block_table_index_type are strongly typed enums:
+                // all wire-representable values are valid here. No additional
+                // check needed — invalid wire bytes are rejected at decode time.
+                Ok(())
+            }
+
             Self::Hilbert(h) => {
                 if h.hilbert_rank as usize != shape.rank() {
                     return Err(Error::InvalidLayout(format!(
@@ -625,6 +674,10 @@ impl LayoutDescriptor {
             }),
             Self::Csc(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
                 layout_tag: TAG_CSC,
+            }),
+            // BlockPaged is indirect (multi-buffer); use addressing::block_paged directly.
+            Self::BlockPaged(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
+                layout_tag: TAG_BLOCK_PAGED,
             }),
             Self::PrivateExtension(p) => Err(crate::Error::PrivateLayoutTag(p.tag)),
             Self::Unknown(u) => Err(crate::Error::UnknownLayoutTag(u.tag)),
@@ -802,7 +855,9 @@ mod tests {
 
     #[test]
     fn known_tags_pass_strict_validation() {
-        for tag in [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x40] {
+        for tag in [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x40,
+        ] {
             assert!(
                 validate_layout_tag_strict(tag).is_ok(),
                 "tag 0x{tag:02X} should be valid"

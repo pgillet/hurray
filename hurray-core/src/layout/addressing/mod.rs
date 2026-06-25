@@ -4,6 +4,7 @@
 //! `docs/spec/memory-layout.md § Element Address Computation` and per-layout
 //! spec files under `docs/spec/layouts/`.
 
+pub mod block_paged;
 pub mod col_major;
 pub mod coo;
 pub mod csc;

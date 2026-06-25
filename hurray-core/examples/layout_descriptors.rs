@@ -11,9 +11,9 @@
 
 use hurray_core::{
     layout::{
-        CooLayout, CscLayout, CsrLayout, HilbertLayout, LayoutDescriptor, MortonLayout,
-        OuterStrides, PrivateExtensionLayout, RegionDescriptor, StridedLayout, SubpavingLayout,
-        TiledLayout, UnknownLayout,
+        BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout, CsrLayout, HilbertLayout,
+        KvRole, LayoutDescriptor, MortonLayout, OuterStrides, PrivateExtensionLayout,
+        RegionDescriptor, StridedLayout, SubpavingLayout, TiledLayout, UnknownLayout,
     },
     Shape,
 };
@@ -136,6 +136,24 @@ fn main() {
         csc.tag(),
         csc.buffer_count().map(|n| n.get()),
         csc.validate_against_shape(&csc_shape).is_ok(),
+    );
+
+    // ── Block-paged (0x0B) — PagedAttention KV cache, rank-3, buffer_count = 3 ─
+    let bp_shape = Shape::new(vec![6, 2, 8]).unwrap(); // [total_tokens, num_heads, head_dim]
+    let block_paged = LayoutDescriptor::BlockPaged(BlockPagedLayout::new(
+        4,                        // page_size (tokens/page)
+        5,                        // num_pages
+        0,                        // paged_axis (MUST be 0)
+        2,                        // num_seqs
+        KvRole::Key,              // this descriptor holds keys
+        Some(3),                  // layer_index 3
+        BlockTableIndexType::U32, // 32-bit block table / seq_ptr
+    ));
+    println!(
+        "BlockPaged: tag=0x{:02X}  buffers={:?}  valid={}  (indirect, rank-3, KV cache)",
+        block_paged.tag(),
+        block_paged.buffer_count().map(|n| n.get()),
+        block_paged.validate_against_shape(&bp_shape).is_ok(),
     );
 
     // ── Hilbert curve (0x40) — each dim must be exactly 2^order ──────────────

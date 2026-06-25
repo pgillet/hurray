@@ -292,6 +292,16 @@ impl TensorDescriptor {
                     shape.rank()
                 )));
             }
+
+            // Spec (block-paged.md § Sharding): a block-paged descriptor MUST NOT
+            // carry a shard descriptor. Enforced here — the cross-section seam where
+            // both layout and shard are decoded — rather than in the layout codec.
+            if matches!(&layout, LayoutDescriptor::BlockPaged(_)) {
+                return Err(Error::InvalidLayout(
+                    "block-paged layout MUST NOT carry a shard descriptor (spec § Sharding)"
+                        .to_string(),
+                ));
+            }
         }
 
         Ok(Self {
@@ -663,6 +673,47 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::InvalidShape(_)));
+    }
+
+    #[test]
+    fn new_rejects_block_paged_with_shard() {
+        use crate::layout::{BlockPagedLayout, BlockTableIndexType, KvRole};
+
+        // Block-paged is rank-3; give the shard a matching rank-3 parent_shape so the
+        // rank check passes and we reach the block-paged § Sharding prohibition.
+        let shape = Shape::new(vec![6u64, 2, 8]).unwrap();
+        let buf = BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
+        let shard = ShardDescriptor::new(vec![12u64, 2, 8], vec![0u64, 0, 0]).unwrap();
+        let layout = LayoutDescriptor::BlockPaged(BlockPagedLayout::new(
+            4,
+            5,
+            0,
+            2,
+            KvRole::Key,
+            Some(3),
+            BlockTableIndexType::U32,
+        ));
+        let err = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float16,
+            shape,
+            0,
+            layout,
+            vec![buf],
+            None,
+            Some(shard),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidLayout(_)));
     }
 
     // ── round-trip with optional sections ────────────────────────────────────
