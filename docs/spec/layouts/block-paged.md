@@ -2,7 +2,7 @@
 
 > **Status:** Draft
 
-**Layout tag:** `0x0B` | **Tier:** 1 | **Type:** Indirected
+**Layout tag:** `0x0B` | **Tier:** 1 | **Type:** Indirect
 
 > This section uses RFC 2119 key words: MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT,
 > SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL.
@@ -15,7 +15,7 @@ page position to a physical page ID. It is the interchange form of a PagedAttent
 cache: one page pool plus a ragged set of per-sequence block tables, addressed CSR-style
 by a `seq_ptr` offset array.
 
-Block-paged is an **indirected-dense** layout: every logical element along the paged
+Block-paged is an **indirect-dense** layout: every logical element along the paged
 axis exists (there are no implicit zeros, unlike sparse layouts), but the mapping from a
 logical index to a physical buffer position is resolved through the block table rather
 than by an affine stride formula. A block-paged descriptor describes a **static snapshot

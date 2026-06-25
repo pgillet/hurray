@@ -58,7 +58,7 @@ MAY accept the descriptor but MUST NOT dereference or interpret the tensor data 
 | CSR (Compressed Sparse Row) | `0x08` | 1 | Sparse | [layouts/csr.md](layouts/csr.md) |
 | CSC (Compressed Sparse Column) | `0x09` | 1 | Sparse | [layouts/csc.md](layouts/csc.md) |
 | CSF (Compressed Sparse Fiber) | `0x0A` | 1 | Sparse | (reserved — planned) |
-| Block-paged | `0x0B` | 1 | Indirected | [layouts/block-paged.md](layouts/block-paged.md) |
+| Block-paged | `0x0B` | 1 | Indirect | [layouts/block-paged.md](layouts/block-paged.md) |
 | Hilbert curve | `0x40` | 2 | Dense | [layouts/hilbert.md](layouts/hilbert.md) |
 
 The **Type** column classifies each layout's addressing model:
@@ -67,7 +67,7 @@ The **Type** column classifies each layout's addressing model:
   stride formula.
 - **Sparse** — only stored (non-zero) elements are materialised; unstored coordinates
   are implicitly zero.
-- **Indirected** — every logical element exists (no implicit zeros), but the mapping from
+- **Indirect** — every logical element exists (no implicit zeros), but the mapping from
   a logical index to a physical position is non-affine and resolved through an index
   structure (e.g. a block table) rather than an affine stride formula.
 
@@ -109,8 +109,8 @@ the dimension's size is not statically known and MUST be resolved before use.
 For sub-byte types (`bool`, `int4`, `uint4`, `int2`, `uint2`), `byte_offset` MUST
 point to a byte boundary.
 
-For **sparse layouts** (COO, CSR, CSC, and future sparse tags) and **indirected
-layouts** (block-paged, and future indirected tags), the concept of a "first element at
+For **sparse layouts** (COO, CSR, CSC, and future sparse tags) and **indirect
+layouts** (block-paged, and future indirect tags), the concept of a "first element at
 a fixed offset" does not apply: the first logical element is located through an index
 structure, not at a fixed offset. For these tensors, `byte_offset` MUST be set to
 `0x0000000000000000`.
@@ -187,7 +187,7 @@ For **sparse layouts** (tags `0x07`, `0x08`, `0x09`, and future sparse tags), th
 buffer table MUST contain the number of entries specified by that layout's individual
 spec file. Each buffer holds a distinct component array (values, indices, pointers).
 
-For **indirected layouts** (tag `0x0B`, and future indirected tags), the buffer table
+For **indirect layouts** (tag `0x0B`, and future indirect tags), the buffer table
 MUST contain at least **three** entries (`buffer_count >= 3`): a values buffer plus the
 index/pointer buffers that resolve the logical-to-physical mapping. For block-paged
 (`0x0B`) these are buffer 0 = `page_pool`, buffer 1 = `block_table`, and buffer 2 =
