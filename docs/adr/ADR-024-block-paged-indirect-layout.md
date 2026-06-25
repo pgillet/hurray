@@ -1,4 +1,4 @@
-# ADR-024: Block-Paged Layout as an Indirected-Dense Whole-Batch Snapshot
+# ADR-024: Block-Paged Layout as an Indirect-Dense Whole-Batch Snapshot
 
 ## Status
 
@@ -38,10 +38,10 @@ remain.
 
 ## Decision
 
-### 1. A new addressing category: Indirected
+### 1. A new addressing category: Indirect
 
 `block-paged` introduces a third layout addressing category alongside Dense and Sparse:
-**Indirected**. In an indirected layout every logical element exists (there are no
+**Indirect**. In an indirect layout every logical element exists (there are no
 implicit zeros, unlike Sparse), but the mapping from a logical index to a physical
 buffer position is **non-affine** — it is resolved through a block table rather than an
 affine stride formula. The layout is assigned Tier-1 tag `0x0B` (tag `0x0A` is reserved
@@ -143,8 +143,8 @@ snapshot framing — a snapshot has no live lifetime to count.
 
 ## Consequences
 
-- `docs/spec/memory-layout.md` gains the `Indirected` type, the `0x0B` row in the Named
-  Layout Tags table, and a buffer-table clause covering indirected layouts. Tag `0x0A`
+- `docs/spec/memory-layout.md` gains the `Indirect` type, the `0x0B` row in the Named
+  Layout Tags table, and a buffer-table clause covering indirect layouts. Tag `0x0A`
   is reserved for the future CSF (Compressed Sparse Fiber) layout so the sparse family
   (COO `0x07`, CSR `0x08`, CSC `0x09`, CSF `0x0A`) stays contiguous.
 - A new layout file `docs/spec/layouts/block-paged.md` is added.
