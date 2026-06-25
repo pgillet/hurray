@@ -17,6 +17,7 @@ A layout descriptor tells a reader how the elements of a tensor are arranged in 
 | `Coo` | `0x07` | 2 | `nnz`, `is_sorted`; values + index buffers |
 | `Csr` | `0x08` | 3 | `nnz`; values + col_indices + row_ptr; rank-2 only |
 | `Csc` | `0x09` | 3 | `nnz`; values + row_indices + col_ptr; rank-2 only |
+| `BlockPaged` | `0x0B` | 3 | PagedAttention KV cache; page_pool + block_table + seq_ptr; rank-3 only. See [block-paged-kv-cache.md](block-paged-kv-cache.md) |
 | `Hilbert` | `0x40` | 1 | `hilbert_order`, `hilbert_rank`; dims must be `2^order` |
 | `PrivateExtension` | `0xF0`–`0xFE` | `None` | Opaque; requires out-of-band agreement |
 | `Unknown` | any unrecognised | `None` | Permissive mode only; never dereference data |

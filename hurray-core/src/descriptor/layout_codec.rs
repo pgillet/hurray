@@ -17,10 +17,11 @@
 
 use crate::descriptor::cursor::{ByteCursor, ByteWriter};
 use crate::layout::{
-    CooLayout, CscLayout, CsrLayout, HilbertLayout, InnerStrides, LayoutDescriptor, MortonLayout,
-    OuterStrides, PrivateExtensionLayout, RegionDescriptor, StridedLayout, SubpavingLayout,
-    TiledLayout, MAX_TILED_DEPTH, TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSR, TAG_HILBERT,
-    TAG_MORTON, TAG_ROW_MAJOR, TAG_STRIDED, TAG_SUBPAVING, TAG_TILED,
+    BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout, CsrLayout, HilbertLayout,
+    InnerStrides, KvRole, LayoutDescriptor, MortonLayout, OuterStrides, PrivateExtensionLayout,
+    RegionDescriptor, StridedLayout, SubpavingLayout, TiledLayout, MAX_TILED_DEPTH,
+    TAG_BLOCK_PAGED, TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSR, TAG_HILBERT, TAG_MORTON,
+    TAG_ROW_MAJOR, TAG_STRIDED, TAG_SUBPAVING, TAG_TILED,
 };
 use crate::{Error, Result};
 
@@ -61,6 +62,7 @@ fn encode_layout_payload_at_depth(
         LayoutDescriptor::Coo(c) => encode_coo(c, w),
         LayoutDescriptor::Csr(c) => encode_csr(c, w),
         LayoutDescriptor::Csc(c) => encode_csc(c, w),
+        LayoutDescriptor::BlockPaged(bp) => encode_block_paged(bp, w),
         LayoutDescriptor::Hilbert(h) => encode_hilbert(h, w),
         LayoutDescriptor::PrivateExtension(p) => encode_private_extension(p, w),
         LayoutDescriptor::Unknown(_) => {
@@ -95,6 +97,7 @@ pub(crate) fn decode_layout_payload(
         TAG_COO => decode_coo(cursor),
         TAG_CSR => decode_csr(cursor),
         TAG_CSC => decode_csc(cursor),
+        TAG_BLOCK_PAGED => decode_block_paged(cursor),
         TAG_HILBERT => decode_hilbert(cursor),
         0xF0..=0xFE => decode_private_extension(tag, cursor),
         0x00 | 0xFF => Err(Error::InvalidLayoutTag(tag)),
@@ -463,6 +466,94 @@ fn decode_csc(cursor: &mut ByteCursor<'_>) -> Result<LayoutDescriptor> {
         });
     }
     Ok(LayoutDescriptor::Csc(CscLayout::new(nnz)))
+}
+
+// ── BlockPaged ────────────────────────────────────────────────────────────────
+
+/// Field order (spec § Additional Descriptor Fields, all little-endian):
+///
+/// | Field                  | Wire type | Bytes |
+/// |------------------------|-----------|-------|
+/// | `page_size`            | uint32    | 4     |
+/// | `num_pages`            | uint64    | 8     |
+/// | `paged_axis`           | uint32    | 4     |
+/// | `num_seqs`             | uint32    | 4     |
+/// | `kv_role`              | uint8     | 1     |
+/// | `layer_index`          | uint32    | 4     |
+/// | `block_table_index_type` | uint8   | 1     |
+/// | `_reserved`            | uint8[6]  | 6     |
+///                                        Total 32 bytes
+fn encode_block_paged(layout: &BlockPagedLayout, w: &mut ByteWriter) -> crate::Result<()> {
+    w.write_u32_le(layout.page_size);
+    w.write_u64_le(layout.num_pages);
+    w.write_u32_le(layout.paged_axis);
+    w.write_u32_le(layout.num_seqs);
+    w.write_u8(layout.kv_role.wire_byte());
+    // layer_index: None → 0xFFFFFFFF sentinel; Some(n) → n.
+    let layer_index_wire = layout
+        .layer_index
+        .unwrap_or(crate::layout::block_paged::LAYER_INDEX_NONE);
+    w.write_u32_le(layer_index_wire);
+    w.write_u8(layout.block_table_index_type.wire_byte());
+    w.write_zeros(6); // _reserved — MUST be 0x00
+    Ok(())
+}
+
+fn decode_block_paged(cursor: &mut ByteCursor<'_>) -> crate::Result<LayoutDescriptor> {
+    let page_size = cursor.read_u32_le()?;
+    let num_pages = cursor.read_u64_le()?;
+    let paged_axis = cursor.read_u32_le()?;
+    let num_seqs = cursor.read_u32_le()?;
+
+    let kv_role_byte = cursor.read_u8()?;
+    let kv_role = KvRole::from_wire(kv_role_byte).ok_or_else(|| {
+        crate::Error::InvalidLayout(format!(
+            "block-paged: unknown kv_role byte 0x{kv_role_byte:02X}"
+        ))
+    })?;
+
+    let layer_index_wire = cursor.read_u32_le()?;
+    let layer_index = if layer_index_wire == crate::layout::block_paged::LAYER_INDEX_NONE {
+        None
+    } else {
+        Some(layer_index_wire)
+    };
+
+    let index_type_byte = cursor.read_u8()?;
+    let block_table_index_type =
+        BlockTableIndexType::from_wire(index_type_byte).ok_or_else(|| {
+            crate::Error::InvalidLayout(format!(
+                "block-paged: unknown block_table_index_type byte 0x{index_type_byte:02X}"
+            ))
+        })?;
+
+    // Spec: readers MUST reject a descriptor with any non-zero reserved byte.
+    let reserved = cursor.read_bytes(6)?;
+    if reserved.iter().any(|&b| b != 0) {
+        return Err(crate::Error::ReservedBytesNonZero {
+            field: "block_paged._reserved",
+        });
+    }
+
+    // TODO(spec): block-paged quantization compatibility (block-paged.md §
+    // Quantization Compatibility) requires cross-validating the layout's
+    // page_size against the quantization descriptor's axis and block_size.
+    // The quantization bytes are stored raw at this layer (TensorDescriptor.quantization
+    // is Option<Vec<u8>>); the check is deferred to the typed quantization layer
+    // (Layer 4 / higher) via BlockPagedLayout::validate_quantization_compatibility.
+    // Note: shard rejection (block-paged.md § Sharding) is enforced in
+    // TensorDescriptor::new, the cross-section seam where layout and shard are both
+    // known — see descriptor/mod.rs. It is intentionally not checked here.
+
+    Ok(LayoutDescriptor::BlockPaged(BlockPagedLayout::new(
+        page_size,
+        num_pages,
+        paged_axis,
+        num_seqs,
+        kv_role,
+        layer_index,
+        block_table_index_type,
+    )))
 }
 
 // ── Hilbert ───────────────────────────────────────────────────────────────────

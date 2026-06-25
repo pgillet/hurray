@@ -31,7 +31,8 @@ pub use descriptor::{
 pub use element_type::ElementType;
 pub use error::{Error, Result};
 pub use layout::{
-    byte_address_from_element_offset, ElementAddress, LayoutDescriptor, SubpavingLocation,
+    byte_address_from_element_offset, BlockPagedLayout, BlockTableIndexType, ElementAddress,
+    KvRole, LayoutDescriptor, SubpavingLocation,
 };
 pub use quantization::{
     validate_axis, validate_buffer_placement, Mxfp, Nf4, PerBlockAffine, PerChannelAffine,
