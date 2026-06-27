@@ -17,6 +17,7 @@ A layout descriptor tells a reader how the elements of a tensor are arranged in 
 | `Coo` | `0x07` | 2 | `nnz`, `is_sorted`; values + index buffers |
 | `Csr` | `0x08` | 3 | `nnz`; values + col_indices + row_ptr; rank-2 only |
 | `Csc` | `0x09` | 3 | `nnz`; values + row_indices + col_ptr; rank-2 only |
+| `Csf` | `0x0A` | `2·rank+1` | Compressed Sparse Fiber; rank-N generalization of CSR/CSC; values + per-level pos/crd; rank-3+. Spec only — not yet in `hurray-core` (see [csf.md](../spec/layouts/csf.md)) |
 | `BlockPaged` | `0x0B` | 3 | PagedAttention KV cache; page_pool + block_table + seq_ptr; rank-3 only. See [block-paged-kv-cache.md](block-paged-kv-cache.md) |
 | `Hilbert` | `0x40` | 1 | `hilbert_order`, `hilbert_rank`; dims must be `2^order` |
 | `PrivateExtension` | `0xF0`–`0xFE` | `None` | Opaque; requires out-of-band agreement |
@@ -135,6 +136,12 @@ use hurray_core::layout::{CscLayout, LayoutDescriptor};
 let csc = LayoutDescriptor::Csc(CscLayout::new(100));
 assert_eq!(csc.buffer_count().map(|n| n.get()), Some(3));
 ```
+
+CSF (Compressed Sparse Fiber) — the rank-N (rank ≥ 3) generalization of CSR/CSC, with
+`2·rank + 1` buffers (`values` plus a `pos`/`crd` pair per level). It is specified in
+[csf.md](../spec/layouts/csf.md), but the `hurray-core` `Csf` variant is not yet
+implemented, so there is no constructor example here. Writers SHOULD prefer CSR/CSC for
+rank-2 sparse matrices and reserve CSF for rank ≥ 3.
 
 ## Space-filling curve layouts
 
