@@ -15,7 +15,7 @@ learning (e.g., sparse attention, graph neural networks, sparse weight matrices)
 
 > **Note (non-normative):** CSR is defined only for **rank-2 tensors** in this
 > version of the specification. Generalisation to arbitrary rank (Compressed Sparse
-> Fiber, CSF) is left to a future revision.
+> Fiber, CSF) is specified in [csf.md](csf.md).
 
 A conforming implementation MUST reject a CSR descriptor whose `rank` is not 2.
 

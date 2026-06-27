@@ -49,6 +49,8 @@ descriptor whose major version field exceeds the reader's supported major versio
 | [layouts/coo.md](layouts/coo.md) | COO (Coordinate) sparse layout — tag `0x07` |
 | [layouts/csr.md](layouts/csr.md) | CSR (Compressed Sparse Row) sparse layout — tag `0x08` |
 | [layouts/csc.md](layouts/csc.md) | CSC (Compressed Sparse Column) sparse layout — tag `0x09` (also known as CCS) |
+| [layouts/csf.md](layouts/csf.md) | CSF (Compressed Sparse Fiber) sparse layout — tag `0x0A` |
+| [layouts/block-paged.md](layouts/block-paged.md) | Block-paged (PagedAttention KV cache) layout — tag `0x0B` |
 | [layouts/hilbert.md](layouts/hilbert.md) | Hilbert curve layout — tag `0x40` |
 | [buffer-protocol.md](buffer-protocol.md) | Zero-copy semantics, alignment, device memory |
 | [metadata.md](metadata.md) | Tensor descriptor binary encoding |
