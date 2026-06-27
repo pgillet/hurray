@@ -262,7 +262,7 @@ The `_reserved` bytes MUST be `0x00`. A conforming reader in strict mode MUST
 reject a descriptor containing any buffer handle whose `_reserved` bytes are not
 all `0x00`.
 
-> **Note (non-normative):** For sparse layout tags (COO `0x07`, CSR `0x08`, CSC `0x09`), `buffer_count` exceeds 1 — each entry holds a distinct component array (values, indices, pointers). For quantized dense tensors, quantization-parameter buffers (scales, zero-points) extend the buffer table beyond the layout baseline. The layout-defined minimum is always `0x01` for dense layouts; quantization schemes append their parameter buffers on top.
+> **Note (non-normative):** For sparse layout tags (COO `0x07`, CSR `0x08`, CSC `0x09`, CSF `0x0A`), `buffer_count` exceeds 1 — each entry holds a distinct component array (values, indices, pointers). For CSF the count is rank-dependent, `2·rank + 1` (one `values` buffer plus a `pos`/`crd` pair per level). For quantized dense tensors, quantization-parameter buffers (scales, zero-points) extend the buffer table beyond the layout baseline. The layout-defined minimum is always `0x01` for dense layouts; quantization schemes append their parameter buffers on top.
 
 ---
 

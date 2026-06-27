@@ -197,20 +197,21 @@ use hurray_core::layout::{
 use hurray_core::Error;
 
 // Check individual tag categories without constructing a descriptor.
+// 0x10 is a genuinely unassigned tag in the Tier-1 reserved range.
 assert!(is_invalid_tag(0x00));
-assert!(is_reserved_tag(0x0A));
+assert!(is_reserved_tag(0x10));
 assert!(is_private_tag(0xF3));
 
 // Strict-mode validation: rejects invalid, reserved, and private tags.
 assert!(validate_layout_tag_strict(0x01).is_ok());
 assert!(matches!(validate_layout_tag_strict(0x00), Err(Error::InvalidLayoutTag(0x00))));
-assert!(matches!(validate_layout_tag_strict(0x0A), Err(Error::ReservedLayoutTag(0x0A))));
+assert!(matches!(validate_layout_tag_strict(0x10), Err(Error::ReservedLayoutTag(0x10))));
 assert!(matches!(validate_layout_tag_strict(0xF0), Err(Error::PrivateLayoutTag(0xF0))));
 
 // Permissive mode: wrap unrecognised tags in Unknown for passthrough.
 // The reader must NOT dereference the tensor data buffer for Unknown layouts.
-let unknown = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![]).unwrap());
-assert_eq!(unknown.tag(), 0x0A);
+let unknown = LayoutDescriptor::Unknown(UnknownLayout::new(0x10, vec![]).unwrap());
+assert_eq!(unknown.tag(), 0x10);
 assert!(unknown.buffer_count().is_none());
 ```
 

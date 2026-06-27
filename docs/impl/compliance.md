@@ -41,7 +41,7 @@ Mandatory (in addition to Level 1):
 - Compute and emit a correct `descriptor_length`.
 - Emit all mandatory fields for the chosen layout tag.
 - Emit a buffer table with correct `byte_size` and `alignment` (minimum 64 bytes).
-- Set `byte_offset = 0` for sparse layouts (COO, CSR, CSC).
+- Set `byte_offset = 0` for sparse layouts (COO, CSR, CSC, CSF).
 - Set reserved flag bits to `0`.
 
 ### Level 3 — Network Transport
@@ -101,6 +101,7 @@ All conforming implementations MUST support **Tier 1** layouts for reading descr
 | COO | `0x07` |
 | CSR | `0x08` |
 | CSC | `0x09` |
+| CSF | `0x0A` |
 
 ## Test Requirements
 
@@ -111,7 +112,7 @@ A conforming implementation MUST pass a test suite that covers:
 - **Round-trip**: write a tensor descriptor, read it back, verify all fields are identical.
 - **Buffer size**: verify computed buffer sizes match expected values for all mandatory types and layouts.
 - **Zero-copy invariant**: verify that bit patterns are preserved exactly after a round-trip (no NaN canonicalization, no subnormal flushing).
-- **Sparse invariant validation**: for COO, CSR, CSC — verify that constraint violations are rejected.
+- **Sparse invariant validation**: for COO, CSR, CSC — verify that constraint violations are rejected. For CSF — verify that violations of per-level `pos` monotonicity, `crd` sortedness within each parent slice, and `mode_order` permutation validity are rejected.
 
 ### Empty Tensor Round-Trip Vectors
 

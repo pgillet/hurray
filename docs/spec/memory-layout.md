@@ -57,7 +57,7 @@ MAY accept the descriptor but MUST NOT dereference or interpret the tensor data 
 | COO (Coordinate) | `0x07` | 1 | Sparse | [layouts/coo.md](layouts/coo.md) |
 | CSR (Compressed Sparse Row) | `0x08` | 1 | Sparse | [layouts/csr.md](layouts/csr.md) |
 | CSC (Compressed Sparse Column) | `0x09` | 1 | Sparse | [layouts/csc.md](layouts/csc.md) |
-| CSF (Compressed Sparse Fiber) | `0x0A` | 1 | Sparse | (reserved — planned) |
+| CSF (Compressed Sparse Fiber) | `0x0A` | 1 | Sparse | [layouts/csf.md](layouts/csf.md) |
 | Block-paged | `0x0B` | 1 | Indirect | [layouts/block-paged.md](layouts/block-paged.md) |
 | Hilbert curve | `0x40` | 2 | Dense | [layouts/hilbert.md](layouts/hilbert.md) |
 
@@ -109,7 +109,7 @@ the dimension's size is not statically known and MUST be resolved before use.
 For sub-byte types (`bool`, `int4`, `uint4`, `int2`, `uint2`), `byte_offset` MUST
 point to a byte boundary.
 
-For **sparse layouts** (COO, CSR, CSC, and future sparse tags) and **indirect
+For **sparse layouts** (COO, CSR, CSC, CSF, and future sparse tags) and **indirect
 layouts** (block-paged, and future indirect tags), the concept of a "first element at
 a fixed offset" does not apply: the first logical element is located through an index
 structure, not at a fixed offset. For these tensors, `byte_offset` MUST be set to
@@ -183,9 +183,11 @@ entries, as defined in `metadata.md`.
 
 For **dense layouts** (tags `0x01`–`0x06`, `0x40`), the buffer table MUST contain at least **one** entry. Non-quantized dense tensors MUST have exactly `buffer_count = 0x01`. Quantized dense tensors MUST have `buffer_count = 0x01` plus the number of quantization-parameter buffers required by the active scheme (see `quantization.md` § Buffer Table Placement Rules).
 
-For **sparse layouts** (tags `0x07`, `0x08`, `0x09`, and future sparse tags), the
-buffer table MUST contain the number of entries specified by that layout's individual
-spec file. Each buffer holds a distinct component array (values, indices, pointers).
+For **sparse layouts** (tags `0x07`, `0x08`, `0x09`, `0x0A`, and future sparse tags),
+the buffer table MUST contain the number of entries specified by that layout's
+individual spec file. Each buffer holds a distinct component array (values, indices,
+pointers). Most sparse layouts have a fixed buffer count; CSF (`0x0A`) is the
+exception, with a rank-dependent count of `2 × rank + 1` (see `layouts/csf.md`).
 
 For **indirect layouts** (tag `0x0B`, and future indirect tags), the buffer table
 MUST contain at least **three** entries (`buffer_count >= 3`): a values buffer plus the
