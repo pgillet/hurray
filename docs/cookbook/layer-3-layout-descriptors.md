@@ -17,7 +17,7 @@ A layout descriptor tells a reader how the elements of a tensor are arranged in 
 | `Coo` | `0x07` | 2 | `nnz`, `is_sorted`; values + index buffers |
 | `Csr` | `0x08` | 3 | `nnz`; values + col_indices + row_ptr; rank-2 only |
 | `Csc` | `0x09` | 3 | `nnz`; values + row_indices + col_ptr; rank-2 only |
-| `Csf` | `0x0A` | `2·rank+1` | Compressed Sparse Fiber; rank-N generalization of CSR/CSC; values + per-level pos/crd; rank-3+. Spec only — not yet in `hurray-core` (see [csf.md](../spec/layouts/csf.md)) |
+| `Csf` | `0x0A` | `2·rank+1` | `nnz`, `mode_order` permutation; values + per-level pos/crd; rank-3+ generalization of CSR/CSC. See [csf.md](../spec/layouts/csf.md) |
 | `BlockPaged` | `0x0B` | 3 | PagedAttention KV cache; page_pool + block_table + seq_ptr; rank-3 only. See [block-paged-kv-cache.md](block-paged-kv-cache.md) |
 | `Hilbert` | `0x40` | 1 | `hilbert_order`, `hilbert_rank`; dims must be `2^order` |
 | `PrivateExtension` | `0xF0`–`0xFE` | `None` | Opaque; requires out-of-band agreement |
@@ -138,10 +138,29 @@ assert_eq!(csc.buffer_count().map(|n| n.get()), Some(3));
 ```
 
 CSF (Compressed Sparse Fiber) — the rank-N (rank ≥ 3) generalization of CSR/CSC, with
-`2·rank + 1` buffers (`values` plus a `pos`/`crd` pair per level). It is specified in
-[csf.md](../spec/layouts/csf.md), but the `hurray-core` `Csf` variant is not yet
-implemented, so there is no constructor example here. Writers SHOULD prefer CSR/CSC for
-rank-2 sparse matrices and reserve CSF for rank ≥ 3.
+`2·rank + 1` buffers (`values` plus a `pos`/`crd` pair per level). The buffer count is
+derived from the rank, which `CsfLayout` carries via its `mode_order` permutation
+(`mode_order[L]` is the logical dimension stored at level `L`). Writers SHOULD prefer
+CSR/CSC for rank-2 sparse matrices and reserve CSF for rank ≥ 3:
+
+```rust
+use hurray_core::layout::{CsfLayout, LayoutDescriptor};
+use hurray_core::Shape;
+
+// Rank-3 sparse tensor, identity mode order, 4 non-zeros.
+let csf = LayoutDescriptor::Csf(CsfLayout::new(4, vec![0, 1, 2]));
+assert_eq!(csf.tag(), 0x0A);
+assert_eq!(csf.buffer_count().map(|n| n.get()), Some(7)); // 2*3 + 1
+
+// rank ≥ 3 only; CSR/CSC own rank-2.
+let shape = Shape::new(vec![2, 3, 4]).unwrap();
+assert!(csf.validate_against_shape(&shape).is_ok());
+assert!(csf
+    .validate_against_shape(&Shape::new(vec![3, 4]).unwrap())
+    .is_err());
+```
+
+See [csf.md](../spec/layouts/csf.md) for the full per-level buffer layout and lookup.
 
 ## Space-filling curve layouts
 

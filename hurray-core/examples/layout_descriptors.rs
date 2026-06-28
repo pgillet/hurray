@@ -11,9 +11,10 @@
 
 use hurray_core::{
     layout::{
-        BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout, CsrLayout, HilbertLayout,
-        KvRole, LayoutDescriptor, MortonLayout, OuterStrides, PrivateExtensionLayout,
-        RegionDescriptor, StridedLayout, SubpavingLayout, TiledLayout, UnknownLayout,
+        BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout, CsfLayout, CsrLayout,
+        HilbertLayout, KvRole, LayoutDescriptor, MortonLayout, OuterStrides,
+        PrivateExtensionLayout, RegionDescriptor, StridedLayout, SubpavingLayout, TiledLayout,
+        UnknownLayout,
     },
     Shape,
 };
@@ -136,6 +137,16 @@ fn main() {
         csc.tag(),
         csc.buffer_count().map(|n| n.get()),
         csc.validate_against_shape(&csc_shape).is_ok(),
+    );
+
+    // ── CSF sparse (0x0A) — rank-N, buffer_count = 2·rank+1 ──────────────────
+    let csf_shape = Shape::new(vec![2, 3, 4]).unwrap();
+    let csf = LayoutDescriptor::Csf(CsfLayout::new(4, vec![0, 1, 2]));
+    println!(
+        "CSF:        tag=0x{:02X}  buffers={:?}  valid={}  (rank-3, nnz=4, 2·rank+1 buffers)",
+        csf.tag(),
+        csf.buffer_count().map(|n| n.get()),
+        csf.validate_against_shape(&csf_shape).is_ok(),
     );
 
     // ── Block-paged (0x0B) — PagedAttention KV cache, rank-3, buffer_count = 3 ─

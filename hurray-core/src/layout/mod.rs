@@ -11,7 +11,7 @@
 //! |-------|-----------|
 //! | `0x00` | Reserved (permanently invalid) |
 //! | `0x01`–`0x09` | Core named layouts (Tier 1) |
-//! | `0x0A` | Reserved for future specification versions |
+//! | `0x0A` | CSF (Compressed Sparse Fiber) sparse layout (Tier 1) |
 //! | `0x0B` | Block-paged indirect layout (Tier 1) |
 //! | `0x0C`–`0x3F` | Reserved for future specification versions |
 //! | `0x40` | Hilbert curve layout (Tier 2) |
@@ -38,6 +38,7 @@ pub mod block_paged;
 pub mod col_major;
 pub mod coo;
 pub mod csc;
+pub mod csf;
 pub mod csr;
 pub mod hilbert;
 pub mod morton;
@@ -52,6 +53,7 @@ pub use addressing::{byte_address_from_element_offset, ElementAddress, Subpaving
 pub use block_paged::{BlockPagedLayout, BlockTableIndexType, KvRole};
 pub use coo::CooLayout;
 pub use csc::CscLayout;
+pub use csf::CsfLayout;
 pub use csr::CsrLayout;
 pub use hilbert::HilbertLayout;
 pub use morton::MortonLayout;
@@ -87,6 +89,8 @@ pub const TAG_COO: u8 = 0x07;
 pub const TAG_CSR: u8 = 0x08;
 /// Layout tag for CSC (Compressed Sparse Column) layout.
 pub const TAG_CSC: u8 = 0x09;
+/// Layout tag for CSF (Compressed Sparse Fiber) layout.
+pub const TAG_CSF: u8 = 0x0A;
 /// Layout tag for block-paged indirect layout.
 pub const TAG_BLOCK_PAGED: u8 = 0x0B;
 /// Layout tag for Hilbert curve layout.
@@ -111,16 +115,16 @@ pub fn is_invalid_tag(tag: u8) -> bool {
 }
 
 /// Returns `true` if `tag` falls in a range reserved for future specification
-/// versions (`0x0A`, `0x0C`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`).
+/// versions (`0x0C`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`).
 ///
-/// Tag `0x0B` (block-paged) is NOT reserved — it is a named layout tag.
+/// Tags `0x0A` (CSF) and `0x0B` (block-paged) are NOT reserved — they are named layout tags.
 ///
 /// # Examples
 ///
 /// ```
 /// use hurray_core::layout::is_reserved_tag;
 ///
-/// assert!(is_reserved_tag(0x0A));
+/// assert!(!is_reserved_tag(0x0A)); // CSF — named tag
 /// assert!(!is_reserved_tag(0x0B)); // block-paged — named tag
 /// assert!(is_reserved_tag(0x0C));
 /// assert!(is_reserved_tag(0x3F));
@@ -131,8 +135,8 @@ pub fn is_invalid_tag(tag: u8) -> bool {
 /// ```
 #[inline]
 pub fn is_reserved_tag(tag: u8) -> bool {
-    // 0x0B is TAG_BLOCK_PAGED — a named layout, not reserved.
-    matches!(tag, 0x0A | 0x0C..=0x3F | 0x41..=0x7F | 0x80..=0xEF)
+    // 0x0A is TAG_CSF and 0x0B is TAG_BLOCK_PAGED — both named layouts, not reserved.
+    matches!(tag, 0x0C..=0x3F | 0x41..=0x7F | 0x80..=0xEF)
 }
 
 /// Returns `true` if `tag` is in the private-extension range (`0xF0`–`0xFE`).
@@ -163,7 +167,7 @@ pub fn is_private_tag(tag: u8) -> bool {
 /// | Tag range | Error |
 /// |-----------|-------|
 /// | `0x00`, `0xFF` | [`Error::InvalidLayoutTag`] |
-/// | `0x0A`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF` | [`Error::ReservedLayoutTag`] |
+/// | `0x0C`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF` | [`Error::ReservedLayoutTag`] |
 /// | `0xF0`–`0xFE` | [`Error::PrivateLayoutTag`] |
 /// | Any other unrecognised value | [`Error::UnknownLayoutTag`] |
 ///
@@ -173,9 +177,10 @@ pub fn is_private_tag(tag: u8) -> bool {
 /// use hurray_core::{Error, layout::validate_layout_tag_strict};
 ///
 /// assert!(validate_layout_tag_strict(0x01).is_ok());
+/// assert!(validate_layout_tag_strict(0x0A).is_ok()); // CSF
 /// assert!(matches!(validate_layout_tag_strict(0x00), Err(Error::InvalidLayoutTag(0x00))));
 /// assert!(matches!(validate_layout_tag_strict(0xFF), Err(Error::InvalidLayoutTag(0xFF))));
-/// assert!(matches!(validate_layout_tag_strict(0x0A), Err(Error::ReservedLayoutTag(0x0A))));
+/// assert!(matches!(validate_layout_tag_strict(0x0C), Err(Error::ReservedLayoutTag(0x0C))));
 /// assert!(matches!(validate_layout_tag_strict(0xF0), Err(Error::PrivateLayoutTag(0xF0))));
 /// ```
 pub fn validate_layout_tag_strict(tag: u8) -> Result<()> {
@@ -184,7 +189,7 @@ pub fn validate_layout_tag_strict(tag: u8) -> Result<()> {
         t if is_reserved_tag(t) => Err(Error::ReservedLayoutTag(tag)),
         t if is_private_tag(t) => Err(Error::PrivateLayoutTag(tag)),
         TAG_ROW_MAJOR | TAG_COL_MAJOR | TAG_STRIDED | TAG_TILED | TAG_MORTON | TAG_SUBPAVING
-        | TAG_COO | TAG_CSR | TAG_CSC | TAG_BLOCK_PAGED | TAG_HILBERT => Ok(()),
+        | TAG_COO | TAG_CSR | TAG_CSC | TAG_CSF | TAG_BLOCK_PAGED | TAG_HILBERT => Ok(()),
         _ => Err(Error::UnknownLayoutTag(tag)),
     }
 }
@@ -261,6 +266,15 @@ pub enum LayoutDescriptor {
     /// CSC (Compressed Sparse Column) layout. Tag `0x09`. Buffer count = 3.
     Csc(CscLayout),
 
+    /// CSF (Compressed Sparse Fiber) layout. Tag `0x0A`. Buffer count = `2·rank+1`.
+    ///
+    /// The rank-N generalisation of CSR/CSC, storing a sparse tensor as a tree of
+    /// `rank` levels. Only valid for rank ≥ 3. Buffer count is rank-dependent because
+    /// each level contributes one `pos` and one `crd` buffer plus a single `values` buffer.
+    ///
+    /// See `docs/spec/layouts/csf.md`.
+    Csf(CsfLayout),
+
     /// Block-paged indirect layout. Tag `0x0B`. Buffer count = 3 (+ optional quant buffers).
     ///
     /// Stores a KV-cache tensor whose paged axis is divided into fixed-size pages
@@ -293,15 +307,16 @@ impl LayoutDescriptor {
     /// # Examples
     ///
     /// ```
-    /// use hurray_core::layout::{LayoutDescriptor, CooLayout, UnknownLayout};
+    /// use hurray_core::layout::{CooLayout, CsfLayout, LayoutDescriptor, UnknownLayout};
     ///
     /// assert_eq!(LayoutDescriptor::RowMajor.tag(), 0x01);
     /// assert_eq!(LayoutDescriptor::ColMajor.tag(), 0x02);
     /// assert_eq!(LayoutDescriptor::Coo(CooLayout::new(0, false)).tag(), 0x07);
+    /// assert_eq!(LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2])).tag(), 0x0A);
     ///
-    /// // Unknown passthrough.
-    /// let u = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![]).unwrap());
-    /// assert_eq!(u.tag(), 0x0A);
+    /// // Unknown passthrough (with a reserved tag outside the named set).
+    /// let u = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![]).unwrap());
+    /// assert_eq!(u.tag(), 0x0C);
     /// ```
     #[inline]
     pub fn tag(&self) -> u8 {
@@ -315,6 +330,7 @@ impl LayoutDescriptor {
             Self::Coo(_) => TAG_COO,
             Self::Csr(_) => TAG_CSR,
             Self::Csc(_) => TAG_CSC,
+            Self::Csf(_) => TAG_CSF,
             Self::BlockPaged(_) => TAG_BLOCK_PAGED,
             Self::Hilbert(_) => TAG_HILBERT,
             Self::PrivateExtension(p) => p.tag,
@@ -334,6 +350,7 @@ impl LayoutDescriptor {
     /// | RowMajor, ColMajor, Strided, Tiled, Morton, Subpaving, Hilbert | 1 |
     /// | COO | 2 |
     /// | CSR, CSC, BlockPaged | 3 |
+    /// | CSF | `2·rank+1` (rank-dependent; embedded in `mode_order.len()`) |
     /// | PrivateExtension, Unknown | `None` |
     ///
     /// > **Note:** This is the layout's **minimum** buffer count, not the total size
@@ -345,7 +362,7 @@ impl LayoutDescriptor {
     ///
     /// ```
     /// use std::num::NonZeroU8;
-    /// use hurray_core::layout::{CooLayout, CsrLayout, LayoutDescriptor, UnknownLayout};
+    /// use hurray_core::layout::{CooLayout, CsrLayout, CsfLayout, LayoutDescriptor, UnknownLayout};
     ///
     /// assert_eq!(LayoutDescriptor::RowMajor.buffer_count(), NonZeroU8::new(1));
     /// assert_eq!(
@@ -356,7 +373,12 @@ impl LayoutDescriptor {
     ///     LayoutDescriptor::Csr(CsrLayout::new(0)).buffer_count(),
     ///     NonZeroU8::new(3),
     /// );
-    /// let u = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![]).unwrap());
+    /// // CSF rank-3: 2*3+1 = 7 buffers.
+    /// assert_eq!(
+    ///     LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2])).buffer_count(),
+    ///     NonZeroU8::new(7),
+    /// );
+    /// let u = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![]).unwrap());
     /// assert_eq!(u.buffer_count(), None);
     /// ```
     #[inline]
@@ -376,6 +398,18 @@ impl LayoutDescriptor {
 
             // CSR / CSC / BlockPaged: values + index array + pointer array.
             Self::Csr(_) | Self::Csc(_) | Self::BlockPaged(_) => NonZeroU8::new(3),
+
+            // CSF: 2·rank+1 buffers (values + rank pos arrays + rank crd arrays).
+            // rank ≤ 64 (data-model.md), so 2·64+1 = 129 fits in u8 (max 255).
+            // Saturate at u8::MAX if mode_order is somehow empty (would be caught
+            // by validate_against_shape before any buffer-table use).
+            Self::Csf(c) => {
+                // 2·rank+1 with rank = mode_order.len(); rank ≥ 3 after validation.
+                // Saturate rather than truncate so a malformed (pre-validation) rank
+                // can never silently wrap to a small count.
+                let count = (2 * c.mode_order.len() + 1).min(u8::MAX as usize) as u8;
+                NonZeroU8::new(count)
+            }
 
             // Private and unknown: buffer requirements are not known statically.
             Self::PrivateExtension(_) | Self::Unknown(_) => None,
@@ -401,6 +435,7 @@ impl LayoutDescriptor {
     /// | `Coo` | `shape.rank() >= 1` (no scalar sparse tensors) |
     /// | `Csr` | `shape.rank() == 2` |
     /// | `Csc` | `shape.rank() == 2` |
+    /// | `Csf` | `shape.rank() >= 3`; `mode_order.len() == shape.rank()`; `mode_order` is a permutation of `0..rank` |
     /// | `Unknown` | always `Ok(())` |
     ///
     /// # Errors
@@ -568,6 +603,41 @@ impl LayoutDescriptor {
                 Ok(())
             }
 
+            Self::Csf(c) => {
+                let rank = shape.rank();
+                // Spec csf.md §Validity Constraints: rank MUST be >= 3.
+                if rank < 3 {
+                    return Err(Error::InvalidLayout(format!(
+                        "CSF layout requires rank >= 3, got rank {rank}"
+                    )));
+                }
+                // mode_order length must equal rank.
+                if c.mode_order.len() != rank {
+                    return Err(Error::InvalidLayout(format!(
+                        "CSF layout: mode_order.len() ({}) != shape.rank() ({rank})",
+                        c.mode_order.len()
+                    )));
+                }
+                // mode_order must be a permutation of 0..rank.
+                // Use a presence-bitmap approach: O(rank), no allocation for rank ≤ 64.
+                let mut seen = 0u64;
+                for (level, &dim) in c.mode_order.iter().enumerate() {
+                    if dim as usize >= rank {
+                        return Err(Error::InvalidLayout(format!(
+                            "CSF layout: mode_order[{level}]={dim} out of range [0, {rank})"
+                        )));
+                    }
+                    let bit = 1u64 << dim;
+                    if seen & bit != 0 {
+                        return Err(Error::InvalidLayout(format!(
+                            "CSF layout: mode_order contains duplicate value {dim}"
+                        )));
+                    }
+                    seen |= bit;
+                }
+                Ok(())
+            }
+
             Self::BlockPaged(bp) => {
                 // Spec: block-paged is defined only for rank-3 tensors.
                 if shape.rank() != 3 {
@@ -675,6 +745,10 @@ impl LayoutDescriptor {
             Self::Csc(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
                 layout_tag: TAG_CSC,
             }),
+            // CSF is sparse multi-buffer; use addressing::csf::element_offset with index buffers.
+            Self::Csf(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
+                layout_tag: TAG_CSF,
+            }),
             // BlockPaged is indirect (multi-buffer); use addressing::block_paged directly.
             Self::BlockPaged(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
                 layout_tag: TAG_BLOCK_PAGED,
@@ -766,6 +840,10 @@ mod tests {
         assert_eq!(LayoutDescriptor::Csr(CsrLayout { nnz: 0 }).tag(), 0x08);
         assert_eq!(LayoutDescriptor::Csc(CscLayout { nnz: 0 }).tag(), 0x09);
         assert_eq!(
+            LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2])).tag(),
+            0x0A
+        );
+        assert_eq!(
             LayoutDescriptor::Hilbert(HilbertLayout::new(2, 2).unwrap()).tag(),
             0x40
         );
@@ -844,8 +922,9 @@ mod tests {
 
     #[test]
     fn unknown_buffer_count_is_none() {
+        // Use a tag in the reserved range (not 0x0A which is now CSF).
         let layout = LayoutDescriptor::Unknown(UnknownLayout {
-            tag: 0x0A,
+            tag: 0x0C,
             raw_bytes: vec![],
         });
         assert!(layout.buffer_count().is_none());
@@ -856,7 +935,7 @@ mod tests {
     #[test]
     fn known_tags_pass_strict_validation() {
         for tag in [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x40,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x40,
         ] {
             assert!(
                 validate_layout_tag_strict(tag).is_ok(),
@@ -879,7 +958,8 @@ mod tests {
 
     #[test]
     fn reserved_tags_rejected() {
-        for tag in [0x0A_u8, 0x3F, 0x41, 0x7F, 0x80, 0xEF] {
+        // 0x0A is now CSF (named tag), not reserved. Use 0x0C as the first reserved tag.
+        for tag in [0x0C_u8, 0x3F, 0x41, 0x7F, 0x80, 0xEF] {
             assert!(
                 matches!(
                     validate_layout_tag_strict(tag),
@@ -1037,8 +1117,9 @@ mod tests {
 
     #[test]
     fn unknown_always_passes_validation() {
+        // 0x0A is now CSF; use a reserved-range tag for Unknown.
         let layout = LayoutDescriptor::Unknown(UnknownLayout {
-            tag: 0x0A,
+            tag: 0x0C,
             raw_bytes: vec![],
         });
         assert!(layout.validate_against_shape(&Shape::scalar()).is_ok());

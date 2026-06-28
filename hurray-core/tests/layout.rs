@@ -11,13 +11,13 @@ use std::num::NonZeroU8;
 use hurray_core::descriptor::TensorDescriptor;
 use hurray_core::{
     layout::{
-        is_invalid_tag, is_private_tag, is_reserved_tag, validate_layout_tag_strict,
-        BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout, CsrLayout, HilbertLayout,
-        InnerStrides, KvRole, LayoutDescriptor, MortonLayout, OuterStrides, PrivateExtensionLayout,
-        RegionDescriptor, StridedLayout, SubpavingLayout, TiledLayout, UnknownLayout,
-        MAX_TILED_DEPTH, PRIVATE_LAYOUT_TAG_MAX, PRIVATE_LAYOUT_TAG_MIN, TAG_BLOCK_PAGED,
-        TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSR, TAG_HILBERT, TAG_MORTON, TAG_ROW_MAJOR,
-        TAG_STRIDED, TAG_SUBPAVING, TAG_TILED,
+        addressing::csf as csf_addressing, is_invalid_tag, is_private_tag, is_reserved_tag,
+        validate_layout_tag_strict, BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout,
+        CsfLayout, CsrLayout, HilbertLayout, InnerStrides, KvRole, LayoutDescriptor, MortonLayout,
+        OuterStrides, PrivateExtensionLayout, RegionDescriptor, StridedLayout, SubpavingLayout,
+        TiledLayout, UnknownLayout, MAX_TILED_DEPTH, PRIVATE_LAYOUT_TAG_MAX,
+        PRIVATE_LAYOUT_TAG_MIN, TAG_BLOCK_PAGED, TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSF, TAG_CSR,
+        TAG_HILBERT, TAG_MORTON, TAG_ROW_MAJOR, TAG_STRIDED, TAG_SUBPAVING, TAG_TILED,
     },
     BufferHandle, DeviceTag, ElementType, Error, Shape, SyncMode, DYNAMIC, MIN_BUFFER_ALIGNMENT,
 };
@@ -122,8 +122,9 @@ fn private_extension_tag_passthrough_all_valid_values() {
 /// Unknown tag is passed through verbatim (permissive mode).
 #[test]
 fn unknown_tag_passthrough() {
-    let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![0xDE, 0xAD]).unwrap());
-    assert_eq!(d.tag(), 0x0A);
+    // Use a reserved-range tag (not 0x0A which is now TAG_CSF).
+    let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![0xDE, 0xAD]).unwrap());
+    assert_eq!(d.tag(), 0x0C);
 }
 
 // ── ADR-013 invariant 2: buffer_count() values ───────────────────────────────
@@ -222,7 +223,8 @@ fn private_extension_buffer_count_is_none() {
 /// Spec §memory-layout.md §Strict vs Permissive: unknown layout buffer count is None.
 #[test]
 fn unknown_buffer_count_is_none() {
-    let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![]).unwrap());
+    // Use a reserved-range tag (not 0x0A which is now TAG_CSF).
+    let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![]).unwrap());
     assert!(d.buffer_count().is_none());
 }
 
@@ -232,9 +234,9 @@ fn unknown_buffer_count_is_none() {
 /// This lets permissive readers pass unrecognized tags through without error.
 #[test]
 fn unknown_can_hold_reserved_tag() {
-    // Reserved range tag: 0x0A — not constructible via named variants.
-    let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![]).unwrap());
-    assert_eq!(d.tag(), 0x0A);
+    // Reserved range tag: 0x0C (0x0A is now TAG_CSF — a named layout).
+    let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![]).unwrap());
+    assert_eq!(d.tag(), 0x0C);
     assert!(d.buffer_count().is_none());
 }
 
@@ -279,11 +281,12 @@ fn is_invalid_tag_false_for_all_other_values() {
 
 // ── ADR-013 invariant 5: reserved-range tags rejected (ReservedLayoutTag) ────
 
-/// Spec §memory-layout.md: reserved ranges are 0x0A–0x3F, 0x41–0x7F, 0x80–0xEF.
+/// Spec §memory-layout.md: reserved ranges are 0x0C–0x3F, 0x41–0x7F, 0x80–0xEF.
+/// (0x0A is CSF and 0x0B is block-paged — both are named layout tags.)
 #[test]
 fn validate_strict_rejects_reserved_range_boundaries() {
-    // First and last of each reserved sub-range.
-    let reserved_boundary_pairs = [(0x0A, 0x3F), (0x41, 0x7F), (0x80, 0xEF)];
+    // First and last of each reserved sub-range (0x0A is now CSF, so range starts at 0x0C).
+    let reserved_boundary_pairs = [(0x0C_u8, 0x3F), (0x41, 0x7F), (0x80, 0xEF)];
     for (lo, hi) in reserved_boundary_pairs {
         assert!(
             matches!(
@@ -304,8 +307,8 @@ fn validate_strict_rejects_reserved_range_boundaries() {
 
 #[test]
 fn is_reserved_tag_true_for_all_reserved_ranges() {
-    // Spot-check each reserved sub-range.
-    for tag in [0x0A_u8, 0x20, 0x3F, 0x41, 0x60, 0x7F, 0x80, 0xA0, 0xEF] {
+    // Spot-check each reserved sub-range (0x0A is now CSF — named tag, not reserved).
+    for tag in [0x0C_u8, 0x20, 0x3F, 0x41, 0x60, 0x7F, 0x80, 0xA0, 0xEF] {
         assert!(is_reserved_tag(tag), "0x{tag:02X} should be reserved");
     }
 }
@@ -313,7 +316,7 @@ fn is_reserved_tag_true_for_all_reserved_ranges() {
 #[test]
 fn is_reserved_tag_false_for_named_and_private_tags() {
     for tag in [
-        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x40, 0xF0, 0xFE,
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x40, 0xF0, 0xFE,
     ] {
         assert!(
             !is_reserved_tag(tag as u8),
@@ -1170,11 +1173,12 @@ fn region_descriptor_rejects_invalid_layout_tag_0xff() {
     ));
 }
 
-/// RegionDescriptor accepts valid layout tags including reserved ones (it only
+/// RegionDescriptor accepts named and reserved layout tags (it only
 /// rejects 0x00 and 0xFF — the interpretation of non-standard tags is deferred).
+/// 0x0A is TAG_CSF (named), 0x0C is a reserved-range tag; both are accepted.
 #[test]
 fn region_descriptor_accepts_valid_layout_tags() {
-    for tag in [0x01_u8, 0x02, 0x03, 0x06, 0x40, 0xF0, 0x0A] {
+    for tag in [0x01_u8, 0x02, 0x03, 0x06, 0x40, 0xF0, 0x0A, 0x0C] {
         let result = RegionDescriptor::new(vec![0, 0], vec![4, 4], tag, 0, 0);
         assert!(
             result.is_ok(),
@@ -1239,7 +1243,8 @@ fn col_major_valid_for_rank_64() {
 /// Spec §memory-layout.md §Strict vs Permissive: Unknown always passes validate_against_shape.
 #[test]
 fn unknown_passes_validation_for_scalar() {
-    let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![]).unwrap());
+    // Use a reserved-range tag (not 0x0A which is now TAG_CSF).
+    let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![]).unwrap());
     assert!(d.validate_against_shape(&Shape::scalar()).is_ok());
 }
 
@@ -1278,10 +1283,12 @@ fn validate_strict_accepts_all_known_tags() {
 
 // ── is_* helper functions — exhaustive boundary checks ────────────────────────
 
-/// The tag immediately above the first reserved range (0x0A) must be reserved.
+/// The first reserved range starts at 0x0C (0x0A is CSF, 0x0B is block-paged).
 #[test]
 fn first_reserved_range_lower_boundary() {
-    assert!(is_reserved_tag(0x0A));
+    assert!(is_reserved_tag(0x0C));
+    // 0x0A is TAG_CSF — a named layout, not reserved.
+    assert!(!is_reserved_tag(0x0A));
 }
 
 /// The tag immediately before the first reserved range (0x09) must not be reserved.
@@ -1506,15 +1513,13 @@ fn validate_strict_0xfe_gives_private_layout_tag() {
 
 /// All reserved tags must produce ReservedLayoutTag.
 ///
-/// Note: `0x0B` (block-paged) is excluded — it is now a named layout tag, not
-/// reserved. The first reserved range in `0x0A`–`0x3F` is split into `[0x0A]`
-/// and `[0x0C, 0x3F]` to reflect this assignment.
+/// Note: `0x0A` (CSF) and `0x0B` (block-paged) are both now named layout tags,
+/// not reserved. The first reserved range starts at `0x0C`.
 #[test]
 fn validate_strict_all_reserved_ranges_produce_reserved_error() {
-    // Reserved ranges after assigning 0x0B to block-paged:
-    //   0x0A alone, then 0x0C–0x3F, 0x41–0x7F, 0x80–0xEF.
-    let reserved_tags: Vec<u8> = std::iter::once(0x0A_u8)
-        .chain(0x0C_u8..=0x3F)
+    // Reserved ranges after assigning 0x0A to CSF and 0x0B to block-paged:
+    //   0x0C–0x3F, 0x41–0x7F, 0x80–0xEF.
+    let reserved_tags: Vec<u8> = (0x0C_u8..=0x3F)
         .chain(0x41_u8..=0x7F)
         .chain(0x80_u8..=0xEF)
         .collect();
@@ -1546,19 +1551,16 @@ fn block_paged_tag_0x0b_passes_strict_validation() {
     );
 }
 
-/// 0x0A is still reserved (adjacent to block-paged).
+/// 0x0A is CSF — a named layout, now passes strict validation.
 #[test]
-fn tag_0x0a_adjacent_to_block_paged_is_reserved() {
+fn tag_0x0a_csf_passes_strict_validation() {
     assert!(
-        matches!(
-            validate_layout_tag_strict(0x0A),
-            Err(Error::ReservedLayoutTag(0x0A))
-        ),
-        "0x0A must remain ReservedLayoutTag after 0x0B was assigned"
+        validate_layout_tag_strict(0x0A).is_ok(),
+        "0x0A (CSF) must pass strict validation"
     );
 }
 
-/// 0x0C (the slot above block-paged) is also reserved.
+/// 0x0C (the first reserved slot above block-paged and CSF) is reserved.
 #[test]
 fn tag_0x0c_above_block_paged_is_reserved() {
     assert!(matches!(
@@ -1947,4 +1949,703 @@ fn block_paged_decoder_rejects_unknown_block_table_index_type_byte() {
         matches!(result, Err(Error::InvalidLayout(_))),
         "unknown block_table_index_type byte 0x02 must be rejected with InvalidLayout"
     );
+}
+
+// ── CSF (Compressed Sparse Fiber) layout ─────────────────────────────────────
+//
+// Spec: docs/spec/layouts/csf.md
+// Tag: 0x0A  |  Buffer count: 2·rank+1  |  rank >= 3
+
+// ── CSF: tag constant and classification ─────────────────────────────────────
+
+/// Spec §csf.md: TAG_CSF MUST be 0x0A.
+#[test]
+fn csf_tag_constant_is_0x0a() {
+    assert_eq!(TAG_CSF, 0x0A);
+}
+
+/// 0x0A is a named layout, not in any reserved range.
+#[test]
+fn csf_tag_0x0a_is_not_reserved() {
+    use hurray_core::layout::is_reserved_tag;
+    assert!(!is_reserved_tag(0x0A));
+}
+
+/// 0x0A passes strict-mode validation (it is a named layout tag).
+#[test]
+fn csf_tag_passes_strict_validation() {
+    assert!(
+        validate_layout_tag_strict(0x0A).is_ok(),
+        "0x0A (CSF) must pass strict validation"
+    );
+}
+
+/// 0x0C is the first reserved slot after CSF (0x0A) and block-paged (0x0B).
+#[test]
+fn tag_0x0c_is_reserved_lower_boundary_after_csf() {
+    assert!(
+        matches!(
+            validate_layout_tag_strict(0x0C),
+            Err(Error::ReservedLayoutTag(0x0C))
+        ),
+        "0x0C must be ReservedLayoutTag (new lower boundary after CSF and block-paged)"
+    );
+}
+
+// ── CSF: tag() and buffer_count() via LayoutDescriptor ───────────────────────
+
+/// Spec §csf.md: LayoutDescriptor::Csf.tag() == 0x0A.
+#[test]
+fn csf_descriptor_tag_is_0x0a() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2]));
+    assert_eq!(d.tag(), 0x0A);
+}
+
+/// Spec §csf.md §Buffer Table: buffer_count = 2·rank+1.  rank=3 → 7.
+#[test]
+fn csf_buffer_count_rank3_is_7() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(4, vec![0, 1, 2]));
+    assert_eq!(d.buffer_count(), NonZeroU8::new(7));
+}
+
+/// rank=4 → 2*4+1 = 9.
+#[test]
+fn csf_buffer_count_rank4_is_9() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2, 3]));
+    assert_eq!(d.buffer_count(), NonZeroU8::new(9));
+}
+
+/// rank=5 → 2*5+1 = 11.
+#[test]
+fn csf_buffer_count_rank5_is_11() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2, 3, 4]));
+    assert_eq!(d.buffer_count(), NonZeroU8::new(11));
+}
+
+/// buffer_count is derived from mode_order.len() — confirmed for a non-identity permutation.
+#[test]
+fn csf_buffer_count_uses_mode_order_len_not_a_separate_rank_field() {
+    // [2, 0, 1] is a valid rank-3 permutation; buffer_count must still be 7.
+    let d = LayoutDescriptor::Csf(CsfLayout::new(10, vec![2, 0, 1]));
+    assert_eq!(d.buffer_count(), NonZeroU8::new(7));
+}
+
+// ── CSF: validate_against_shape ──────────────────────────────────────────────
+
+/// Spec §csf.md §Validity Constraints: rank >= 3 required.
+#[test]
+fn csf_validate_accepts_rank3_identity() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2]));
+    assert!(d.validate_against_shape(&shape(&[2, 3, 4])).is_ok());
+}
+
+#[test]
+fn csf_validate_accepts_rank4_identity() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2, 3]));
+    assert!(d.validate_against_shape(&shape(&[2, 3, 4, 5])).is_ok());
+}
+
+#[test]
+fn csf_validate_accepts_rank5_identity() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2, 3, 4]));
+    assert!(d.validate_against_shape(&shape(&[2, 3, 4, 5, 6])).is_ok());
+}
+
+/// Spec §csf.md: CSF MUST NOT be used for rank < 3.
+#[test]
+fn csf_validate_rejects_rank0() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![]));
+    assert!(matches!(
+        d.validate_against_shape(&Shape::scalar()),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+#[test]
+fn csf_validate_rejects_rank1() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0]));
+    assert!(matches!(
+        d.validate_against_shape(&shape(&[10])),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+#[test]
+fn csf_validate_rejects_rank2() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1]));
+    assert!(matches!(
+        d.validate_against_shape(&shape(&[4, 5])),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+/// mode_order.len() must equal shape.rank().
+#[test]
+fn csf_validate_rejects_mode_order_len_shorter_than_rank() {
+    // mode_order has 2 entries but shape has rank 3.
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1]));
+    // Note: rank 2 is also invalid (<3), so the rank-too-low error fires first.
+    // Use rank-4 shape and rank-3 mode_order to isolate the length-mismatch path.
+    let d2 = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2]));
+    assert!(matches!(
+        d2.validate_against_shape(&shape(&[2, 3, 4, 5])),
+        Err(Error::InvalidLayout(_))
+    ));
+    // Also verify the rank-2 shape path.
+    assert!(matches!(
+        d.validate_against_shape(&shape(&[2, 3, 4])),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+#[test]
+fn csf_validate_rejects_mode_order_len_longer_than_rank() {
+    // mode_order has 4 entries but shape has rank 3.
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2, 3]));
+    assert!(matches!(
+        d.validate_against_shape(&shape(&[2, 3, 4])),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+/// Spec §csf.md §Mode Ordering: mode_order with out-of-range value rejected.
+#[test]
+fn csf_validate_rejects_mode_order_out_of_range_value() {
+    // mode_order[2]=3 is out of range for rank 3 (valid range: 0..2).
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 3]));
+    assert!(matches!(
+        d.validate_against_shape(&shape(&[2, 3, 4])),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+/// Spec §csf.md §Mode Ordering: mode_order with duplicate rejected.
+#[test]
+fn csf_validate_rejects_mode_order_repeated_value() {
+    // [0, 1, 1] is not a permutation: 1 appears twice.
+    let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 1]));
+    assert!(matches!(
+        d.validate_against_shape(&shape(&[2, 3, 4])),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+/// Spec §csf.md §Mode Ordering: non-identity permutations MUST be accepted.
+#[test]
+fn csf_validate_accepts_permutation_2_0_1() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(4, vec![2, 0, 1]));
+    assert!(d.validate_against_shape(&shape(&[2, 3, 4])).is_ok());
+}
+
+#[test]
+fn csf_validate_accepts_reverse_permutation_2_1_0() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(4, vec![2, 1, 0]));
+    assert!(d.validate_against_shape(&shape(&[2, 3, 4])).is_ok());
+}
+
+// ── CSF: codec round-trip via TensorDescriptor encode/decode ─────────────────
+
+// Wire layout for CSF payload (spec §csf.md §Additional Descriptor Fields):
+//   nnz        uint64        8 bytes
+//   mode_order uint32[rank]  4·rank bytes
+//   _reserved  uint8[8]      8 bytes
+// Total: 8 + 4·rank + 8 bytes.
+
+// Helper: construct a minimal TensorDescriptor for a CSF layout.
+/// CSF requires 2·rank+1 buffers (values + rank pos + rank crd).
+/// For testing codec, all buffers are identical zero-size placeholders
+/// (TensorDescriptor::new requires at least one buffer per the buffer table, and
+/// the buffer count must match what buffer_count() returns).
+fn csf_descriptor(layout: LayoutDescriptor) -> TensorDescriptor {
+    let rank = match &layout {
+        LayoutDescriptor::Csf(c) => c.mode_order.len(),
+        _ => panic!("expected Csf layout"),
+    };
+    let buf_count = 2 * rank + 1;
+    let dims: Vec<u64> = (0..rank).map(|i| i as u64 + 2).collect(); // [2, 3, 4, ...]
+    let s = Shape::new(dims).unwrap();
+    let buf = || {
+        BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap()
+    };
+    TensorDescriptor::new(
+        1,
+        0,
+        ElementType::Float32,
+        s,
+        0, // byte_offset MUST be 0 for CSF (spec §csf.md §Buffer Size)
+        layout,
+        (0..buf_count).map(|_| buf()).collect(),
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+/// Spec §csf.md: encode → decode preserves all fields for identity mode_order, rank=3, nnz=4.
+#[test]
+fn csf_codec_round_trip_rank3_identity_nnz4() {
+    let layout = LayoutDescriptor::Csf(CsfLayout::new(4, vec![0, 1, 2]));
+    let desc = csf_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    assert_eq!(decoded, desc);
+}
+
+/// nnz=0 (empty sparse tensor) round-trips correctly.
+#[test]
+fn csf_codec_round_trip_rank3_identity_nnz0() {
+    let layout = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2]));
+    let desc = csf_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    assert_eq!(decoded, desc);
+}
+
+/// Non-identity permutation [2, 0, 1] round-trips.
+#[test]
+fn csf_codec_round_trip_rank3_permutation_2_0_1() {
+    let layout = LayoutDescriptor::Csf(CsfLayout::new(7, vec![2, 0, 1]));
+    let desc = csf_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    assert_eq!(decoded, desc);
+}
+
+/// rank=4 round-trip (mode_order = [3, 0, 2, 1]).
+#[test]
+fn csf_codec_round_trip_rank4_varied_permutation() {
+    let layout = LayoutDescriptor::Csf(CsfLayout::new(100, vec![3, 0, 2, 1]));
+    let desc = csf_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    assert_eq!(decoded, desc);
+}
+
+/// rank=5 round-trip with reverse permutation.
+#[test]
+fn csf_codec_round_trip_rank5_reverse_permutation_nnz0() {
+    let layout = LayoutDescriptor::Csf(CsfLayout::new(0, vec![4, 3, 2, 1, 0]));
+    let desc = csf_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+    let decoded = TensorDescriptor::decode(&encoded).unwrap();
+    assert_eq!(decoded, desc);
+}
+
+/// Spec §csf.md §Additional Descriptor Fields: payload length = 8 + 4·rank + 8.
+/// Verified by encoding → decode → re-encode producing identical bytes (idempotent).
+#[test]
+fn csf_codec_idempotent_encode_decode_encode() {
+    let layout = LayoutDescriptor::Csf(CsfLayout::new(42, vec![0, 1, 2]));
+    let desc = csf_descriptor(layout);
+    let enc1 = desc.encode().unwrap();
+    let dec = TensorDescriptor::decode(&enc1).unwrap();
+    let enc2 = dec.encode().unwrap();
+    assert_eq!(enc1, enc2, "encode → decode → encode must be idempotent");
+}
+
+// ── CSF: decoder rejection tests ─────────────────────────────────────────────
+//
+// Wire layout within a rank-3 TensorDescriptor (all sizes in bytes):
+//
+//   Descriptor fixed header:
+//     magic[4] + major[1] + minor[1] + length[4] + flags[4]
+//     + type_tag[1] + layout_tag[1] + rank[4] = 20 bytes.
+//   layout_tag is at byte 15 (0-indexed).
+//
+//   After layout_tag:
+//     rank[4] + shape[rank × 8] + byte_offset[8]
+//     = 4 + 24 + 8 = 36 bytes (for rank=3).
+//
+//   CSF payload starts at byte 15 + 1 + 36 = 52.
+//   CSF payload (rank=3): nnz[8] + mode_order[4×3] + _reserved[8] = 28 bytes.
+//     payload[0..8]   = nnz
+//     payload[8..20]  = mode_order (3 × uint32 LE)
+//     payload[20..28] = _reserved (must be 0x00)
+
+/// Spec §csf.md §Additional Descriptor Fields: _reserved bytes MUST be 0x00.
+/// A reader MUST reject a descriptor with any non-zero reserved byte.
+#[test]
+fn csf_decoder_rejects_nonzero_reserved_byte() {
+    let layout = LayoutDescriptor::Csf(CsfLayout::new(4, vec![0, 1, 2]));
+    let desc = csf_descriptor(layout);
+    let encoded = desc.encode().unwrap();
+
+    assert_eq!(encoded[15], 0x0A, "layout tag must be at byte 15");
+    let payload_start = 15 + 1 + 36; // = 52
+                                     // _reserved is payload[20..28].
+    let reserved_offset = payload_start + 20; // nnz(8) + mode_order(3×4=12) = 20
+
+    for i in 0..8 {
+        let mut poisoned = encoded.clone();
+        poisoned[reserved_offset + i] = 0x01;
+        let result = TensorDescriptor::decode(&poisoned);
+        assert!(
+            matches!(result, Err(Error::ReservedBytesNonZero { .. })),
+            "non-zero _reserved byte at payload[20+{i}] must be ReservedBytesNonZero"
+        );
+    }
+    // Baseline: clean encoding decodes without error.
+    assert!(TensorDescriptor::decode(&encoded).is_ok());
+}
+
+/// Spec §csf.md §Mode Ordering: a mode_order that is not a permutation must be rejected.
+/// We inject an invalid mode_order (value 3, which is out of range for rank=3) by
+/// patching the encoded bytes.
+#[test]
+fn csf_decoder_rejects_mode_order_out_of_range_value() {
+    let layout = LayoutDescriptor::Csf(CsfLayout::new(4, vec![0, 1, 2]));
+    let desc = csf_descriptor(layout);
+    let mut encoded = desc.encode().unwrap();
+
+    assert_eq!(encoded[15], 0x0A, "layout tag must be at byte 15");
+    let payload_start = 15 + 1 + 36; // = 52
+                                     // mode_order[2] starts at payload[8 + 2*4] = payload[16].
+                                     // Write 3u32 LE into mode_order[2].
+    let mo2_offset = payload_start + 8 + 2 * 4; // nnz(8) + 0-indexed slot 2
+    encoded[mo2_offset] = 3;
+    encoded[mo2_offset + 1] = 0;
+    encoded[mo2_offset + 2] = 0;
+    encoded[mo2_offset + 3] = 0;
+
+    let result = TensorDescriptor::decode(&encoded);
+    assert!(
+        matches!(result, Err(Error::InvalidLayout(_))),
+        "mode_order[2]=3 is out of range for rank=3, must be InvalidLayout"
+    );
+}
+
+/// mode_order with a duplicate value must be rejected by the decoder.
+#[test]
+fn csf_decoder_rejects_mode_order_duplicate_value() {
+    let layout = LayoutDescriptor::Csf(CsfLayout::new(4, vec![0, 1, 2]));
+    let desc = csf_descriptor(layout);
+    let mut encoded = desc.encode().unwrap();
+
+    assert_eq!(encoded[15], 0x0A, "layout tag must be at byte 15");
+    let payload_start = 15 + 1 + 36;
+    // Overwrite mode_order[2] to be 1 (same as mode_order[1]) → duplicate.
+    let mo2_offset = payload_start + 8 + 2 * 4;
+    encoded[mo2_offset] = 1;
+    encoded[mo2_offset + 1] = 0;
+    encoded[mo2_offset + 2] = 0;
+    encoded[mo2_offset + 3] = 0;
+
+    let result = TensorDescriptor::decode(&encoded);
+    assert!(
+        matches!(result, Err(Error::InvalidLayout(_))),
+        "mode_order [0,1,1] has a duplicate, must be InvalidLayout"
+    );
+}
+
+// ── CSF: element lookup — spec worked example ─────────────────────────────────
+//
+// Spec §csf.md §Example:
+//   Rank-3, shape [2, 3, 4], mode_order = [0, 1, 2], nnz = 4.
+//   Non-zeros: (0,0,1)→1.0, (0,2,3)→2.0, (1,1,0)→3.0, (1,1,2)→4.0
+//
+//   pos_0 = [0, 2]           crd_0 = [0, 1]
+//   pos_1 = [0, 2, 3]        crd_1 = [0, 2, 1]
+//   pos_2 = [0, 1, 2, 4]     crd_2 = [1, 3, 0, 2]
+//   values = [1.0, 2.0, 3.0, 4.0]
+
+const SPEC_MODE_ORDER: &[u32] = &[0, 1, 2];
+const SPEC_POS_0: &[u64] = &[0, 2];
+const SPEC_CRD_0: &[u64] = &[0, 1];
+const SPEC_POS_1: &[u64] = &[0, 2, 3];
+const SPEC_CRD_1: &[u64] = &[0, 2, 1];
+const SPEC_POS_2: &[u64] = &[0, 1, 2, 4];
+const SPEC_CRD_2: &[u64] = &[1, 3, 0, 2];
+
+fn spec_pos_levels() -> Vec<&'static [u64]> {
+    vec![SPEC_POS_0, SPEC_POS_1, SPEC_POS_2]
+}
+fn spec_crd_levels() -> Vec<&'static [u64]> {
+    vec![SPEC_CRD_0, SPEC_CRD_1, SPEC_CRD_2]
+}
+
+/// Spec §csf.md §Element Lookup: (1, 1, 2) → leaf position 3.
+/// Trace: L0: p=0+1=1; L1: p=2+0=2; L2: p=2+1=3.
+#[test]
+fn csf_element_lookup_spec_example_1_1_2_yields_leaf_3() {
+    let result = csf_addressing::element_offset(
+        &[1, 1, 2],
+        SPEC_MODE_ORDER,
+        &spec_pos_levels(),
+        &spec_crd_levels(),
+    )
+    .unwrap();
+    assert_eq!(result, Some(3), "(1,1,2) must resolve to values[3]");
+}
+
+/// (0, 0, 1) → leaf position 0 (values[0] = 1.0).
+#[test]
+fn csf_element_lookup_0_0_1_yields_leaf_0() {
+    let result = csf_addressing::element_offset(
+        &[0, 0, 1],
+        SPEC_MODE_ORDER,
+        &spec_pos_levels(),
+        &spec_crd_levels(),
+    )
+    .unwrap();
+    assert_eq!(result, Some(0));
+}
+
+/// (0, 2, 3) → leaf position 1 (values[1] = 2.0).
+#[test]
+fn csf_element_lookup_0_2_3_yields_leaf_1() {
+    let result = csf_addressing::element_offset(
+        &[0, 2, 3],
+        SPEC_MODE_ORDER,
+        &spec_pos_levels(),
+        &spec_crd_levels(),
+    )
+    .unwrap();
+    assert_eq!(result, Some(1));
+}
+
+/// (1, 1, 0) → leaf position 2 (values[2] = 3.0).
+#[test]
+fn csf_element_lookup_1_1_0_yields_leaf_2() {
+    let result = csf_addressing::element_offset(
+        &[1, 1, 0],
+        SPEC_MODE_ORDER,
+        &spec_pos_levels(),
+        &spec_crd_levels(),
+    )
+    .unwrap();
+    assert_eq!(result, Some(2));
+}
+
+/// Spec §csf.md §Element Lookup: element not stored → returns None (implicit zero).
+/// (0, 1, 0): i=0 found, but j=1 is absent under i=0 (only j=0 and j=2 are).
+#[test]
+fn csf_element_lookup_absent_at_level1_returns_none() {
+    let result = csf_addressing::element_offset(
+        &[0, 1, 0],
+        SPEC_MODE_ORDER,
+        &spec_pos_levels(),
+        &spec_crd_levels(),
+    )
+    .unwrap();
+    assert_eq!(result, None, "(0,1,0) is not stored; must be implicit zero");
+}
+
+/// (1, 0, 0): i=1 found, but j=0 absent under i=1 (only j=1 is stored).
+#[test]
+fn csf_element_lookup_absent_at_level1_for_i1_returns_none() {
+    let result = csf_addressing::element_offset(
+        &[1, 0, 0],
+        SPEC_MODE_ORDER,
+        &spec_pos_levels(),
+        &spec_crd_levels(),
+    )
+    .unwrap();
+    assert_eq!(result, None);
+}
+
+/// Rank mismatch: query with wrong coordinate count → IndexRankMismatch.
+#[test]
+fn csf_element_lookup_rank_mismatch_returns_error() {
+    let err = csf_addressing::element_offset(
+        &[0, 1], // rank 2 query against rank-3 tree
+        SPEC_MODE_ORDER,
+        &spec_pos_levels(),
+        &spec_crd_levels(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, Error::IndexRankMismatch { .. }),
+        "expected IndexRankMismatch, got {err:?}"
+    );
+}
+
+/// Spec §csf.md §Mode Ordering: readers MUST honour any valid permutation.
+/// Build a rank-3 tree with mode_order=[2,1,0] (column-first) holding a
+/// single non-zero at logical (0, 0, 1).
+#[test]
+fn csf_element_lookup_non_identity_mode_order_column_first() {
+    // mode_order = [2, 1, 0]: level 0 stores dim 2 (bound 4), level 1 dim 1 (bound 3), level 2 dim 0 (bound 2).
+    // Single non-zero at logical (0, 0, 1):
+    //   q_0 = idx[mode_order[0]] = idx[2] = 1  (dim 2)
+    //   q_1 = idx[mode_order[1]] = idx[1] = 0  (dim 1)
+    //   q_2 = idx[mode_order[2]] = idx[0] = 0  (dim 0)
+    //
+    // Level 0 (dim 2): pos=[0,1], crd=[1]
+    // Level 1 (dim 1): pos=[0,1], crd=[0]
+    // Level 2 (dim 0): pos=[0,1], crd=[0]
+    let mode_order: &[u32] = &[2, 1, 0];
+    let pos_levels: Vec<&[u64]> = vec![&[0, 1], &[0, 1], &[0, 1]];
+    let crd_levels: Vec<&[u64]> = vec![&[1], &[0], &[0]];
+
+    // Stored element (0,0,1) → leaf 0.
+    let found =
+        csf_addressing::element_offset(&[0, 0, 1], mode_order, &pos_levels, &crd_levels).unwrap();
+    assert_eq!(found, Some(0));
+
+    // Absent element (0, 0, 0): q_0 = idx[2] = 0, not in crd_0=[1] → None.
+    let absent =
+        csf_addressing::element_offset(&[0, 0, 0], mode_order, &pos_levels, &crd_levels).unwrap();
+    assert_eq!(absent, None);
+}
+
+// ── CSF: validate_index_buffers — spec worked example ────────────────────────
+
+/// Spec §csf.md §Storage Invariants: the spec example satisfies all invariants.
+#[test]
+fn csf_validate_index_buffers_spec_example_is_valid() {
+    assert!(csf_addressing::validate_index_buffers(
+        4,
+        SPEC_MODE_ORDER,
+        &[2, 3, 4],
+        &spec_pos_levels(),
+        &spec_crd_levels(),
+    )
+    .is_ok());
+}
+
+/// Spec §csf.md §Storage Invariants: empty tensor (nnz=0) with correct buffer shapes is valid.
+/// pos_0=[0,0], pos_1=[0], pos_2=[0]; every crd_L=[].
+#[test]
+fn csf_validate_index_buffers_empty_tensor_nnz0_is_valid() {
+    let pos_levels: Vec<&[u64]> = vec![&[0, 0], &[0], &[0]];
+    let crd_levels: Vec<&[u64]> = vec![&[], &[], &[]];
+    assert!(csf_addressing::validate_index_buffers(
+        0,
+        SPEC_MODE_ORDER,
+        &[2, 3, 4],
+        &pos_levels,
+        &crd_levels,
+    )
+    .is_ok());
+}
+
+/// Invariant 1: pos_L[0] must be 0.
+#[test]
+fn csf_validate_index_buffers_rejects_pos_not_starting_at_zero() {
+    // pos_0[0]=1 violates invariant 1.
+    let pos_levels: Vec<&[u64]> = vec![&[1, 2], SPEC_POS_1, SPEC_POS_2];
+    let result = csf_addressing::validate_index_buffers(
+        4,
+        SPEC_MODE_ORDER,
+        &[2, 3, 4],
+        &pos_levels,
+        &spec_crd_levels(),
+    );
+    assert!(
+        matches!(result, Err(Error::InvalidLayout(_))),
+        "pos_0[0]=1 must violate invariant 1"
+    );
+}
+
+/// Invariant 2: pos_L must be non-decreasing.
+#[test]
+fn csf_validate_index_buffers_rejects_non_monotone_pos() {
+    // pos_1 = [0, 3, 2]: not non-decreasing between indices 1 and 2.
+    let pos_levels: Vec<&[u64]> = vec![SPEC_POS_0, &[0, 3, 2], SPEC_POS_2];
+    let result = csf_addressing::validate_index_buffers(
+        4,
+        SPEC_MODE_ORDER,
+        &[2, 3, 4],
+        &pos_levels,
+        &spec_crd_levels(),
+    );
+    assert!(
+        matches!(result, Err(Error::InvalidLayout(_))),
+        "pos_1=[0,3,2] violates non-decreasing invariant"
+    );
+}
+
+/// Invariant 3: terminal pos entry must equal the level's node count.
+/// At the leaf level, that count must equal nnz.
+#[test]
+fn csf_validate_index_buffers_rejects_terminal_pos_not_equal_to_nnz() {
+    // pos_2 = [0, 1, 2, 3]: terminal = 3, but nnz = 4.
+    let pos_levels: Vec<&[u64]> = vec![SPEC_POS_0, SPEC_POS_1, &[0, 1, 2, 3]];
+    let result = csf_addressing::validate_index_buffers(
+        4,
+        SPEC_MODE_ORDER,
+        &[2, 3, 4],
+        &pos_levels,
+        &spec_crd_levels(),
+    );
+    assert!(
+        matches!(result, Err(Error::InvalidLayout(_))),
+        "pos_2 terminal=3 != nnz=4 must be rejected"
+    );
+}
+
+/// Invariant 4a: duplicate siblings within a parent slice must be rejected.
+#[test]
+fn csf_validate_index_buffers_rejects_duplicate_siblings() {
+    // crd_0 = [0, 0]: duplicate within the single parent slice.
+    let crd_levels: Vec<&[u64]> = vec![&[0, 0], SPEC_CRD_1, SPEC_CRD_2];
+    let result = csf_addressing::validate_index_buffers(
+        4,
+        SPEC_MODE_ORDER,
+        &[2, 3, 4],
+        &spec_pos_levels(),
+        &crd_levels,
+    );
+    assert!(
+        matches!(result, Err(Error::InvalidLayout(_))),
+        "duplicate siblings [0,0] in crd_0 must be rejected"
+    );
+}
+
+/// Invariant 4b: non-strictly-increasing (decreasing) siblings must be rejected.
+#[test]
+fn csf_validate_index_buffers_rejects_decreasing_siblings() {
+    // crd_0 = [1, 0]: decreasing order.
+    let crd_levels: Vec<&[u64]> = vec![&[1, 0], SPEC_CRD_1, SPEC_CRD_2];
+    let result = csf_addressing::validate_index_buffers(
+        4,
+        SPEC_MODE_ORDER,
+        &[2, 3, 4],
+        &spec_pos_levels(),
+        &crd_levels,
+    );
+    assert!(
+        matches!(result, Err(Error::InvalidLayout(_))),
+        "decreasing siblings [1,0] in crd_0 must be rejected"
+    );
+}
+
+/// Invariant 5: coordinate out of bounds (>= shape[mode_order[L]]) must be rejected.
+#[test]
+fn csf_validate_index_buffers_rejects_coordinate_out_of_bounds() {
+    // crd_2[3]=4 but shape[mode_order[2]] = shape[2] = 4; valid range is 0..3.
+    let crd_levels: Vec<&[u64]> = vec![SPEC_CRD_0, SPEC_CRD_1, &[1, 3, 0, 4]];
+    let result = csf_addressing::validate_index_buffers(
+        4,
+        SPEC_MODE_ORDER,
+        &[2, 3, 4],
+        &spec_pos_levels(),
+        &crd_levels,
+    );
+    assert!(
+        matches!(result, Err(Error::InvalidLayout(_))),
+        "crd_2[3]=4 >= shape[2]=4 must be rejected"
+    );
+}
+
+// ── CSF: LayoutDescriptor::element_offset returns LayoutRequiresMultiBuffer ──
+
+/// CSF is a multi-buffer layout; LayoutDescriptor::element_offset must
+/// return LayoutRequiresMultiBuffer, not attempt a lookup.
+#[test]
+fn csf_descriptor_element_offset_returns_multi_buffer_error() {
+    let d = LayoutDescriptor::Csf(CsfLayout::new(4, vec![0, 1, 2]));
+    let s = Shape::new(vec![2u64, 3, 4]).unwrap();
+    assert!(matches!(
+        d.element_offset(&[0, 0, 0], &s),
+        Err(Error::LayoutRequiresMultiBuffer { layout_tag: 0x0A })
+    ));
 }

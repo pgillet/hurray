@@ -8,6 +8,7 @@ pub mod block_paged;
 pub mod col_major;
 pub mod coo;
 pub mod csc;
+pub mod csf;
 pub mod csr;
 pub mod hilbert;
 pub mod morton;

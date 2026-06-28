@@ -302,6 +302,14 @@ impl TensorDescriptor {
                         .to_string(),
                 ));
             }
+
+            // Spec (csf.md § Sharding): a CSF descriptor MUST NOT carry a shard
+            // descriptor in this version. Same cross-section seam as block-paged.
+            if matches!(&layout, LayoutDescriptor::Csf(_)) {
+                return Err(Error::InvalidLayout(
+                    "CSF layout MUST NOT carry a shard descriptor (spec § Sharding)".to_string(),
+                ));
+            }
         }
 
         Ok(Self {
@@ -703,6 +711,39 @@ mod tests {
             1,
             0,
             ElementType::Float16,
+            shape,
+            0,
+            layout,
+            vec![buf],
+            None,
+            Some(shard),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidLayout(_)));
+    }
+
+    #[test]
+    fn new_rejects_csf_with_shard() {
+        use crate::layout::CsfLayout;
+
+        // CSF is rank-3+; give the shard a matching rank-3 parent_shape so the rank
+        // check passes and we reach the CSF § Sharding prohibition.
+        let shape = Shape::new(vec![2u64, 3, 4]).unwrap();
+        let buf = BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
+        let shard = ShardDescriptor::new(vec![4u64, 3, 4], vec![0u64, 0, 0]).unwrap();
+        let layout = LayoutDescriptor::Csf(CsfLayout::new(4, vec![0, 1, 2]));
+        let err = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
             shape,
             0,
             layout,
