@@ -11,17 +11,18 @@
 //! - `0x07` (COO): `nnz u64`, `is_sorted u8`, `_reserved u8[7]`
 //! - `0x08` (CSR): `nnz u64`, `_reserved u8[8]`
 //! - `0x09` (CSC): `nnz u64`, `_reserved u8[8]`
+//! - `0x0A` (CSF): `nnz u64`, `mode_order u32[rank]`, `_reserved u8[8]`
 //! - `0x40` (Hilbert): `hilbert_order u32`, `hilbert_rank u32`
 //! - `0xF0`–`0xFE` (PrivateExtension): `extension_layout_id u64`, `extension_data_length u32`,
 //!   `extension_data bytes[len]`
 
 use crate::descriptor::cursor::{ByteCursor, ByteWriter};
 use crate::layout::{
-    BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout, CsrLayout, HilbertLayout,
-    InnerStrides, KvRole, LayoutDescriptor, MortonLayout, OuterStrides, PrivateExtensionLayout,
-    RegionDescriptor, StridedLayout, SubpavingLayout, TiledLayout, MAX_TILED_DEPTH,
-    TAG_BLOCK_PAGED, TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSR, TAG_HILBERT, TAG_MORTON,
-    TAG_ROW_MAJOR, TAG_STRIDED, TAG_SUBPAVING, TAG_TILED,
+    BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout, CsfLayout, CsrLayout,
+    HilbertLayout, InnerStrides, KvRole, LayoutDescriptor, MortonLayout, OuterStrides,
+    PrivateExtensionLayout, RegionDescriptor, StridedLayout, SubpavingLayout, TiledLayout,
+    MAX_TILED_DEPTH, TAG_BLOCK_PAGED, TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSF, TAG_CSR,
+    TAG_HILBERT, TAG_MORTON, TAG_ROW_MAJOR, TAG_STRIDED, TAG_SUBPAVING, TAG_TILED,
 };
 use crate::{Error, Result};
 
@@ -62,6 +63,7 @@ fn encode_layout_payload_at_depth(
         LayoutDescriptor::Coo(c) => encode_coo(c, w),
         LayoutDescriptor::Csr(c) => encode_csr(c, w),
         LayoutDescriptor::Csc(c) => encode_csc(c, w),
+        LayoutDescriptor::Csf(c) => encode_csf(c, rank, w),
         LayoutDescriptor::BlockPaged(bp) => encode_block_paged(bp, w),
         LayoutDescriptor::Hilbert(h) => encode_hilbert(h, w),
         LayoutDescriptor::PrivateExtension(p) => encode_private_extension(p, w),
@@ -97,6 +99,7 @@ pub(crate) fn decode_layout_payload(
         TAG_COO => decode_coo(cursor),
         TAG_CSR => decode_csr(cursor),
         TAG_CSC => decode_csc(cursor),
+        TAG_CSF => decode_csf(cursor, rank),
         TAG_BLOCK_PAGED => decode_block_paged(cursor),
         TAG_HILBERT => decode_hilbert(cursor),
         0xF0..=0xFE => decode_private_extension(tag, cursor),
@@ -468,9 +471,79 @@ fn decode_csc(cursor: &mut ByteCursor<'_>) -> Result<LayoutDescriptor> {
     Ok(LayoutDescriptor::Csc(CscLayout::new(nnz)))
 }
 
+// ── CSF ───────────────────────────────────────────────────────────────────────
+
+/// Field order for CSF (spec `docs/spec/layouts/csf.md § Additional Descriptor Fields`,
+/// all little-endian):
+///
+/// | Field         | Wire type       | Bytes          |
+/// |---------------|-----------------|----------------|
+/// | `nnz`         | `uint64`        | 8              |
+/// | `mode_order`  | `uint32[rank]`  | `4 * rank`     |
+/// | `_reserved`   | `uint8[8]`      | 8              |
+fn encode_csf(layout: &CsfLayout, rank: u32, w: &mut ByteWriter) -> Result<()> {
+    w.write_u64_le(layout.nnz);
+    // mode_order.len() IS the authoritative rank; it MUST agree with the caller's
+    // `rank` (derived from shape.rank()). Fail fast on a mismatch rather than padding
+    // or over-writing — either would emit a wire payload the decoder mis-frames.
+    let mo_len = layout.mode_order.len() as u32;
+    if mo_len != rank {
+        return Err(Error::InvalidLayout(format!(
+            "csf encode: mode_order.len() ({mo_len}) != rank ({rank}); \
+             call validate_against_shape before encoding"
+        )));
+    }
+    for &dim in &layout.mode_order {
+        w.write_u32_le(dim);
+    }
+    w.write_zeros(8); // _reserved — MUST be 0x00
+    Ok(())
+}
+
+fn decode_csf(cursor: &mut ByteCursor<'_>, rank: u32) -> Result<LayoutDescriptor> {
+    let nnz = cursor.read_u64_le()?;
+
+    // Read mode_order[rank]: the permutation of logical dimensions.
+    let mut mode_order = Vec::with_capacity(rank as usize);
+    for _ in 0..rank {
+        mode_order.push(cursor.read_u32_le()?);
+    }
+
+    // Spec: _reserved MUST be 0x00; readers MUST reject non-zero reserved bytes.
+    let reserved = cursor.read_bytes(8)?;
+    if reserved.iter().any(|&b| b != 0) {
+        return Err(Error::ReservedBytesNonZero {
+            field: "csf._reserved",
+        });
+    }
+
+    // Validate mode_order is a permutation of 0..rank.
+    // Structural validation here matches what validate_against_shape also checks,
+    // but the codec validates eagerly so a malformed wire descriptor is rejected
+    // before the caller can observe a partially-constructed CsfLayout.
+    let rank_us = rank as usize;
+    let mut seen = 0u64;
+    for (level, &dim) in mode_order.iter().enumerate() {
+        if dim as usize >= rank_us {
+            return Err(Error::InvalidLayout(format!(
+                "csf: mode_order[{level}]={dim} out of range [0, {rank})"
+            )));
+        }
+        let bit = 1u64 << dim;
+        if seen & bit != 0 {
+            return Err(Error::InvalidLayout(format!(
+                "csf: mode_order contains duplicate value {dim}"
+            )));
+        }
+        seen |= bit;
+    }
+
+    Ok(LayoutDescriptor::Csf(CsfLayout::new(nnz, mode_order)))
+}
+
 // ── BlockPaged ────────────────────────────────────────────────────────────────
 
-/// Field order (spec § Additional Descriptor Fields, all little-endian):
+/// Field order for block-paged (spec § Additional Descriptor Fields, all little-endian):
 ///
 /// | Field                  | Wire type | Bytes |
 /// |------------------------|-----------|-------|
@@ -714,10 +787,11 @@ mod tests {
 
     #[test]
     fn reserved_tag_rejected() {
+        // 0x0A is now TAG_CSF (a named layout), not reserved. Use 0x0C instead.
         let bytes: &[u8] = &[];
         let mut c = ByteCursor::new(bytes, 0);
-        let err = decode_layout_payload(0x0A, 0, &mut c, 0).unwrap_err();
-        assert!(matches!(err, Error::ReservedLayoutTag(0x0A)));
+        let err = decode_layout_payload(0x0C, 0, &mut c, 0).unwrap_err();
+        assert!(matches!(err, Error::ReservedLayoutTag(0x0C)));
     }
 
     // ── Group A: subpaving with non-trivial inner layout round-trips ──────────
@@ -883,8 +957,9 @@ mod tests {
         /// path, not only on the decode path.
         #[test]
         fn encode_unknown_layout_returns_error() {
+            // Use a reserved-range tag (0x0C) for the Unknown variant, since 0x0A is now TAG_CSF.
             let unknown_layout =
-                LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![0x01, 0x02]).unwrap());
+                LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![0x01, 0x02]).unwrap());
             let shape = Shape::new(vec![4u64]).unwrap();
             let buf = BufferHandle::new(
                 64,

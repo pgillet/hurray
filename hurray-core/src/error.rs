@@ -309,7 +309,8 @@ pub enum Error {
 
     /// Layout tag is in a range reserved for future specification versions.
     ///
-    /// Reserved ranges: `0x0A`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`.
+    /// Reserved ranges: `0x0C`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`.
+    /// (`0x0A` is CSF and `0x0B` is block-paged — both are named layout tags.)
     /// Implementations MUST NOT assign semantics to these tags in strict mode.
     #[error("reserved layout tag: 0x{0:02X} is reserved for future specification versions")]
     ReservedLayoutTag(u8),
