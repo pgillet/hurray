@@ -59,6 +59,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # numpy is needed so hurray-python's content-display tests (Tensor and
+      # SparseTensor repr/str) exercise the real array-rendering path rather than
+      # the numpy-absent metadata fallback.
+      - run: python -m pip install --upgrade pip numpy
       # extension-module strips -lpython from the linker flags (correct for .so
       # wheels loaded by Python, fatal for test binaries that call into libpython).
       # Run hurray-python tests separately with default features (no extension-module).

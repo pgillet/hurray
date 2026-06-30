@@ -24,6 +24,7 @@ mod file_io;
 mod interop;
 mod modes;
 mod native_buffer;
+mod print_options;
 mod scipy_interop;
 mod sparse;
 mod tensor;
@@ -60,6 +61,9 @@ mod tensor;
 /// | `hurray.Tensor.__array_namespace__` | method | 8a.5 |
 /// | `hurray.load` / `hurray.save` | functions | 8b |
 /// | `hurray.FileError` / `hurray.StreamError` | exceptions | 8b |
+/// | `hurray.set_print_options` / `hurray.get_print_options` | functions | 8e |
+/// | `hurray.print_options` | context-manager factory | 8e |
+/// | `hurray.PrintOptionsCtx` | context manager | 8e |
 #[pymodule]
 fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -79,5 +83,6 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     native_buffer::register(m)?;
     creation::register(m)?;
     file_io::register(m)?;
+    print_options::register(m)?;
     Ok(())
 }

@@ -549,6 +549,28 @@ impl SparseTensor {
 
     /// Return a developer-friendly string representation.
     ///
+    /// The output format is controlled by [`hurray.set_print_options`] /
+    /// [`hurray.print_options`]:
+    ///
+    /// - `sparse_display="metadata"` *(default)*: compact SciPy-style summary:
+    ///
+    ///   ```text
+    ///   hurray.SparseTensor(format='csr', shape=(3, 3), nnz=4, dtype=float32)
+    ///   ```
+    ///
+    /// - `sparse_display="content"`: includes the per-format buffer arrays,
+    ///   formatted via NumPy's own string representation:
+    ///
+    ///   ```text
+    ///   hurray.SparseTensor(format='csr', shape=(3, 3), nnz=4, dtype=float32,
+    ///       values=[1. 2. 3. 4.], col_indices=[0 2 1 2], row_ptr=[0 1 3 4])
+    ///   ```
+    ///
+    ///   If NumPy is unavailable or array formatting fails, falls back silently
+    ///   to the `"metadata"` string — `__repr__` never raises.
+    ///
+    /// ## Examples
+    ///
     /// ```python
     /// import hurray
     /// import scipy.sparse as sp
@@ -556,30 +578,125 @@ impl SparseTensor {
     /// t = hurray.from_scipy(m)
     /// print(repr(t))
     /// # hurray.SparseTensor(format='csr', shape=(2, 2), nnz=2, dtype=float64)
+    ///
+    /// with hurray.print_options(sparse_display="content"):
+    ///     print(repr(t))
+    /// # hurray.SparseTensor(format='csr', shape=(2, 2), nnz=2, dtype=float64,
+    /// #     values=[1. 2.], col_indices=[1 0], row_ptr=[0 1 2])
     /// ```
-    pub fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
-        let shape_tuple = self.shape(py)?;
+    pub fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {
+        let py = slf.py();
+        let s = slf.borrow();
+        let shape_tuple = s.shape(py)?;
         let shape_str = shape_tuple.bind(py).repr()?.to_str()?.to_owned();
-        let dtype_name = crate::dtype::element_type_name(self.descriptor.element_type);
-        Ok(format!(
-            "hurray.SparseTensor(format='{}', shape={}, nnz={}, dtype={})",
-            self.format.as_str(),
+        let dtype_name = crate::dtype::element_type_name(s.descriptor.element_type);
+        let fmt = s.format;
+        let nnz = s.nnz();
+        drop(s);
+
+        // Build the invariant metadata prefix that both modes share.
+        let metadata = format!(
+            "hurray.SparseTensor(format='{}', shape={}, nnz={}, dtype={}",
+            fmt.as_str(),
             shape_str,
-            self.nnz(),
+            nnz,
             dtype_name,
-        ))
+        );
+
+        // Check the ContextVar. Falls back to false (metadata) on any Python error.
+        if !crate::print_options::sparse_display_is_content(py) {
+            return Ok(format!("{metadata})"));
+        }
+
+        // Content mode: append per-format buffer arrays using NumPy formatting.
+        // On any failure, fall back to the metadata string — __repr__ must not raise.
+        match format_content_arrays(slf) {
+            Ok(array_part) => Ok(format!("{metadata}, {array_part})")),
+            Err(_) => Ok(format!("{metadata})")),
+        }
     }
 
     /// Return the same string as `__repr__`.
     ///
-    /// Sparse tensors display as metadata only — element-wise printing would
-    /// require reconstructing a dense or COO view, which is left to the caller.
-    pub fn __str__(&self, py: Python<'_>) -> PyResult<String> {
-        self.__repr__(py)
+    /// Respects the current `sparse_display` print option. See [`__repr__`] for
+    /// full documentation.
+    pub fn __str__(slf: &Bound<'_, Self>) -> PyResult<String> {
+        SparseTensor::__repr__(slf)
     }
 }
 
 // ── Crate-internal helpers ────────────────────────────────────────────────────
+
+/// Format the buffer arrays for `"content"` display mode.
+///
+/// Converts each format-appropriate index array and the values array to a NumPy
+/// array (via the existing `__array__` accessor) and then calls NumPy's own
+/// `array2string` for formatting, so the output respects the user's current
+/// NumPy print options (precision, threshold, linewidth).
+///
+/// Returns a `key=[…], key=[…]` string (without the surrounding parens) ready
+/// to be appended to the metadata prefix.
+///
+/// # Errors
+///
+/// Returns a `PyErr` if NumPy cannot be imported or any array conversion fails.
+/// The caller (`__repr__`) silently falls back to `"metadata"` on error.
+fn format_content_arrays(slf: &Bound<'_, SparseTensor>) -> PyResult<String> {
+    let py = slf.py();
+    // Import numpy lazily — hurray must not require numpy at module load time.
+    let np = py.import_bound("numpy")?;
+
+    let fmt = slf.borrow().format;
+
+    /// Convert a `hurray.Tensor` to a numpy ndarray and then to a compact string.
+    ///
+    /// Uses `numpy.array2string` with `separator=' '` to produce the same compact
+    /// inline style that PyTorch uses (no commas between scalars).
+    fn tensor_to_str(
+        py: Python<'_>,
+        np: &Bound<'_, PyAny>,
+        tensor_obj: PyObject,
+    ) -> PyResult<String> {
+        let arr = tensor_obj.bind(py).call_method0("__array__")?;
+        let kwargs = pyo3::types::PyDict::new_bound(py);
+        kwargs.set_item("separator", " ")?;
+        // Large arrays are abbreviated with "..." by NumPy's default threshold (1000
+        // elements); this is intentional — content repr is for developer inspection,
+        // not a complete dump. It also honours the user's active numpy print options.
+        let s: String = np
+            .call_method("array2string", (&arr,), Some(&kwargs))?
+            .extract()?;
+        // array2string wraps with [ … ] already; strip surrounding whitespace.
+        Ok(s.trim().to_owned())
+    }
+
+    let values_obj = SparseTensor::values(slf)?;
+    let values_str = tensor_to_str(py, &np, values_obj)?;
+
+    let array_part = match fmt {
+        SparseFormat::Coo => {
+            let indices_obj = SparseTensor::indices(slf)?;
+            let indices_str = tensor_to_str(py, &np, indices_obj)?;
+            format!("indices={indices_str}, values={values_str}")
+        }
+        SparseFormat::Csr => {
+            let col_indices_obj = SparseTensor::col_indices(slf)?;
+            let col_indices_str = tensor_to_str(py, &np, col_indices_obj)?;
+            let row_ptr_obj = SparseTensor::row_ptr(slf)?;
+            let row_ptr_str = tensor_to_str(py, &np, row_ptr_obj)?;
+            format!("values={values_str}, col_indices={col_indices_str}, row_ptr={row_ptr_str}")
+        }
+        SparseFormat::Csc => {
+            let row_indices_obj = SparseTensor::row_indices(slf)?;
+            let row_indices_str = tensor_to_str(py, &np, row_indices_obj)?;
+            let col_ptr_obj = SparseTensor::col_ptr(slf)?;
+            let col_ptr_str = tensor_to_str(py, &np, col_ptr_obj)?;
+            format!("values={values_str}, row_indices={row_indices_str}, col_ptr={col_ptr_str}")
+        }
+    };
+
+    Ok(array_part)
+}
 
 /// Build a uint64 `hurray.Tensor` view over a raw buffer pointer.
 ///
@@ -813,11 +930,133 @@ mod tests {
         crate::dtype::register(&m).unwrap();
         crate::device::register(&m).unwrap();
         crate::tensor::register(&m).unwrap();
+        crate::print_options::register(&m).unwrap();
         register(&m).unwrap();
         let sys = py.import_bound("sys").unwrap();
         let modules = sys.getattr("modules").unwrap();
         modules.set_item("hurray", &m).unwrap();
         m
+    }
+
+    /// Build a minimal COO SparseTensor for tests.
+    fn make_coo(py: Python<'_>) -> SparseTensor {
+        // 2×2 matrix, 2 non-zeros, float32 values
+        let values: Vec<u8> = [5.0f32, 7.0].iter().flat_map(|f| f.to_le_bytes()).collect();
+        // indices: [[0,0],[1,1]] stored row-major as [0,0,1,1]
+        let indices: Vec<u8> = [0u64, 0, 1, 1]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+
+        let shape = Shape::new(vec![2, 2]).unwrap();
+        let bh_values = BufferHandle::new(
+            values.len() as u64,
+            py_buf_alignment(values.len() as u64),
+            hurray_core::DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
+        let bh_idx = BufferHandle::new(
+            indices.len() as u64,
+            py_buf_alignment(indices.len() as u64),
+            hurray_core::DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
+        use hurray_core::layout::CooLayout;
+        use hurray_core::{LayoutDescriptor, DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR};
+        let descriptor = TensorDescriptor::new(
+            DESCRIPTOR_VERSION_MAJOR,
+            DESCRIPTOR_VERSION_MINOR,
+            ElementType::Float32,
+            shape,
+            0,
+            LayoutDescriptor::Coo(CooLayout::new(2, false)),
+            vec![bh_values, bh_idx],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let dtype_py = Py::new(
+            py,
+            Dtype {
+                inner: ElementType::Float32,
+            },
+        )
+        .unwrap();
+        let device_py = Py::new(
+            py,
+            Device {
+                tag: hurray_core::DeviceTag::Cpu,
+                memory_class: MemoryClass::Standard,
+                device_id: 0,
+            },
+        )
+        .unwrap();
+        SparseTensor {
+            descriptor,
+            format: SparseFormat::Coo,
+            values_buf: BufferStore::from_slice(&values),
+            aux_buf_0: BufferStore::from_slice(&indices),
+            aux_buf_1: None,
+            dtype_py,
+            device_py,
+        }
+    }
+
+    /// Build a minimal CSC SparseTensor for tests.
+    fn make_csc(py: Python<'_>) -> SparseTensor {
+        // 2×2 matrix, 2 non-zeros, float32 values
+        let values: Vec<u8> = [3.0f32, 6.0].iter().flat_map(|f| f.to_le_bytes()).collect();
+        let row_indices: Vec<u8> = [0u64, 1].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let col_ptr: Vec<u8> = [0u64, 1, 2].iter().flat_map(|v| v.to_le_bytes()).collect();
+
+        let shape = Shape::new(vec![2, 2]).unwrap();
+        let descriptor = build_csc_descriptor(
+            ElementType::Float32,
+            shape,
+            2,
+            values.len() as u64,
+            row_indices.len() as u64,
+            col_ptr.len() as u64,
+        )
+        .unwrap();
+
+        let dtype_py = Py::new(
+            py,
+            Dtype {
+                inner: ElementType::Float32,
+            },
+        )
+        .unwrap();
+        let device_py = Py::new(
+            py,
+            Device {
+                tag: hurray_core::DeviceTag::Cpu,
+                memory_class: MemoryClass::Standard,
+                device_id: 0,
+            },
+        )
+        .unwrap();
+        SparseTensor {
+            descriptor,
+            format: SparseFormat::Csc,
+            values_buf: BufferStore::from_slice(&values),
+            aux_buf_0: BufferStore::from_slice(&row_indices),
+            aux_buf_1: Some(BufferStore::from_slice(&col_ptr)),
+            dtype_py,
+            device_py,
+        }
+    }
+
+    /// Reset sparse_display to "metadata" — call at the end of any test that
+    /// sets it to "content" so the ContextVar default is restored for subsequent
+    /// tests sharing the same GIL acquisition.
+    fn reset_sparse_display(py: Python<'_>) {
+        crate::print_options::set_print_options(py, Some("metadata")).unwrap();
     }
 
     fn make_csr(py: Python<'_>) -> SparseTensor {
@@ -903,8 +1142,10 @@ mod tests {
         init();
         Python::with_gil(|py| {
             let _m = build_module(py);
-            let sparse = make_csr(py);
-            let r = sparse.__repr__(py).unwrap();
+            // __repr__ now takes &Bound<Self>; wrap the bare struct first.
+            let sparse = Py::new(py, make_csr(py)).unwrap();
+            let bound = sparse.bind(py);
+            let r = SparseTensor::__repr__(bound).unwrap();
             assert!(r.contains("csr"), "repr should contain format");
             assert!(r.contains("float32"), "repr should contain dtype");
             assert!(r.contains("nnz=4"), "repr should contain nnz");
@@ -918,10 +1159,12 @@ mod tests {
         init();
         Python::with_gil(|py| {
             let _m = build_module(py);
-            let sparse = make_csr(py);
+            // __repr__ and __str__ now take &Bound<Self>; wrap the bare struct first.
+            let sparse = Py::new(py, make_csr(py)).unwrap();
+            let bound = sparse.bind(py);
             assert_eq!(
-                sparse.__repr__(py).unwrap(),
-                sparse.__str__(py).unwrap(),
+                SparseTensor::__repr__(bound).unwrap(),
+                SparseTensor::__str__(bound).unwrap(),
                 "__str__ and __repr__ must be identical for SparseTensor"
             );
         });
@@ -1138,6 +1381,542 @@ mod tests {
             let result = SparseTensor::to_scipy(bound);
             assert!(result.is_err());
             assert!(result.unwrap_err().is_instance_of::<UnsupportedError>(py));
+        });
+    }
+
+    // ── Print-options tests (Job 2) ───────────────────────────────────────────
+
+    // Job 2.1 — Default mode is "metadata"; repr has no array keys.
+    #[test]
+    fn default_display_is_metadata_csr() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            // Ensure we start in metadata mode (in case another test leaked state).
+            reset_sparse_display(py);
+            let sparse = Py::new(py, make_csr(py)).unwrap();
+            let bound = sparse.bind(py);
+            let r = SparseTensor::__repr__(bound).unwrap();
+            // Metadata mode: compact summary only.
+            assert!(
+                r.starts_with("hurray.SparseTensor("),
+                "repr must start with type name"
+            );
+            assert!(r.contains("format='csr'"), "repr must contain format");
+            assert!(r.contains("nnz=4"), "repr must contain nnz");
+            assert!(r.contains("dtype=float32"), "repr must contain dtype");
+            // Must NOT contain any array labels in default mode.
+            assert!(
+                !r.contains("values="),
+                "default repr must not contain values= (got: {r})"
+            );
+            assert!(
+                !r.contains("col_indices="),
+                "default repr must not contain col_indices= (got: {r})"
+            );
+            assert!(
+                !r.contains("row_ptr="),
+                "default repr must not contain row_ptr= (got: {r})"
+            );
+        });
+    }
+
+    #[test]
+    fn default_display_is_metadata_coo() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            reset_sparse_display(py);
+            let sparse = Py::new(py, make_coo(py)).unwrap();
+            let bound = sparse.bind(py);
+            let r = SparseTensor::__repr__(bound).unwrap();
+            assert!(r.contains("format='coo'"));
+            assert!(
+                !r.contains("indices="),
+                "default COO repr must not contain indices="
+            );
+            assert!(
+                !r.contains("values="),
+                "default COO repr must not contain values="
+            );
+        });
+    }
+
+    #[test]
+    fn default_display_is_metadata_csc() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            reset_sparse_display(py);
+            let sparse = Py::new(py, make_csc(py)).unwrap();
+            let bound = sparse.bind(py);
+            let r = SparseTensor::__repr__(bound).unwrap();
+            assert!(r.contains("format='csc'"));
+            assert!(
+                !r.contains("values="),
+                "default CSC repr must not contain values="
+            );
+            assert!(
+                !r.contains("row_indices="),
+                "default CSC repr must not contain row_indices="
+            );
+            assert!(
+                !r.contains("col_ptr="),
+                "default CSC repr must not contain col_ptr="
+            );
+        });
+    }
+
+    // Job 2.2 — Content mode: ContextVar is correctly set; when NumPy is present
+    // the repr includes array labels and values.  When NumPy is absent the spec
+    // mandates a silent fallback to the metadata string — see Job 2.8 test below.
+    //
+    // These tests verify (a) set_print_options / sparse_display_is_content agree,
+    // (b) __repr__ still produces a well-formed metadata string on fallback, and
+    // (c) when numpy IS importable the array labels and values are present.
+    #[test]
+    fn content_mode_csr_contextvar_is_set_and_repr_does_not_raise() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            reset_sparse_display(py);
+            crate::print_options::set_print_options(py, Some("content")).unwrap();
+
+            // ContextVar must report content.
+            assert!(
+                crate::print_options::sparse_display_is_content(py),
+                "sparse_display_is_content must be true after set_print_options(content)"
+            );
+
+            let sparse = Py::new(py, make_csr(py)).unwrap();
+            let bound = sparse.bind(py);
+            // __repr__ must never raise, regardless of whether NumPy is present.
+            let r = SparseTensor::__repr__(bound).unwrap();
+            // The repr must at minimum contain the invariant metadata fields.
+            assert!(
+                r.contains("format='csr'"),
+                "repr must contain format (got: {r})"
+            );
+            assert!(r.contains("nnz=4"), "repr must contain nnz (got: {r})");
+            assert!(
+                r.contains("dtype=float32"),
+                "repr must contain dtype (got: {r})"
+            );
+
+            // When NumPy is available: also assert the array labels.
+            // When NumPy is absent: __repr__ falls back silently to metadata (Job 2.8).
+            let numpy_available = py.import_bound("numpy").is_ok();
+            if numpy_available {
+                assert!(
+                    r.contains("values="),
+                    "content CSR repr must contain values= when numpy present (got: {r})"
+                );
+                assert!(
+                    r.contains("col_indices="),
+                    "content CSR repr must contain col_indices= when numpy present (got: {r})"
+                );
+                assert!(
+                    r.contains("row_ptr="),
+                    "content CSR repr must contain row_ptr= when numpy present (got: {r})"
+                );
+                // Numeric values: [1,2,3,4], col_indices=[0,2,1,2], row_ptr=[0,1,3,4]
+                assert!(
+                    r.contains("1.") && r.contains("4."),
+                    "values must appear (got: {r})"
+                );
+            }
+
+            reset_sparse_display(py);
+        });
+    }
+
+    #[test]
+    fn content_mode_coo_contextvar_is_set_and_repr_does_not_raise() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            reset_sparse_display(py);
+            crate::print_options::set_print_options(py, Some("content")).unwrap();
+
+            assert!(crate::print_options::sparse_display_is_content(py));
+
+            let sparse = Py::new(py, make_coo(py)).unwrap();
+            let bound = sparse.bind(py);
+            let r = SparseTensor::__repr__(bound).unwrap();
+            assert!(
+                r.contains("format='coo'"),
+                "repr must contain format (got: {r})"
+            );
+
+            let numpy_available = py.import_bound("numpy").is_ok();
+            if numpy_available {
+                assert!(
+                    r.contains("indices="),
+                    "content COO repr must contain indices= when numpy present (got: {r})"
+                );
+                assert!(
+                    r.contains("values="),
+                    "content COO repr must contain values= when numpy present (got: {r})"
+                );
+                // values=[5.0, 7.0]
+                assert!(
+                    r.contains("5.") && r.contains("7."),
+                    "values must appear (got: {r})"
+                );
+            }
+
+            reset_sparse_display(py);
+        });
+    }
+
+    #[test]
+    fn content_mode_csc_contextvar_is_set_and_repr_does_not_raise() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            reset_sparse_display(py);
+            crate::print_options::set_print_options(py, Some("content")).unwrap();
+
+            assert!(crate::print_options::sparse_display_is_content(py));
+
+            let sparse = Py::new(py, make_csc(py)).unwrap();
+            let bound = sparse.bind(py);
+            let r = SparseTensor::__repr__(bound).unwrap();
+            assert!(
+                r.contains("format='csc'"),
+                "repr must contain format (got: {r})"
+            );
+
+            let numpy_available = py.import_bound("numpy").is_ok();
+            if numpy_available {
+                assert!(
+                    r.contains("values="),
+                    "content CSC repr must contain values= when numpy present (got: {r})"
+                );
+                assert!(
+                    r.contains("row_indices="),
+                    "content CSC repr must contain row_indices= when numpy present (got: {r})"
+                );
+                assert!(
+                    r.contains("col_ptr="),
+                    "content CSC repr must contain col_ptr= when numpy present (got: {r})"
+                );
+                // values=[3.0, 6.0]
+                assert!(
+                    r.contains("3.") && r.contains("6."),
+                    "values must appear (got: {r})"
+                );
+            }
+
+            reset_sparse_display(py);
+        });
+    }
+
+    // Job 2.8 — NumPy-absent fallback: content mode silently returns metadata string.
+    // This is always testable: __repr__ must not raise and must produce well-formed output.
+    #[test]
+    fn content_mode_fallback_to_metadata_when_numpy_absent() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            reset_sparse_display(py);
+
+            // Only exercise the "fallback" branch when numpy really is absent.
+            // When numpy is present this test still passes (repr succeeds), but we
+            // cannot assert the metadata-only form because arrays will be present.
+            let numpy_available = py.import_bound("numpy").is_ok();
+            if numpy_available {
+                // Nothing to assert about the fallback path; skip.
+                return;
+            }
+
+            crate::print_options::set_print_options(py, Some("content")).unwrap();
+            assert!(crate::print_options::sparse_display_is_content(py));
+
+            let sparse = Py::new(py, make_csr(py)).unwrap();
+            let r = SparseTensor::__repr__(sparse.bind(py)).unwrap();
+
+            // Spec: __repr__ never raises; falls back to the metadata string.
+            assert!(
+                r.starts_with("hurray.SparseTensor("),
+                "fallback repr must be a valid metadata string (got: {r})"
+            );
+            assert!(
+                r.contains("format='csr'"),
+                "fallback repr must contain format (got: {r})"
+            );
+            assert!(
+                r.contains("nnz=4"),
+                "fallback repr must contain nnz (got: {r})"
+            );
+            // In the fallback the array labels must NOT appear (numpy couldn't render them).
+            assert!(
+                !r.contains("values="),
+                "numpy-absent fallback must not contain values= (got: {r})"
+            );
+
+            reset_sparse_display(py);
+        });
+    }
+
+    // Job 2.3 — __str__ still equals __repr__ in content mode.
+    #[test]
+    fn str_equals_repr_in_content_mode() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            reset_sparse_display(py);
+            crate::print_options::set_print_options(py, Some("content")).unwrap();
+
+            let sparse = Py::new(py, make_csr(py)).unwrap();
+            let bound = sparse.bind(py);
+            assert_eq!(
+                SparseTensor::__repr__(bound).unwrap(),
+                SparseTensor::__str__(bound).unwrap(),
+                "__str__ must equal __repr__ in content mode"
+            );
+
+            reset_sparse_display(py);
+        });
+    }
+
+    // Job 2.4 — get_print_options reflects the active value.
+    #[test]
+    fn get_print_options_returns_metadata_by_default() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            reset_sparse_display(py);
+            let opts = crate::print_options::get_print_options(py).unwrap();
+            // get_print_options returns a PyObject (PyDict); extract "sparse_display" via Python.
+            let v: String = opts
+                .bind(py)
+                .get_item("sparse_display")
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(v, "metadata", "default sparse_display must be 'metadata'");
+        });
+    }
+
+    #[test]
+    fn get_print_options_reflects_content_after_set() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            reset_sparse_display(py);
+            crate::print_options::set_print_options(py, Some("content")).unwrap();
+            let opts = crate::print_options::get_print_options(py).unwrap();
+            let v: String = opts
+                .bind(py)
+                .get_item("sparse_display")
+                .unwrap()
+                .extract()
+                .unwrap();
+            assert_eq!(v, "content", "sparse_display must be 'content' after set");
+            reset_sparse_display(py);
+        });
+    }
+
+    // Job 2.5 — Context manager scoping: content inside, metadata restored after.
+    //
+    // __enter__ and __exit__ are private #[pymethods]; drive them via Python's
+    // call_method interface on the Bound object, exactly as Python does at runtime.
+    #[test]
+    fn print_options_ctx_scopes_and_restores() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            reset_sparse_display(py);
+
+            // Before: metadata.
+            assert!(!crate::print_options::sparse_display_is_content(py));
+
+            // Build a PrintOptionsCtx, box it into a Python object, call protocol methods.
+            let ctx =
+                crate::print_options::PrintOptionsCtx::new(Some("content".to_owned())).unwrap();
+            let bound_ctx = Py::new(py, ctx).unwrap();
+
+            // __enter__: sets content.
+            bound_ctx.bind(py).call_method0("__enter__").unwrap();
+            assert!(
+                crate::print_options::sparse_display_is_content(py),
+                "inside context: must be content"
+            );
+
+            // Verify repr of CSR is in content mode inside the context.
+            // When NumPy is present the array labels appear; when absent __repr__
+            // falls back silently to the metadata string (spec: __repr__ never raises).
+            let sparse = Py::new(py, make_csr(py)).unwrap();
+            let r = SparseTensor::__repr__(sparse.bind(py)).unwrap();
+            assert!(
+                r.starts_with("hurray.SparseTensor("),
+                "repr inside ctx must be well-formed (got: {r})"
+            );
+            if py.import_bound("numpy").is_ok() {
+                assert!(
+                    r.contains("values="),
+                    "repr inside ctx must be content when numpy present (got: {r})"
+                );
+            }
+
+            // __exit__(None, None, None): restores metadata.
+            let none = py.None();
+            let nb = none.bind(py);
+            bound_ctx
+                .bind(py)
+                .call_method1("__exit__", (nb, nb, nb))
+                .unwrap();
+            assert!(
+                !crate::print_options::sparse_display_is_content(py),
+                "after context: must be restored to metadata"
+            );
+        });
+    }
+
+    // Job 2.5 (nesting) — nested contexts restore correctly.
+    #[test]
+    fn print_options_ctx_nested_restores_correctly() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            reset_sparse_display(py);
+
+            let none = py.None();
+            let nb = none.bind(py);
+
+            // Outer: enter content.
+            let outer =
+                crate::print_options::PrintOptionsCtx::new(Some("content".to_owned())).unwrap();
+            let b_outer = Py::new(py, outer).unwrap();
+            b_outer.bind(py).call_method0("__enter__").unwrap();
+            assert!(crate::print_options::sparse_display_is_content(py));
+
+            // Inner: enter metadata (overrides outer content).
+            let inner =
+                crate::print_options::PrintOptionsCtx::new(Some("metadata".to_owned())).unwrap();
+            let b_inner = Py::new(py, inner).unwrap();
+            b_inner.bind(py).call_method0("__enter__").unwrap();
+            assert!(
+                !crate::print_options::sparse_display_is_content(py),
+                "inner ctx overrides outer: must be metadata"
+            );
+
+            // Exit inner: back to content.
+            b_inner
+                .bind(py)
+                .call_method1("__exit__", (nb, nb, nb))
+                .unwrap();
+            assert!(
+                crate::print_options::sparse_display_is_content(py),
+                "after inner exit: must be back to content"
+            );
+
+            // Exit outer: back to original metadata.
+            b_outer
+                .bind(py)
+                .call_method1("__exit__", (nb, nb, nb))
+                .unwrap();
+            assert!(
+                !crate::print_options::sparse_display_is_content(py),
+                "after outer exit: must be restored to metadata"
+            );
+        });
+    }
+
+    // Job 2.6 — Invalid values raise ValueError.
+    #[test]
+    fn set_print_options_invalid_value_raises_value_error() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            let result = crate::print_options::set_print_options(py, Some("foo"));
+            assert!(result.is_err(), "invalid value must return Err");
+            assert!(
+                result
+                    .unwrap_err()
+                    .is_instance_of::<pyo3::exceptions::PyValueError>(py),
+                "invalid value must raise ValueError"
+            );
+        });
+    }
+
+    #[test]
+    fn print_options_ctx_invalid_value_raises_value_error() {
+        init();
+        Python::with_gil(|py| {
+            let _m = build_module(py);
+            let result = crate::print_options::PrintOptionsCtx::new(Some("bad".to_owned()));
+            assert!(
+                result.is_err(),
+                "invalid value in PrintOptionsCtx::new must return Err"
+            );
+            // PrintOptionsCtx does not derive Debug, so use .err().unwrap() instead of
+            // .unwrap_err() (the latter requires T: Debug for its panic message).
+            assert!(
+                result
+                    .err()
+                    .unwrap()
+                    .is_instance_of::<pyo3::exceptions::PyValueError>(py),
+                "invalid value must raise ValueError"
+            );
+        });
+    }
+
+    // Job 2.7 — Dense Tensor repr is unaffected by sparse_display setting.
+    #[test]
+    fn content_mode_does_not_affect_dense_tensor_repr() {
+        init();
+        Python::with_gil(|py| {
+            // Dense Tensor needs its own build_module; reuse the one from this module
+            // which already has tensor registered.
+            let _m = build_module(py);
+            reset_sparse_display(py);
+
+            // Build a simple float32 dense tensor.
+            use pyo3::types::PyBytes;
+            let floats: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
+            let buf: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
+            let py_buf = PyBytes::new_bound(py, &buf);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Float32,
+                },
+            )
+            .unwrap();
+            let tensor = Py::new(
+                py,
+                crate::tensor::Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![4], None)
+                    .unwrap(),
+            )
+            .unwrap();
+
+            // Capture repr in metadata mode.
+            let repr_metadata = tensor
+                .bind(py)
+                .call_method0("__repr__")
+                .unwrap()
+                .extract::<String>()
+                .unwrap();
+
+            // Switch to content mode.
+            crate::print_options::set_print_options(py, Some("content")).unwrap();
+
+            // Dense tensor repr must be identical — content mode is sparse-only.
+            let repr_content = tensor
+                .bind(py)
+                .call_method0("__repr__")
+                .unwrap()
+                .extract::<String>()
+                .unwrap();
+
+            assert_eq!(
+                repr_metadata, repr_content,
+                "dense Tensor repr must be unaffected by sparse_display=content"
+            );
+
+            reset_sparse_display(py);
         });
     }
 }

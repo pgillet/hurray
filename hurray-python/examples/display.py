@@ -5,7 +5,8 @@ Demonstrates:
 - hurray.Tensor repr with data values (Tier 1 CPU tensors)
 - hurray.Tensor repr fallback for Tier 2 types
 - hurray.Tensor __str__ (bare NumPy-style array string)
-- hurray.SparseTensor repr and str
+- hurray.SparseTensor repr and str (metadata by default)
+- switching SparseTensor display to PyTorch-style content via print options
 """
 
 import scipy.sparse as sp
@@ -66,6 +67,35 @@ def demo_sparse_repr():
     print()
 
 
+def demo_sparse_print_options():
+    """Switch SparseTensor display between metadata (default) and PyTorch-style content."""
+    m = sp.csr_matrix(
+        ([1.0, 2.0, 3.0, 4.0], ([0, 0, 1, 2], [0, 2, 1, 0])), shape=(3, 3)
+    )
+    t = hurray.from_scipy(m)
+
+    # Default: metadata only (SciPy-style).
+    print("default (metadata):")
+    print(repr(t))
+    print()
+
+    # Opt in to content display globally.
+    hurray.set_print_options(sparse_display="content")
+    print('after set_print_options(sparse_display="content"):')
+    print(repr(t))
+    print("get_print_options():", hurray.get_print_options())
+    print()
+    hurray.set_print_options(sparse_display="metadata")  # restore
+
+    # Scoped to a block via the context manager (auto-reverts on exit).
+    with hurray.print_options(sparse_display="content"):
+        print("inside print_options(sparse_display='content'):")
+        print(repr(t))
+    print("after the with-block (reverted to metadata):")
+    print(repr(t))
+    print()
+
+
 if __name__ == "__main__":
     print("=== Tensor __repr__ ===")
     demo_tensor_repr()
@@ -75,3 +105,5 @@ if __name__ == "__main__":
     demo_large_tensor()
     print("=== SparseTensor ===")
     demo_sparse_repr()
+    print("=== SparseTensor print options ===")
+    demo_sparse_print_options()
