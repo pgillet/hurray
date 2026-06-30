@@ -195,7 +195,7 @@ per-level `pos`/`crd` structure) is deferred to a future revision.
 ## Interaction with Statistics Section
 
 When the `HAS_STATISTICS` flag is set, the `nnz` field in the statistics section
-SHOULD match the `nnz` field in the CSF descriptor. The `sparsity_ratio` SHOULD be
+MUST match the `nnz` field in the CSF descriptor, which is authoritative. The `sparsity_ratio` SHOULD be
 `1.0 - (nnz / total_elements)`, where `total_elements` is the product of all `shape`
 entries.
 

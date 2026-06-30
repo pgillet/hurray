@@ -97,7 +97,7 @@ for j = row_ptr[r] to row_ptr[r+1] - 1:
 ## Interaction with Statistics Section
 
 When the `HAS_STATISTICS` flag is set, the `nnz` field in the statistics section
-SHOULD match the `nnz` field in the CSR descriptor. The `sparsity_ratio` SHOULD be
+MUST match the `nnz` field in the CSR descriptor, which is authoritative. The `sparsity_ratio` SHOULD be
 `1.0 - (nnz / (shape[0] * shape[1]))`.
 
 ## Example
