@@ -643,54 +643,37 @@ impl SparseTensor {
 /// The caller (`__repr__`) silently falls back to `"metadata"` on error.
 fn format_content_arrays(slf: &Bound<'_, SparseTensor>) -> PyResult<String> {
     let py = slf.py();
-    // Import numpy lazily — hurray must not require numpy at module load time.
-    let np = py.import_bound("numpy")?;
+    // Content rendering needs numpy (the Tensor views format through it). If numpy is
+    // absent, bail here so __repr__ falls back cleanly to the metadata string.
+    py.import_bound("numpy")?;
 
     let fmt = slf.borrow().format;
 
-    /// Convert a `hurray.Tensor` to a numpy ndarray and then to a compact string.
+    /// Render a `hurray.Tensor` buffer view as its bare NumPy array string.
     ///
-    /// Uses `numpy.array2string` with `separator=' '` to produce the same compact
-    /// inline style that PyTorch uses (no commas between scalars).
-    fn tensor_to_str(
-        py: Python<'_>,
-        np: &Bound<'_, PyAny>,
-        tensor_obj: PyObject,
-    ) -> PyResult<String> {
-        let arr = tensor_obj.bind(py).call_method0("__array__")?;
-        let kwargs = pyo3::types::PyDict::new_bound(py);
-        kwargs.set_item("separator", " ")?;
-        // Large arrays are abbreviated with "..." by NumPy's default threshold (1000
-        // elements); this is intentional — content repr is for developer inspection,
-        // not a complete dump. It also honours the user's active numpy print options.
-        let s: String = np
-            .call_method("array2string", (&arr,), Some(&kwargs))?
-            .extract()?;
-        // array2string wraps with [ … ] already; strip surrounding whitespace.
-        Ok(s.trim().to_owned())
+    /// Delegates to the Tensor's own `__str__` (the `numpy.frombuffer` path used by
+    /// dense display) rather than `__array__`/DLPack, which does not work for the
+    /// borrowed buffer views the sparse accessors return. `__str__` yields the compact
+    /// inline `[1. 2. 3.]` form (NumPy's default separator), matching PyTorch's style.
+    fn tensor_to_str(py: Python<'_>, tensor_obj: PyObject) -> PyResult<String> {
+        tensor_obj.bind(py).str()?.extract::<String>()
     }
 
-    let values_obj = SparseTensor::values(slf)?;
-    let values_str = tensor_to_str(py, &np, values_obj)?;
+    let values_str = tensor_to_str(py, SparseTensor::values(slf)?)?;
 
     let array_part = match fmt {
         SparseFormat::Coo => {
-            let indices_obj = SparseTensor::indices(slf)?;
-            let indices_str = tensor_to_str(py, &np, indices_obj)?;
+            let indices_str = tensor_to_str(py, SparseTensor::indices(slf)?)?;
             format!("indices={indices_str}, values={values_str}")
         }
         SparseFormat::Csr => {
-            let col_indices_obj = SparseTensor::col_indices(slf)?;
-            let col_indices_str = tensor_to_str(py, &np, col_indices_obj)?;
-            let row_ptr_obj = SparseTensor::row_ptr(slf)?;
-            let row_ptr_str = tensor_to_str(py, &np, row_ptr_obj)?;
+            let col_indices_str = tensor_to_str(py, SparseTensor::col_indices(slf)?)?;
+            let row_ptr_str = tensor_to_str(py, SparseTensor::row_ptr(slf)?)?;
             format!("values={values_str}, col_indices={col_indices_str}, row_ptr={row_ptr_str}")
         }
         SparseFormat::Csc => {
-            let row_indices_obj = SparseTensor::row_indices(slf)?;
-            let row_indices_str = tensor_to_str(py, &np, row_indices_obj)?;
-            let col_ptr_obj = SparseTensor::col_ptr(slf)?;
-            let col_ptr_str = tensor_to_str(py, &np, col_ptr_obj)?;
+            let row_indices_str = tensor_to_str(py, SparseTensor::row_indices(slf)?)?;
+            let col_ptr_str = tensor_to_str(py, SparseTensor::col_ptr(slf)?)?;
             format!("values={values_str}, row_indices={row_indices_str}, col_ptr={col_ptr_str}")
         }
     };
