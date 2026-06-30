@@ -77,8 +77,55 @@ print(t)
 # hurray.SparseTensor(format='csr', shape=(2, 2), nnz=2, dtype=float64)
 ```
 
-`str()` is identical to `repr()` for sparse tensors — element-wise display
-would require reconstructing a dense or COO view, which is left to the caller.
+`str()` is identical to `repr()` for sparse tensors. By default the display is
+**metadata only** (SciPy-style).
+
+### Display options: metadata vs. content
+
+Switch `SparseTensor` display to a **PyTorch-style content** form that also shows
+the per-format buffer arrays. Use `hurray.set_print_options` to set it globally, or
+`hurray.print_options(...)` as a context manager for a scoped change (auto-reverts
+on exit). The default is `"metadata"`, so existing behavior is unchanged.
+
+```python
+import scipy.sparse as sp
+import hurray
+
+m = sp.csr_matrix(([1.0, 2.0, 3.0, 4.0], ([0, 0, 1, 2], [0, 2, 1, 0])), shape=(3, 3))
+t = hurray.from_scipy(m)
+
+# Default — metadata only:
+repr(t)
+# hurray.SparseTensor(format='csr', shape=(3, 3), nnz=4, dtype=float64)
+
+# Global switch to content:
+hurray.set_print_options(sparse_display="content")
+repr(t)
+# hurray.SparseTensor(format='csr', shape=(3, 3), nnz=4, dtype=float64,
+#   values=[1. 2. 3. 4.], col_indices=[0 2 1 0], row_ptr=[0 2 3 4])
+hurray.get_print_options()
+# {'sparse_display': 'content'}
+
+# Or scope it to a block (reverts automatically):
+hurray.set_print_options(sparse_display="metadata")
+with hurray.print_options(sparse_display="content"):
+    print(repr(t))   # content form
+print(repr(t))       # back to metadata
+```
+
+The per-format arrays shown in content mode are:
+
+| Format | Arrays |
+|--------|--------|
+| COO | `indices`, `values` |
+| CSR | `values`, `col_indices`, `row_ptr` |
+| CSC | `values`, `row_indices`, `col_ptr` |
+
+Content mode formats the arrays via NumPy (honoring your active `numpy` print
+options); if NumPy is not installed it falls back to the metadata string.
+`set_print_options` and `print_options` are backed by a `contextvars.ContextVar`,
+so the setting is isolated per asyncio task / thread context (like the strict/relaxed
+mode config). An invalid `sparse_display` value raises `ValueError`.
 
 ## Runnable example
 
