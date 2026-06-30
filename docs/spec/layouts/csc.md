@@ -20,7 +20,8 @@ column pivoting in sparse direct solvers, and graph algorithms that traverse
 out-edges (adjacency stored column-wise).
 
 > **Note (non-normative):** CSC is defined only for **rank-2 tensors** in this
-> version of the specification, consistent with CSR. The format is also known as
+> version of the specification, consistent with CSR; generalisation to arbitrary rank
+> is provided by the Compressed Sparse Fiber (CSF) layout (see [csf.md](csf.md)). The format is also known as
 > Compressed Column Storage (CCS) in some communities (e.g., MATLAB, some LAPACK
 > interfaces). The two names refer to the same format.
 
