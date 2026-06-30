@@ -121,6 +121,11 @@ The per-format arrays shown in content mode are:
 | CSR | `values`, `col_indices`, `row_ptr` |
 | CSC | `values`, `row_indices`, `col_ptr` |
 
+> **Note:** `hurray.SparseTensor` supports only the rank-2, SciPy-interop formats COO,
+> CSR, and CSC. The CSF (Compressed Sparse Fiber) layout exists in `hurray-core`
+> (`docs/spec/layouts/csf.md`) but is **not** exposed as a `hurray.SparseTensor`, so it
+> has no Python display form. Exposing rank-N CSF in the Python bindings is future work.
+
 Content mode formats the arrays via NumPy (honoring your active `numpy` print
 options); if NumPy is not installed it falls back to the metadata string.
 `set_print_options` and `print_options` are backed by a `contextvars.ContextVar`,
