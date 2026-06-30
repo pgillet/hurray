@@ -800,11 +800,13 @@ fn subpaving_rejects_region_exceeding_second_dimension() {
 }
 
 /// A region that fits exactly at the boundary (origin+size == shape) must be valid.
+/// Paired with a complementary top region so the subpaving also satisfies full coverage.
 #[test]
 fn subpaving_accepts_region_exactly_at_boundary() {
-    // origin=[4,0], region_shape=[4,8]: end=[8,8] == shape=[8,8].
-    let r = RegionDescriptor::new(vec![4, 0], vec![4, 8], 0x01, 0, 0).unwrap();
-    let sp = SubpavingLayout::new(vec![r]).unwrap();
+    // r_bot: origin=[4,0], region_shape=[4,8] → end=[8,8] == shape=[8,8] (the boundary).
+    let r_top = RegionDescriptor::new(vec![0, 0], vec![4, 8], 0x01, 0, 0).unwrap();
+    let r_bot = RegionDescriptor::new(vec![4, 0], vec![4, 8], 0x01, 0, 256).unwrap();
+    let sp = SubpavingLayout::new(vec![r_top, r_bot]).unwrap();
     assert!(LayoutDescriptor::Subpaving(sp)
         .validate_against_shape(&shape(&[8, 8]))
         .is_ok());
@@ -885,6 +887,32 @@ fn subpaving_rejects_third_region_overlapping_with_first() {
         LayoutDescriptor::Subpaving(sp).validate_against_shape(&shape(&[8, 8])),
         Err(Error::InvalidLayout(_))
     ));
+}
+
+// ── subpaving.md § Coverage Constraint: union must exactly cover the index space ──
+
+/// A subpaving that leaves a gap (region volumes sum to less than the total) MUST be
+/// rejected — the union does not cover every element of the index space.
+#[test]
+fn subpaving_rejects_incomplete_coverage() {
+    // A single region covers only the top half of [8, 8] (32 of 64 elements).
+    let r = RegionDescriptor::new(vec![0, 0], vec![4, 8], 0x01, 0, 0).unwrap();
+    let sp = SubpavingLayout::new(vec![r]).unwrap();
+    assert!(matches!(
+        LayoutDescriptor::Subpaving(sp).validate_against_shape(&shape(&[8, 8])),
+        Err(Error::InvalidLayout(_))
+    ));
+}
+
+/// Coverage cannot be checked when a dimension is dynamic (the total is unknowable), so a
+/// partial region that would otherwise fail coverage is accepted — deferred to the caller.
+#[test]
+fn subpaving_skips_coverage_when_dimension_is_dynamic() {
+    let r = RegionDescriptor::new(vec![0, 0], vec![4, 8], 0x01, 0, 0).unwrap();
+    let sp = SubpavingLayout::new(vec![r]).unwrap();
+    assert!(LayoutDescriptor::Subpaving(sp)
+        .validate_against_shape(&shape(&[DYNAMIC, 8]))
+        .is_ok());
 }
 
 // ── ADR-013 invariant 12: Tiled recursion depth limit ────────────────────────
