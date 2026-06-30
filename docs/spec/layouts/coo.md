@@ -90,7 +90,7 @@ To retrieve the value at logical index `idx[0..rank-1]`:
 ## Interaction with Statistics Section
 
 When the `HAS_STATISTICS` flag is set, the `nnz` field in the statistics section
-SHOULD match the `nnz` field in the COO descriptor. The `sparsity_ratio` SHOULD be
+MUST match the `nnz` field in the COO descriptor, which is authoritative. The `sparsity_ratio` SHOULD be
 computed as `1.0 - (nnz / total_elements)` where `total_elements` is the product of
 all `shape` values.
 

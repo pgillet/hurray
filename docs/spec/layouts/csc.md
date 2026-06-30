@@ -109,7 +109,7 @@ both formats MAY convert between them by transposing the pointer and index array
 ## Interaction with Statistics Section
 
 When the `HAS_STATISTICS` flag is set, the `nnz` field in the statistics section
-SHOULD match the `nnz` field in the CSC descriptor. The `sparsity_ratio` SHOULD be
+MUST match the `nnz` field in the CSC descriptor, which is authoritative. The `sparsity_ratio` SHOULD be
 `1.0 - (nnz / (shape[0] * shape[1]))`.
 
 ## Example
