@@ -54,7 +54,9 @@ hurray/
 │   │   │   ├── subpaving.md
 │   │   │   ├── coo.md          # Sparse: Coordinate list
 │   │   │   ├── csr.md          # Sparse: Compressed Sparse Row
-│   │   │   └── csc.md          # Sparse: Compressed Sparse Column
+│   │   │   ├── csc.md          # Sparse: Compressed Sparse Column
+│   │   │   ├── csf.md          # Sparse: Compressed Sparse Fiber (rank-N)
+│   │   │   └── block-paged.md  # Indirect: PagedAttention KV cache
 │   │   ├── buffer-protocol.md  # Zero-copy semantics, alignment, device memory
 │   │   ├── metadata.md         # Tensor descriptor binary encoding
 │   │   ├── interchange.md      # Runtime interchange: in-process, IPC, cross-machine
