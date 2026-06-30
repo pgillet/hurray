@@ -260,16 +260,16 @@ assert!(csr.validate_against_shape(&Shape::new(vec![4, 5]).unwrap()).is_ok());
 assert!(csr.validate_against_shape(&Shape::new(vec![2, 3, 4]).unwrap()).is_err());
 ```
 
-## Known limitations
+## Subpaving validation
 
-**Subpaving full-coverage validation is not implemented.** The spec requires that
-the union of all regions in a subpaving layout exactly covers the tensor's index
-space (every index belongs to exactly one region). This MUST requirement is not
-currently enforced by `validate_against_shape`. Writers are responsible for
-ensuring full coverage. The non-overlap check (regions must not intersect) IS
-enforced. A volume-sum heuristic (`∑ region volumes == total elements`) would
-catch most coverage gaps but is also deferred; see the inline TODO in
-`hurray-core/src/layout/mod.rs`.
+`validate_against_shape` enforces the full subpaving contract from
+`subpaving.md`: each region lies within the tensor bounds, regions do not overlap,
+and — per the spec's **Coverage Constraint** — the regions **exactly cover** the
+index space. Coverage is checked via `∑ region volumes == total elements`: because
+the regions are already verified to be in-bounds and non-overlapping, that equality
+is sufficient to guarantee no gaps (an `O(n·rank)` check, not a cell-by-cell scan).
+Coverage validation is skipped only when a dimension is dynamic or a volume product
+overflows `uint64`, since the total then cannot be computed reliably.
 
 ## Private extension layouts
 

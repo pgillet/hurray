@@ -557,16 +557,52 @@ impl LayoutDescriptor {
                 }
                 // Non-overlap check (SHOULD validate per spec — we enforce it in strict mode).
                 // O(n^2) over regions; acceptable for descriptor validation (not a hot path).
-                // Full coverage (union == tensor index space) is not validated here: the
-                // general case is O(∏ shape) and deferred to Layer 4 / application layer.
-                // The volume-sum heuristic (∑ region volumes == total elements) is a
-                // necessary but not sufficient check and is also deferred. TODO: add it.
                 let n = sp.regions.len();
                 for i in 0..n {
                     for j in (i + 1)..n {
                         if regions_overlap(&sp.regions[i], &sp.regions[j], shape) {
                             return Err(Error::InvalidLayout(format!(
                                 "subpaving regions {i} and {j} overlap"
+                            )));
+                        }
+                    }
+                }
+
+                // Full-coverage check via volume sum. Combined with the per-region bounds
+                // check above (every region lies within the index space) and the non-overlap
+                // check, `∑ region volumes == total elements` is *sufficient* for full
+                // coverage: disjoint, in-bounds regions whose volumes fill the whole space
+                // cannot leave a gap. O(n·rank), avoiding the O(∏ shape) of a cell-by-cell
+                // scan. Skipped when any dimension is dynamic or a product overflows u64 —
+                // the total cannot then be computed reliably, so coverage is left to the
+                // application layer rather than risking a false rejection.
+                let total = shape.dims().iter().try_fold(1u64, |acc, &d| {
+                    if d == crate::shape::DYNAMIC {
+                        None
+                    } else {
+                        acc.checked_mul(d)
+                    }
+                });
+                if let Some(total) = total {
+                    let mut covered: Option<u64> = Some(0);
+                    for region in &sp.regions {
+                        let vol = region.region_shape.iter().try_fold(1u64, |acc, &d| {
+                            if d == crate::shape::DYNAMIC {
+                                None
+                            } else {
+                                acc.checked_mul(d)
+                            }
+                        });
+                        covered = match (covered, vol) {
+                            (Some(c), Some(v)) => c.checked_add(v),
+                            _ => None,
+                        };
+                    }
+                    if let Some(covered) = covered {
+                        if covered != total {
+                            return Err(Error::InvalidLayout(format!(
+                                "subpaving regions do not exactly cover the tensor: \
+                                 sum of region volumes ({covered}) != total elements ({total})"
                             )));
                         }
                     }
