@@ -743,4 +743,71 @@ The following layouts appear in production AI/ML inference pipelines:
 
 ---
 
-*This document summarizes the state of the art as of April 2026 (KV cache transfer section, §3, added June 2026), based on the foundational research conversation that preceded the Hurray project and follow-up surveys. It is intended to inform the spec, architecture decisions, and implementation priorities.*
+## 8. Region-Heterogeneous Tensor Structures
+
+The layouts surveyed in §2 each describe a *homogeneous* array: one element type, one
+layout, one (optional) quantization scheme spanning the whole index space. A separate class
+of prior art describes a *single logical array whose index space is partitioned into
+regions that differ in structure* — some dense, some sparse, some constant, each with its
+own backing storage and sometimes its own compression or precision. This is the class
+Hurray's General Subpaving layout (tag 0x06, ADR-026) targets. It matters directly to the
+array-database vision, where one very large tensor with structurally heterogeneous regions
+is a first-class use case rather than an edge case.
+
+Two distinct composition models appear in the literature, and they are not interchangeable:
+
+- **Partition (exact-cover, non-overlapping):** the index space is tiled by disjoint boxes
+  that together cover it exactly; each element belongs to exactly one region. This is what
+  Hurray subpaving implements. Prior art: AMReX/Chombo `DisjointBoxLayout`, OpenVDB tiles,
+  HDF5 Virtual Datasets (relaxed to allow gaps).
+- **Overlay (overlapping composition):** a base spanning the whole index space plus one or
+  more sparse corrections at scattered positions that share indices with the base. Prior
+  art: SpQR / KVQuant outlier quantization, TileDB timestamped fragments. This model
+  *cannot* be expressed by a non-overlapping partition and is out of scope for subpaving.
+
+### 8.1 Comparison
+
+| Structure | Segment | Partition shape | Per-region inner layout | Per-region buffers | Per-region quant/precision | Composition model | Maturity |
+|---|---|---|---|---|---|---|---|
+| AMReX / Chombo `BoxArray` / `DisjointBoxLayout` | HPC AMR | Irregular boxes | Uniform (dense FAB) | ✅ independent | ❌ | Partition (exact-cover per level) | Production (DOE Exascale) |
+| OpenVDB / NanoVDB | VFX / graphics | Hierarchical tiles + 8³ leaves | Heterogeneous (constant tile vs dense leaf) | ✅ (linearized in NanoVDB) | Partial (per-node value quant) | Partition (hierarchical) | Production (ASWF standard) |
+| HDF5 Virtual Dataset (VDS) | Scientific storage | Arbitrary rectangular selections | Heterogeneous (per source dataset) | ✅ per source | Via per-source compression | Partition, but permits gaps/overlap | Standard since HDF5 1.10 |
+| TileDB dense array w/ sparse fragments | Array DB | N/A (temporal) | Dense + sparse fragments | ✅ per fragment | ❌ | Overlay (timestamped, last-writer-wins) | Production |
+| Zarr v3 ZEP0003 variable chunks | Scientific storage | Rectilinear variable grid | Uniform | ✅ per chunk | ❌ (array-level codec) | Partition (rectilinear only) | Emerging (behind flag, Zarr-Python 3.2) |
+| MLIR `sparse_tensor` encoding | ML compiler | Per-dimension level, not per-region | Per-*level* type only | N/A | ❌ | Neither (whole-tensor encoding) | Production (LLVM) |
+| SpQR / KVQuant outliers | ML quant | Scattered points (not rectangular) | Dense low-bit + CSR outliers | ✅ (base + CSR) | ✅ (base vs outlier precision) | **Overlay** | Research → adoption |
+| KIVI / HF residual KV cache | ML inference | Regular seq-axis split (recent/old) | Uniform (fp16 vs quantized) | ✅ | ✅ (per-region precision) | Partition (regular, 2 regions) | Production |
+| MoE per-expert quantization | ML inference | Regular expert blocks | Uniform | ✅ per expert | ✅ (per-expert bit-width) | Partition (regular) | Research → adoption |
+| Block-sparse attention (BigBird, FlexAttention) | ML inference | Regular block grid | Uniform dense + mask | ❌ | ❌ | Partition (regular) + mask | Production |
+| ASTC texture blocks | GPU graphics | Regular block grid | Per-block mode/partition | ❌ (packed) | ✅ per-block | Partition (regular) | Production (hardware) |
+| **Hurray General Subpaving (0x06)** | Interchange | **Irregular boxes** | **Any tag: dense/sparse/paged/nested** | **✅ per-region sub-table** | **✅ per-region (ADR-026 D5)** | **Partition (exact-cover, non-overlap)** | Draft |
+
+### 8.2 Findings
+
+- Irregular exact-cover partitioning with independent per-region buffers is a *mature*,
+  production-proven pattern in HPC adaptive-mesh refinement (AMReX/Chombo) and VFX volume
+  storage (OpenVDB/NanoVDB). NanoVDB's pointerless linearization of a heterogeneous-region
+  tree is a direct precedent for encoding such a tensor as a zero-copy, GPU-friendly byte
+  image — matching Hurray's streamability and zero-copy constraints.
+- HDF5 Virtual Datasets are the closest standardized analog to Hurray subpaving: a logical
+  N-D dataset defined as per-region mappings to heterogeneous backing storage. Notably, VDS
+  chose *permissive* coverage (gaps and overlap allowed) where Hurray mandates exact-cover
+  and non-overlap.
+- Mainstream ML mostly wants per-region *quantization/precision* on *regular* partitions
+  (KIVI recent/old KV split; per-expert MoE bit-widths), not irregular partitioning. This
+  supports Hurray's per-region quantization mechanism more than its irregular-box
+  generality.
+- The dominant ML within-tensor heterogeneity pattern — outlier quantization (SpQR,
+  KVQuant) — is an **overlay** (dense base + scattered sparse high-precision residual over
+  shared indices). It is architecturally incompatible with subpaving's non-overlap
+  constraint and is therefore explicitly out of scope for tag 0x06.
+
+**Relevance to Hurray:** region-heterogeneous *partition* tensors are demanded and proven
+in the HPC/scientific/graphics segments that the array-database vision targets, justifying
+General Subpaving as a first-class layout; per-region quantization is independently demanded
+in ML inference; but the largest ML heterogeneity pattern (outlier overlays) needs a
+distinct overlapping-composition primitive that subpaving must not absorb.
+
+---
+
+*This document summarizes the state of the art as of April 2026 (KV cache transfer section, §3, added June 2026; region-heterogeneous tensor structures section, §8, added July 2026), based on the foundational research conversation that preceded the Hurray project and follow-up surveys. It is intended to inform the spec, architecture decisions, and implementation priorities.*
