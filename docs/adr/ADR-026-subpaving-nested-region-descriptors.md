@@ -2,7 +2,11 @@
 
 ## Status
 
-Draft
+Superseded by ADR-027 (Composite Tensors — Head + Members + Composition Rule)
+
+Superseded while still in Draft; the "Supersedes: ADR-015" intent below therefore never took
+effect. ADR-015 remains the record of the currently implemented inline region encoding until
+ADR-027's implementation lands.
 
 Supersedes: ADR-015 (Subpaving Region Inline Layout Encoding)
 
