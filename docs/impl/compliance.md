@@ -97,11 +97,10 @@ All conforming implementations MUST support **Tier 1** layouts for reading descr
 | Strided | `0x03` |
 | Tiled / Blocked | `0x04` |
 | Morton | `0x05` |
-| General Subpaving | `0x06` |
-| COO | `0x07` |
-| CSR | `0x08` |
-| CSC | `0x09` |
-| CSF | `0x0A` |
+| COO | `0x06` |
+| CSR | `0x07` |
+| CSC | `0x08` |
+| CSF | `0x09` |
 
 ## Test Requirements
 

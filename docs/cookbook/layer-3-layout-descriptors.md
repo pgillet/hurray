@@ -13,12 +13,11 @@ A layout descriptor tells a reader how the elements of a tensor are arranged in 
 | `Strided` | `0x03` | 1 | Explicit `strides: Vec<i64>`; negative/zero valid |
 | `Tiled` | `0x04` | 1 | Tile shape, outer/inner layout tags, optional strides; recursive |
 | `Morton` | `0x05` | 1 | Per-dimension bit counts |
-| `Subpaving` | `0x06` | 1 | List of rectangular regions, each with its own inner layout |
-| `Coo` | `0x07` | 2 | `nnz`, `is_sorted`; values + index buffers |
-| `Csr` | `0x08` | 3 | `nnz`; values + col_indices + row_ptr; rank-2 only |
-| `Csc` | `0x09` | 3 | `nnz`; values + row_indices + col_ptr; rank-2 only |
-| `Csf` | `0x0A` | `2·rank+1` | `nnz`, `mode_order` permutation; values + per-level pos/crd; rank-3+ generalization of CSR/CSC. See [csf.md](../spec/layouts/csf.md) |
-| `BlockPaged` | `0x0B` | 3 | PagedAttention KV cache; page_pool + block_table + seq_ptr; rank-3 only. See [block-paged-kv-cache.md](block-paged-kv-cache.md) |
+| `Coo` | `0x06` | 2 | `nnz`, `is_sorted`; values + index buffers |
+| `Csr` | `0x07` | 3 | `nnz`; values + col_indices + row_ptr; rank-2 only |
+| `Csc` | `0x08` | 3 | `nnz`; values + row_indices + col_ptr; rank-2 only |
+| `Csf` | `0x09` | `2·rank+1` | `nnz`, `mode_order` permutation; values + per-level pos/crd; rank-3+ generalization of CSR/CSC. See [csf.md](../spec/layouts/csf.md) |
+| `BlockPaged` | `0x0A` | 3 | PagedAttention KV cache; page_pool + block_table + seq_ptr; rank-3 only. See [block-paged-kv-cache.md](block-paged-kv-cache.md) |
 | `Hilbert` | `0x40` | 1 | `hilbert_order`, `hilbert_rank`; dims must be `2^order` |
 | `PrivateExtension` | `0xF0`–`0xFE` | `None` | Opaque; requires out-of-band agreement |
 | `Unknown` | any unrecognised | `None` | Permissive mode only; never dereference data |
@@ -149,7 +148,7 @@ use hurray_core::Shape;
 
 // Rank-3 sparse tensor, identity mode order, 4 non-zeros.
 let csf = LayoutDescriptor::Csf(CsfLayout::new(4, vec![0, 1, 2]));
-assert_eq!(csf.tag(), 0x0A);
+assert_eq!(csf.tag(), 0x09);
 assert_eq!(csf.buffer_count().map(|n| n.get()), Some(7)); // 2*3 + 1
 
 // rank ≥ 3 only; CSR/CSC own rank-2.
@@ -188,30 +187,6 @@ let hilbert = LayoutDescriptor::Hilbert(HilbertLayout::new(3, 3).unwrap());
 let shape = Shape::new(vec![8, 8, 8]).unwrap();
 hilbert.validate_against_shape(&shape).unwrap();
 ```
-
-## General subpaving layout
-
-Irregular partitioning: split an 8×8 tensor into four 4×4 row-major quadrants,
-each pointing into a different byte offset of the same buffer:
-
-```rust
-use hurray_core::layout::{LayoutDescriptor, RegionDescriptor, SubpavingLayout};
-use hurray_core::Shape;
-
-let regions = vec![
-    RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0).unwrap(),
-    RegionDescriptor::new(vec![0, 4], vec![4, 4], 0x01, 0, 64).unwrap(),
-    RegionDescriptor::new(vec![4, 0], vec![4, 4], 0x01, 0, 128).unwrap(),
-    RegionDescriptor::new(vec![4, 4], vec![4, 4], 0x01, 0, 192).unwrap(),
-];
-let layout = LayoutDescriptor::Subpaving(SubpavingLayout::new(regions).unwrap());
-
-let shape = Shape::new(vec![8, 8]).unwrap();
-layout.validate_against_shape(&shape).unwrap();
-```
-
-`validate_against_shape` checks that regions don't overlap and don't exceed the
-tensor's bounds. Overlapping regions return `Error::InvalidLayout`.
 
 ## Tag introspection and validation
 
@@ -259,17 +234,6 @@ assert!(csr.validate_against_shape(&Shape::new(vec![4, 5]).unwrap()).is_ok());
 // Rank-3: rejected — CSR is only defined for rank-2 tensors.
 assert!(csr.validate_against_shape(&Shape::new(vec![2, 3, 4]).unwrap()).is_err());
 ```
-
-## Subpaving validation
-
-`validate_against_shape` enforces the full subpaving contract from
-`subpaving.md`: each region lies within the tensor bounds, regions do not overlap,
-and — per the spec's **Coverage Constraint** — the regions **exactly cover** the
-index space. Coverage is checked via `∑ region volumes == total elements`: because
-the regions are already verified to be in-bounds and non-overlapping, that equality
-is sufficient to guarantee no gaps (an `O(n·rank)` check, not a cell-by-cell scan).
-Coverage validation is skipped only when a dimension is dynamic or a volume product
-overflows `uint64`, since the total then cannot be computed reliably.
 
 ## Private extension layouts
 

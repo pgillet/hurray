@@ -2,7 +2,7 @@
 
 > **Status:** Draft
 
-**Layout tag:** `0x0B` | **Tier:** 1 | **Type:** Indirect
+**Layout tag:** `0x0A` | **Tier:** 1 | **Type:** Indirect
 
 > This section uses RFC 2119 key words: MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT,
 > SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL.

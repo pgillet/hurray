@@ -19,6 +19,17 @@ annotated where content was trimmed accordingly.
 Supersedes: ADR-026 (Subpaving Nested Region Descriptors) — see § Consequences
 Amends the deferral scope of: ADR-010 (Multi-Tensor Collections Deferred)
 
+> **Amended 2026-07-23 (layout-tag renumber):** The composite head's layout tag is
+> reassigned `0x0C` → `0x0B`. The General Subpaving layout (former tag `0x06`) was retired
+> from v1.0 entirely, and the tags that followed it — COO through Composite — were shifted
+> down by one to keep the Tier-1 named layout range contiguous (`0x01`–`0x0B`, no hole),
+> since Hurray is pre-release with no compatibility obligation. The head is therefore now a
+> **named Tier-1 tag (`0x0B`)**, not a tag borrowed from the reserved range `0x0C`–`0x3F`;
+> and tag `0x06` is now **permanently COO's**. D1 and § Disposition of ADR-026 below are
+> updated to match. Other in-text references to `0x0C` (as the head tag) and to "inline
+> `0x06`" compaction elsewhere in this ADR predate this amendment and are retained as the
+> historical record, superseded by this note.
+
 ## Context
 
 Three capabilities that Hurray has treated as distinct are, on inspection, one idea seen
@@ -74,19 +85,23 @@ is pre-release).
 A **composite tensor** is a **head** descriptor plus an ordered set of **member** tensors,
 combined by a declared **composition rule**.
 
-### D1 — The head is a virtual (data-less) tensor descriptor under layout tag 0x0C
+### D1 — The head is a virtual (data-less) tensor descriptor under layout tag 0x0B
 
-The head is an ordinary tensor descriptor with `layout_tag = 0x0C` ("Composite / Virtual",
+> Amended 2026-07-23: head tag `0x0C` → `0x0B` (see § Status).
+
+The head is an ordinary tensor descriptor with `layout_tag = 0x0B` ("Composite / Virtual",
 Tier 1, a new addressing category *Virtual* alongside Dense / Sparse / Indirect). It:
 
 - carries the composite's **logical shape** (`shape`) and **logical element type**
   (`type_tag`) — the view the composite presents to a consumer;
 - owns **no data**: `buffer_count` MUST be `0` and `byte_offset` MUST be `0`.
 
-Tag `0x0C` is drawn from the reserved layout range (`0x0C`–`0x3F`). Because Hurray is
-pre-release, it is allocated as part of the initial v1.0 format (no version-increment
-ceremony). A strict reader rejects an unrecognised `0x0C`; a permissive reader may read the
-head's shape and dtype but MUST NOT dereference data (there is none).
+Tag `0x0B` is a **named Tier-1 layout tag**, not one borrowed from the reserved range: it
+was assigned when the General Subpaving layout was retired from v1.0 and COO through Composite
+shifted down by one to close the gap (see § Status). Because Hurray is pre-release, it is
+allocated as part of the initial v1.0 format (no version-increment ceremony). A strict reader
+rejects an unrecognised `0x0B`; a permissive reader may read the head's shape and dtype but
+MUST NOT dereference data (there is none).
 
 The head's layout-specific fields encode the composition rule:
 
@@ -283,10 +298,14 @@ changes:
   addressing-API redesign, and the `layout_codec`→buffer/quant relayering ADR-026 required.
 - ADR-026 D5's forbidden/deferred items (per-region statistics, per-region element type,
   per-region device) become **supported for free** (a member is an ordinary descriptor).
-- **Layout tag 0x06 (inline subpaving) is retained only as an OPTIONAL single-frame
-  compaction** of a *partition* composite, via a normative region ↔ member equivalence
-  (inline region origin ↔ member `shard_offset`; region within head `shape` ↔ member
-  `parent_shape`). **Inline 0x06 is deferred**; the collection form is the v1.0 deliverable.
+- **Inline subpaving compaction is dropped, and tag `0x06` is permanently reassigned to
+  COO** (amended 2026-07-23; see § Status). ADR-026's inline single-frame compaction of a
+  *partition* composite is no longer associated with tag `0x06` and is not available for any
+  future subpaving-compaction use; reviving that idea would require a **fresh** layout tag
+  allocated from the reserved range `0x0C`–`0x3F`. The region ↔ member equivalence it relied
+  on (inline region origin ↔ member `shard_offset`; region within head `shape` ↔ member
+  `parent_shape`) survives conceptually, but the collection form (members) is the v1.0
+  deliverable for partition.
 
 Net: ADR-027's core is smaller than ADR-026's would have been (reuses the shard section and
 ordinary members), at the cost of a persistent grouping concept threaded through the transport

@@ -41,6 +41,7 @@ followed by zero or more **optional sections** selected by the flags field.
 [Shard]                variable, present if HAS_SHARD flag is set
 [Statistics]           72 bytes, present if HAS_STATISTICS flag is set
 [Extension Type]       20 bytes, present if HAS_EXTENSION_TYPE flag is set
+[Composite Member]     16 bytes, present if HAS_COMPOSITE_MEMBER flag is set
 ```
 
 All multi-byte fields MUST be encoded in little-endian byte order (least significant
@@ -81,7 +82,8 @@ A reader MUST NOT read beyond `descriptor_length` bytes when parsing a descripto
 | 1 | `HAS_SHARD` | A shard descriptor section is present (see [Shard Section](#shard-section)). |
 | 2 | `HAS_EXTENSION_TYPE` | An extension type descriptor section is present. MUST be set if and only if `type_tag` is in the range `0xF0`–`0xFE` (see [Extension Type Section](#extension-type-section)). |
 | 3 | `HAS_STATISTICS` | A statistics section is present (see [Statistics Section](#statistics-section)). |
-| 4–31 | (reserved) | MUST be `0`. A reader MUST reject a descriptor with any reserved flag bit set. |
+| 4 | `HAS_COMPOSITE_MEMBER` | A composite member section is present (see [Composite Member Section](#composite-member-section)). Set on the members of an overlay composite; see `layouts/composite.md`. |
+| 5–31 | (reserved) | MUST be `0`. A reader MUST reject a descriptor with any reserved flag bit set. |
 
 ---
 
@@ -164,29 +166,7 @@ configured recursion limit.
 |-------|------|-------------|
 | `morton_bits` | `uint32[rank]` | Number of bits used per dimension in the Morton encoding. Each value MUST be greater than 0. |
 
-### General Subpaving (`0x06`)
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `region_count` | `uint32` | Number of regions. MUST be greater than 0. |
-
-Followed by `region_count` **region descriptors**, each encoded as:
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `origin` | `uint64[rank]` | Starting index of the region along each dimension (inclusive). |
-| `region_shape` | `uint64[rank]` | Size of the region along each dimension. Every value MUST be greater than 0. |
-| `region_layout_tag` | `uint8` | Layout of elements within this region. MUST NOT be `0x00` or `0xFF`. |
-| `_reserved` | `uint8[3]` | MUST be `0x00`. |
-| `buffer_index` | `uint32` | Index of the data buffer in the buffer table that holds this region. |
-| `region_byte_offset` | `uint64` | Byte offset within the referenced buffer to the start of this region's data. |
-| `region_layout_length` | `uint32` | Byte count of the inner layout payload that follows. MUST be `0` for `region_layout_tag` values `0x01` and `0x02`. |
-| `region_layout_payload` | `bytes[region_layout_length]` | Layout-specific fields for `region_layout_tag`, encoded identically to the Layout-Specific Fields section above for that tag, with the tag byte omitted. |
-
-Recursive subpaving (`region_layout_tag = 0x06`) is permitted. A reader MUST
-reject any descriptor where the subpaving nesting depth exceeds 8 levels.
-
-### COO (`0x07`)
+### COO (`0x06`)
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -197,7 +177,7 @@ reject any descriptor where the subpaving nesting depth exceeds 8 levels.
 See `layouts/coo.md` for buffer table composition, storage order, and validity
 constraints.
 
-### CSR (`0x08`)
+### CSR (`0x07`)
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -207,7 +187,7 @@ constraints.
 See `layouts/csr.md` for buffer table composition, storage invariants, and
 rank-2 restriction.
 
-### CSC (`0x09`)
+### CSC (`0x08`)
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -223,6 +203,21 @@ rank-2 restriction.
 |-------|------|-------------|
 | `hilbert_order` | `uint32` | Order of the Hilbert curve. MUST be greater than 0. |
 | `hilbert_rank` | `uint32` | Number of curve dimensions. MUST equal `rank`. MUST be greater than or equal to 2. |
+
+### Composite / Virtual (`0x0B`)
+
+The composite head is a **virtual** (data-less) descriptor. Its layout-specific fields
+encode the composition rule. All multi-byte fields are little-endian.
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `composition_rule` | `uint8` | `0x01` partition, `0x02` overlay, `0x03` group. `0x00` and `0x04`–`0xEF` reserved; `0xF0`–`0xFE` private; `0xFF` invalid. |
+| `combine_op` | `uint8` | Overlay only: `0x01` replace, `0x02` add. MUST be `0x00` for partition and group. |
+| `_reserved` | `uint8[2]` | MUST be `0x00`. |
+| `member_count` | `uint32` | Number of member tensors that immediately follow the head. MUST be a definite count. The value `0xFFFFFFFF` (open composite) is RESERVED; a strict reader MUST reject it. |
+
+A composite head MUST have `buffer_count = 0x00` and `byte_offset = 0x0000000000000000`.
+See `layouts/composite.md` for members, binding, composition semantics, and validation.
 
 ### Extension Layouts (`0xF0`–`0xFE`)
 
@@ -243,7 +238,7 @@ Immediately following the layout-specific fields, the buffer table is encoded.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `buffer_count` | `uint8` | Number of buffer handles. MUST be at least 1. For dense layout tags (`0x01`–`0x06`, `0x40`) without quantization, MUST be exactly `0x01`. For quantized dense tensors, MUST equal `0x01` plus the number of quantization-parameter buffers required by the active scheme (see `quantization.md` § Buffer Table Placement Rules). |
+| `buffer_count` | `uint8` | Number of buffer handles. MUST be at least 1 for every layout except the composite head (`layout_tag = 0x0B`), for which it MUST be exactly `0x00` (a composite head owns no data; see `layouts/composite.md`). For dense layout tags (`0x01`–`0x05`, `0x40`) without quantization, MUST be exactly `0x01`. For quantized dense tensors, MUST equal `0x01` plus the number of quantization-parameter buffers required by the active scheme (see `quantization.md` § Buffer Table Placement Rules). |
 
 The maximum value is `255`, imposed by the `uint8` wire type. This limit applies
 to the sum of data and quantization-parameter buffers. Implementations that
@@ -262,7 +257,7 @@ The `_reserved` bytes MUST be `0x00`. A conforming reader in strict mode MUST
 reject a descriptor containing any buffer handle whose `_reserved` bytes are not
 all `0x00`.
 
-> **Note (non-normative):** For sparse layout tags (COO `0x07`, CSR `0x08`, CSC `0x09`, CSF `0x0A`), `buffer_count` exceeds 1 — each entry holds a distinct component array (values, indices, pointers). For CSF the count is rank-dependent, `2·rank + 1` (one `values` buffer plus a `pos`/`crd` pair per level). For quantized dense tensors, quantization-parameter buffers (scales, zero-points) extend the buffer table beyond the layout baseline. The layout-defined minimum is always `0x01` for dense layouts; quantization schemes append their parameter buffers on top.
+> **Note (non-normative):** For sparse layout tags (COO `0x06`, CSR `0x07`, CSC `0x08`, CSF `0x09`), `buffer_count` exceeds 1 — each entry holds a distinct component array (values, indices, pointers). For CSF the count is rank-dependent, `2·rank + 1` (one `values` buffer plus a `pos`/`crd` pair per level). For quantized dense tensors, quantization-parameter buffers (scales, zero-points) extend the buffer table beyond the layout baseline. The layout-defined minimum is always `0x01` for dense layouts; quantization schemes append their parameter buffers on top.
 
 ---
 
@@ -400,6 +395,31 @@ Sub-byte element widths that are not a power of two (notably `6`-bit) are reserv
 A reader MUST use `bit_width` and `packing_factor` to compute buffer sizes for
 tensors with extension type tags, even if it does not interpret the numeric semantics
 of the type.
+
+---
+
+## Composite Member Section
+
+Present if and only if the `HAS_COMPOSITE_MEMBER` flag (bit 4) is set. It appears after
+the Extension Type section. The section is a fixed-size **16-byte** block. All multi-byte
+fields are little-endian.
+
+| Offset | Field | Type | Description |
+|--------|-------|------|-------------|
+| 0 | `member_role` | `uint8` | `0x00` correction, `0x01` base. `0x02`–`0xFF` RESERVED (a future tombstone kind; see `layouts/composite.md` § Deferred). |
+| 1 | `_reserved` | `uint8[15]` | MUST be `0x00`. |
+
+A reader MUST reject a Composite Member section whose `member_role` is not `0x00` or
+`0x01`, or whose `_reserved` bytes are not all `0x00`.
+
+This section is carried by the **members of an overlay composite** (`composition_rule =
+0x02`). Partition and group members MUST NOT set `HAS_COMPOSITE_MEMBER`. The full
+semantics — base-vs-correction roles, precedence, and the combine operation — are defined
+in `layouts/composite.md`.
+
+> **Note (non-normative):** v1.0 uses `member_role` only. The 15 reserved bytes hold room
+> for a future `member_version` field (versioned overlay), added additively without
+> reallocating the section. See `layouts/composite.md` § Deferred.
 
 ---
 

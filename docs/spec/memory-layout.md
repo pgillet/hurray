@@ -7,7 +7,7 @@
 This section defines how tensor elements are arranged in memory. It specifies the
 addressing model that maps a tensor's logical index space to byte positions within a
 data buffer. Hurray supports a range of memory layouts — from simple contiguous
-arrangements to tiled, space-filling-curve, sparse, and general subpaving layouts —
+arrangements to tiled, space-filling-curve, sparse, and composite (virtual) layouts —
 to accommodate the diverse access patterns required by modern AI/ML inference pipelines.
 
 > **Note (non-normative):** The unifying mathematical concept behind all Hurray dense
@@ -53,12 +53,12 @@ MAY accept the descriptor but MUST NOT dereference or interpret the tensor data 
 | Strided | `0x03` | 1 | Dense | [layouts/strided.md](layouts/strided.md) |
 | Tiled / Blocked | `0x04` | 1 | Dense | [layouts/tiled.md](layouts/tiled.md) |
 | Morton (Z-order) | `0x05` | 1 | Dense | [layouts/morton.md](layouts/morton.md) |
-| General Subpaving | `0x06` | 1 | Dense | [layouts/subpaving.md](layouts/subpaving.md) |
-| COO (Coordinate) | `0x07` | 1 | Sparse | [layouts/coo.md](layouts/coo.md) |
-| CSR (Compressed Sparse Row) | `0x08` | 1 | Sparse | [layouts/csr.md](layouts/csr.md) |
-| CSC (Compressed Sparse Column) | `0x09` | 1 | Sparse | [layouts/csc.md](layouts/csc.md) |
-| CSF (Compressed Sparse Fiber) | `0x0A` | 1 | Sparse | [layouts/csf.md](layouts/csf.md) |
-| Block-paged | `0x0B` | 1 | Indirect | [layouts/block-paged.md](layouts/block-paged.md) |
+| COO (Coordinate) | `0x06` | 1 | Sparse | [layouts/coo.md](layouts/coo.md) |
+| CSR (Compressed Sparse Row) | `0x07` | 1 | Sparse | [layouts/csr.md](layouts/csr.md) |
+| CSC (Compressed Sparse Column) | `0x08` | 1 | Sparse | [layouts/csc.md](layouts/csc.md) |
+| CSF (Compressed Sparse Fiber) | `0x09` | 1 | Sparse | [layouts/csf.md](layouts/csf.md) |
+| Block-paged | `0x0A` | 1 | Indirect | [layouts/block-paged.md](layouts/block-paged.md) |
+| Composite / Virtual | `0x0B` | 1 | Virtual | [layouts/composite.md](layouts/composite.md) |
 | Hilbert curve | `0x40` | 2 | Dense | [layouts/hilbert.md](layouts/hilbert.md) |
 
 The **Type** column classifies each layout's addressing model:
@@ -70,6 +70,8 @@ The **Type** column classifies each layout's addressing model:
 - **Indirect** — every logical element exists (no implicit zeros), but the mapping from
   a logical index to a physical position is non-affine and resolved through an index
   structure (e.g. a block table) rather than an affine stride formula.
+- **Virtual** — the descriptor owns no data buffers; it presents a logical view assembled
+  from a set of member tensors (the head of a composite; see `layouts/composite.md`).
 
 > **Note (non-normative):** Rows marked "(reserved — planned)" name a tag that is
 > earmarked for a layout whose spec section does not yet exist. A reader treats such a tag
@@ -114,6 +116,9 @@ layouts** (block-paged, and future indirect tags), the concept of a "first eleme
 a fixed offset" does not apply: the first logical element is located through an index
 structure, not at a fixed offset. For these tensors, `byte_offset` MUST be set to
 `0x0000000000000000`.
+
+For the **virtual layout** (composite head, tag `0x0B`), there is no data buffer at all;
+`byte_offset` MUST be set to `0x0000000000000000`. See `layouts/composite.md`.
 
 ---
 
@@ -181,21 +186,25 @@ Every tensor descriptor contains a **buffer table**: an ordered list of buffer h
 The buffer table is encoded as a `uint8` count followed by that many buffer handle
 entries, as defined in `metadata.md`.
 
-For **dense layouts** (tags `0x01`–`0x06`, `0x40`), the buffer table MUST contain at least **one** entry. Non-quantized dense tensors MUST have exactly `buffer_count = 0x01`. Quantized dense tensors MUST have `buffer_count = 0x01` plus the number of quantization-parameter buffers required by the active scheme (see `quantization.md` § Buffer Table Placement Rules).
+For **dense layouts** (tags `0x01`–`0x05`, `0x40`), the buffer table MUST contain at least **one** entry. Non-quantized dense tensors MUST have exactly `buffer_count = 0x01`. Quantized dense tensors MUST have `buffer_count = 0x01` plus the number of quantization-parameter buffers required by the active scheme (see `quantization.md` § Buffer Table Placement Rules).
 
-For **sparse layouts** (tags `0x07`, `0x08`, `0x09`, `0x0A`, and future sparse tags),
+For **sparse layouts** (tags `0x06`, `0x07`, `0x08`, `0x09`, and future sparse tags),
 the buffer table MUST contain the number of entries specified by that layout's
 individual spec file. Each buffer holds a distinct component array (values, indices,
-pointers). Most sparse layouts have a fixed buffer count; CSF (`0x0A`) is the
+pointers). Most sparse layouts have a fixed buffer count; CSF (`0x09`) is the
 exception, with a rank-dependent count of `2 × rank + 1` (see `layouts/csf.md`).
 
-For **indirect layouts** (tag `0x0B`, and future indirect tags), the buffer table
+For **indirect layouts** (tag `0x0A`, and future indirect tags), the buffer table
 MUST contain at least **three** entries (`buffer_count >= 3`): a values buffer plus the
 index/pointer buffers that resolve the logical-to-physical mapping. For block-paged
-(`0x0B`) these are buffer 0 = `page_pool`, buffer 1 = `block_table`, and buffer 2 =
+(`0x0A`) these are buffer 0 = `page_pool`, buffer 1 = `block_table`, and buffer 2 =
 `seq_ptr`. When the tensor is quantized, the quantization-parameter buffers follow at
 indices 3 and up, per `quantization.md` § Buffer Table Placement Rules. See that
 layout's individual spec file for the exact buffer table.
+
+For the **virtual layout** (composite head, tag `0x0B`), the buffer table MUST be empty
+(`buffer_count = 0x00`): the head owns no data and supplies its logical view through its
+member tensors. See `layouts/composite.md`.
 
 ---
 
@@ -243,9 +252,9 @@ An extension layout descriptor MUST include:
 ## Custom Layouts
 
 Any layout expressible as a composition of the named primitives — strides, tiling,
-space-filling curves — using the general subpaving or recursive tiling is
-representable without the extension mechanism. Truly opaque custom layouts MUST use
-extension tags (`0xF0`–`0xFE`) with an out-of-band semantic agreement.
+space-filling curves — using a composite partition (`layouts/composite.md`) or recursive
+tiling is representable without the extension mechanism. Truly opaque custom layouts MUST
+use extension tags (`0xF0`–`0xFE`) with an out-of-band semantic agreement.
 
 ---
 

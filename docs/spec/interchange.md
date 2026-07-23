@@ -395,6 +395,60 @@ that all data frames for the current tensor (or shard) have been sent on this st
 
 ---
 
+## Composite Tensor Streaming
+
+A composite tensor (head + members; see `layouts/composite.md`) is streamed as a
+**forward-adjacency** sequence with no back-reference. The head is an ordinary tensor
+descriptor with `layout_tag = 0x0B` and `buffer_count = 0`, so it is sent as a
+`TENSOR_DESCRIPTOR` message immediately followed by a `TENSOR_DATA_END` (an empty data
+plane — the head owns no buffers). The head's `member_count = N` binds the **next N
+self-delimiting tensors** on the stream, in order, as its members:
+
+```
+TENSOR_DESCRIPTOR        (head, layout_tag = 0x0B, member_count = N)
+TENSOR_DATA_END          (head has no data buffers)
+  TENSOR_DESCRIPTOR      (member 0)
+  TENSOR_DATA  (one or more frames)
+  TENSOR_DATA_END
+  ...
+  TENSOR_DESCRIPTOR      (member N-1)
+  TENSOR_DATA  (one or more frames)
+  TENSOR_DATA_END        (composite "close": the Nth member's TENSOR_DATA_END)
+```
+
+The head's `TENSOR_DESCRIPTOR` MUST precede its members' descriptors, which MUST precede
+their data — a forward promise, never a back-reference. The composite **closes** on the
+Nth member's `TENSOR_DATA_END`; at that point a receiver runs the close-time validation
+for the composition rule (`layouts/composite.md` § Validation).
+
+A member that is itself a composite head (a nested composite) recursively binds its own
+members before the enclosing composite's member count advances; the sequence is parsed
+pre-order, subject to the depth limit in `layouts/composite.md` § Binding.
+
+A receiver MUST reject a composite whose per-member checks fail (send `ERROR` and close
+the stream). A **torn** composite — the stream ends before all N members' `TENSOR_DATA_END`
+messages arrive — is incomplete: a strict receiver MUST reject it; a permissive receiver
+MAY expose the arrived members as independent shard tensors but MUST NOT present the
+composite as complete (`layouts/composite.md` § Validation).
+
+> **Note (non-normative):** The head carries no data, so its `total_data_bytes` in the
+> `TENSOR_DESCRIPTOR` transport fields is `0` and no `TENSOR_DATA` frame is sent for it.
+> Binding is purely positional (member count + stream order); no tensor names or member
+> identifiers are introduced.
+
+> **[OQ-6]:** The § Ordering Invariant states every transferred tensor sends
+> `TENSOR_DATA` "(one or more frames)". A composite head has `buffer_count = 0` and
+> `total_data_bytes = 0`, so it sends **zero** `TENSOR_DATA` frames (as does any tensor
+> with zero total data bytes). ADR-027 does not settle whether the head is an explicit
+> exception to the "one or more frames" wording, or whether that wording should be relaxed
+> generally to "zero or more frames" for any tensor whose `total_data_bytes` is `0`. The
+> two statements are in tension; the intended reconciliation is deferred to
+> `format-spec-writer` / `architect`. Until resolved, a receiver SHOULD accept a
+> `TENSOR_DESCRIPTOR` → `TENSOR_DATA_END` sequence with no intervening `TENSOR_DATA`
+> frames when `total_data_bytes = 0`.
+
+---
+
 ## Parallel Transfers
 
 ### Overview

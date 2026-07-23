@@ -1,6 +1,6 @@
 # COO (Coordinate) Sparse Layout — Hurray Format Specification
 
-**Layout tag:** `0x07` | **Tier:** 1
+**Layout tag:** `0x06` | **Tier:** 1
 
 > This section uses RFC 2119 key words: MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT,
 > SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL.
