@@ -2,7 +2,19 @@
 
 ## Status
 
-Draft
+Accepted — scope limited to **partition**, **group**, and **sealed overlay**.
+
+**Versioned overlay is descoped from v1.0**, deferred to a future ADR: `member_version`,
+the `0xFFFFFFFF` open-composite sentinel, file append + footer regeneration for overlays,
+and time-travel reads. Rationale: that machinery's value is driven almost entirely by the
+array-database vision, which is explicitly long-term/not-current-sprint; it introduces
+unbounded, indefinitely-open cross-descriptor state (no closing verdict, ever) versus the
+bounded, ADR-026-precedented state partition/sealed-overlay already require; and it adds
+file-mutation (append + footer regen) and version-monotonicity machinery to Layers 5–8
+for a use case not yet on the roadmap. Sealed overlay (definite count, stream-order
+precedence, no `member_version`) ships now — it is cheap and delivers SpQR/KVQuant-style
+outlier quantization, an immediate, published use case. See the sections below, each
+annotated where content was trimmed accordingly.
 
 Supersedes: ADR-026 (Subpaving Nested Region Descriptors) — see § Consequences
 Amends the deferral scope of: ADR-010 (Multi-Tensor Collections Deferred)
@@ -43,13 +55,18 @@ layout cannot span:
   serves the array-database vision.
 
 This ADR unifies subpaving, sharding, and grouping under one primitive — the **composite
-tensor** — adds the overlay model, and specifies **versioned overlay** (partial updates +
-time travel) as a first-class v1.0 feature.
+tensor** — and adds the overlay model. **Originally proposed** (2026-07-07 Draft) to also
+specify **versioned overlay** (partial updates + time travel) as a first-class v1.0 feature;
+on review (see § Status) that half is descoped to a future ADR, since the array-database use
+case it serves is explicitly long-term rather than current, and it is the one part of this
+design that introduces unbounded, file-mutating state. What ships in v1.0 is partition,
+group, and **sealed** (non-versioned) overlay.
 
 Constraints preserved: streamability (descriptors precede data; self-delimiting; no
 back-references; no end-of-file index); zero-copy; 64-byte alignment; language-agnostic
 naming; RFC 2119; the ADR-017/019 extensibility and evolvability contracts (for *future*,
-post-1.0 additions — everything in this ADR ships in the initial v1.0 format, as the format
+post-1.0 additions — everything in this ADR's v1.0 scope ships in the initial v1.0 format, as
+the format
 is pre-release).
 
 ## Decision
@@ -78,7 +95,7 @@ The head's layout-specific fields encode the composition rule:
 | `composition_rule` | `uint8` | `0x01` partition, `0x02` overlay, `0x03` group. `0x00` and `0x04`–`0xEF` reserved; `0xF0`–`0xFE` private; `0xFF` invalid. |
 | `combine_op` | `uint8` | Overlay only: `0x01` replace (last-wins), `0x02` add. MUST be `0x00` for partition and group. |
 | `_reserved` | `uint8[2]` | MUST be `0x00`. |
-| `member_count` | `uint32` | Number of member tensors that immediately follow. The sentinel `0xFFFFFFFF` denotes an **open composite** (see D3); it is permitted only for overlay. |
+| `member_count` | `uint32` | Number of member tensors that immediately follow. **v1.0: MUST be a definite count for all composition rules, including overlay.** The sentinel `0xFFFFFFFF` (an **open composite**, see D3) is RESERVED — a strict v1.0 reader MUST reject it; open composites are deferred to a future ADR. |
 
 ### D2 — Members are ordinary tensor descriptors positioned by the shard section
 
@@ -95,9 +112,14 @@ Type section):
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `member_version` | `uint64` | Logical version (writer-controlled). MUST be non-decreasing in emission/stream order (D6). |
 | `member_role` | `uint8` | `0x00` correction, `0x01` base. `0x02`–`0xFF` reserved (see § Deferred: tombstones). |
-| `_reserved` | `uint8[7]` | MUST be `0x00`. |
+| `_reserved` | `uint8[15]` | MUST be `0x00`. |
+
+**v1.0 carries `member_role` only.** `member_version` is deferred: a sealed overlay's
+precedence is plain stream/emission order (last-wins under `combine_op = replace`), so no
+explicit version field is needed until versioned overlay (time-travel) is taken up. The
+reserved padding leaves room for a future ADR to add `member_version` as an additive field
+under the ADR-017/019 evolvability contract, without reallocating the section.
 
 Partition and group members do not carry this section. This is the crux of the unification:
 **a region ≡ a shard ≡ a member.** Per-member layout, buffers, quantization, statistics, and
@@ -108,7 +130,7 @@ ADR-026 D5 had to forbid or defer.
 > without a head. The head *upgrades* an ephemeral shard set into a persistent,
 > composition-typed collection.
 
-### D3 — Binding: forward stream adjacency, no new namespace; open vs sealed composites
+### D3 — Binding: forward stream adjacency, no new namespace, all v1.0 composites definite-count
 
 A head with a **definite** `member_count = N` binds the **next N self-delimiting tensors** in
 stream / file write order as its members. This is a **forward** promise (head precedes
@@ -123,20 +145,15 @@ writers and introduces no name namespace. It works uniformly across transports:
   region; every tensor gets a footer-index entry; membership is recovered from the head's
   `member_count` plus descriptor-offset order (preserved regardless of `SORTED_INDEX`).
 
-**Open composites (versioning).** An overlay head MAY set `member_count = 0xFFFFFFFF`,
-declaring an **open, appendable** composite. Membership is delimited by:
+**Open composites — deferred.** The `0xFFFFFFFF` open-composite sentinel and its
+append-oriented membership-delimitation rules (maximal run of Composite-Member-tagged
+tensors; file tensor-region delimitation between heads) are reserved for a future ADR
+(versioned overlay). **All v1.0 composites — partition, group, and overlay — use a
+definite `member_count`,** bound uniformly by the forward-adjacency rule above.
 
-- **Stream:** the maximal run of consecutive following tensors, each carrying a Composite
-  Member section, immediately after the open head. The first following tensor lacking a
-  Composite Member section (including any head) ends the run; stream/session close also ends
-  it. Single-pass, self-delimiting, no back-reference.
-- **File:** the tensor-region entries between this head and the next head or the end of the
-  tensor region.
-
-Partition and group composites MUST use a definite count. Nested composites are permitted for
-definite-count composites (pre-order parse, depth cap 8); an **open** overlay's members MUST
-be leaf tensors (no nested composite members). Explicit member identifiers for out-of-order
-random access are not defined in this version (see Deferred).
+Nested composites are permitted for definite-count composites (pre-order parse, depth cap
+8). Explicit member identifiers for out-of-order random access are not defined in this
+version (see Deferred).
 
 ### D4 — Composition semantics
 
@@ -145,10 +162,11 @@ overlap (ADR-026 D6 validation, evaluated across members). Each logical index be
 exactly one member, so the composite view is **zero-copy**: value lookup = box selection +
 that member's own addressing. This is subpaving semantics as a collection.
 
-**Overlay (`0x02`).** One member is the **base** (`member_role = 0x01`, the first member, box
-spanning the whole space); the rest are **corrections** whose boxes MAY overlap. See D6 for
-versioning, precedence, and reads. Per-member storage is zero-copy; the *merged logical view*
-is computed by the consumer (exactly as SpQR/KVQuant-aware and array-DB kernels operate).
+**Overlay (`0x02`, v1.0: sealed only).** One member is the **base** (`member_role = 0x01`,
+the first member, box spanning the whole space); the rest are **corrections** whose boxes
+MAY overlap. See D6 for precedence and reads. Per-member storage is zero-copy; the *merged
+logical view* is computed by the consumer (exactly as SpQR/KVQuant-aware and array-DB
+kernels operate).
 
 **Group (`0x03`).** Unordered, no spatial semantics; members are independent tensors under one
 head identity (multi-output inference). The head's `shape`/`type_tag` are advisory; members
@@ -162,62 +180,36 @@ sparse (COO). Overlay combine happens in `float16`. Dequantization already yield
 real-valued view, so this needs no new machinery. Composite versioning changes **values over
 a fixed index space**; shape evolution is out of scope.
 
-### D6 — Versioned overlay: partial updates and time travel (v1.0)
+### D6 — Sealed overlay: precedence, combine, and reads (v1.0)
 
-Overlay composites provide tensor data versioning.
+**Precedence (single-pass friendly, no explicit version).** Precedence is **emission/stream
+order — later wins**: writers emit the base first, then corrections in the order they take
+effect. A single-pass reader applies members as they arrive; no version field or reordering
+is needed. (A future ADR may reintroduce an explicit `member_version` for time-travel — see
+Status.)
 
-**Version carrier.** Each overlay member carries a `member_version: uint64` in its Composite
-Member section (D2). It is a **logical sequence number**, writer-controlled — not a wall-clock
-timestamp (simpler, reproducible, no clock skew; applications needing wall-clock time MAY
-record it in file-format KV metadata). The base has the lowest version; corrections carry
-increasing versions. Multiple members MAY share a version (one logical update spanning several
-boxes).
+**Reads.** Apply the base, then all corrections in emission order, under `combine_op`
+(replace: the topmost member covering an index wins within its box; add: base plus the sum
+of covering corrections), evaluated in the head's element type. A correction's box
+replaces/adds within its box only; outside it, lower-precedence members (down to the base)
+show through.
 
-**Precedence (single-pass friendly).** Writers MUST emit members in **non-decreasing
-`member_version` order** (base first). Precedence is therefore **emission/stream order —
-later wins** — and a reader applying members in stream order automatically applies them in
-version order. Explicit versions are used for the time-travel cutoff, not for reordering.
+**`combine_op` for v1.0.** Both `0x01` replace and `0x02` add are defined. Replace is the
+default (a region overwrite); add serves residual/outlier overlays (e.g. SpQR/KVQuant).
 
-**Reads.**
-
-- **Current view:** apply the base, then all corrections in emission order, under `combine_op`
-  (replace: the topmost member covering an index wins within its box; add: base plus the sum
-  of covering corrections), evaluated in the head's element type.
-- **Time-travel view as of version `V`:** apply the base plus only corrections with
-  `member_version <= V`, in emission order. Because emission order respects version order, a
-  single-pass reader simply stops at the first member with `member_version > V`.
-- **Partial update:** a correction's box replaces/adds within its box only; outside it,
-  lower-precedence members (down to the base) show through.
-
-**`combine_op` firmed for v1.0.** Both `0x01` replace and `0x02` add are defined. Replace is
-the default and the dominant versioning semantic (a partial update overwrites a region); add
-serves residual/outlier overlays.
-
-**Open (appendable) vs sealed (snapshot).** An open overlay (`member_count = 0xFFFFFFFF`,
-D3) is an append-only version log: the head, once written, is **immutable**, and history grows
-by appending members after it. A sealed overlay (definite count) is a complete history
-snapshot and is not appendable without rewriting the head. Appendable/versioned overlays MUST
-use the open sentinel.
-
-**File append story.** Appending a new version to an open overlay in an `HRRYFILE` =
-write the new member's descriptor+data into the tensor region (after all existing tensors,
-before the footer), then **regenerate the footer** (KV + index + trailer, relocated to the new
-EOF). Existing tensor bytes and their absolute offsets, the head, and all prior members are
-**unchanged** — immutability is preserved; only the footer is rewritten (an additive index
-entry plus a moved trailer). This is a single fresh footer pass over the extended file,
-consistent with `file-format.md`'s no-backward-seek writer.
+**Sealed only.** A v1.0 overlay is a complete snapshot: definite `member_count`, not
+appendable without rewriting the head (D3). Versioned/appendable overlay is deferred.
 
 **Deletes.** Logical delete (reverting a region to base, or masking it) is **out of scope for
-v1.0**, stated explicitly. A region is reverted by writing a new correction (at a higher
-version) carrying the desired values. A tombstone member kind (`member_role = 0x02`,
-data-less, revert-to-base-within-box) is reserved for a future addition (the role byte is
-already present).
+v1.0**, stated explicitly. A region is reverted by writing a new correction carrying the
+desired values. A tombstone member kind (`member_role = 0x02`, data-less, revert-to-base-
+within-box) is reserved for a future addition (the role byte is already present).
 
-### D5 — Validation: cross-member, stateful; every prefix of an open overlay is valid
+### D5 — Validation: cross-member, stateful, bounded
 
 Per-member checks are immediate: shard `parent_shape` == head `shape`; box in bounds; decoded
 dtype == head `type_tag`; `combine_op` legal for the rule; for overlay, the Composite Member
-section is present and `member_version` is non-decreasing; the first overlay member is the base
+section is present with a valid `member_role`; the first overlay member is the base
 (`role = 0x01`) and spans the index space.
 
 Close-time checks depend on the rule:
@@ -226,17 +218,18 @@ Close-time checks depend on the rule:
   over the N boxes (ADR-026 D6: volume-sum + sweep/pairwise). Overlap or a gap → reject.
 - **Sealed overlay (definite count):** close at the Nth member; base-spans is checked at the
   first member; overlap is legal; no exact-cover.
-- **Open overlay (`0xFFFFFFFF`):** there is no close and no completeness verdict. Per-member
-  checks and the first-member base-spans check are the entire validation surface. **Every
-  prefix of the history is itself a valid composite** (as of its last version) — a log-
-  structured resilience property: a truncated open-overlay stream is not an error, it is a
-  valid earlier snapshot.
+- **Group (definite count):** close at the Nth member; no coverage or overlap check (members
+  MAY differ arbitrarily, D4).
+
+All v1.0 composition rules use a definite count, so all validation is **bounded**: a reader
+accumulates state only up to the known N, reaches one verdict at the Nth member, and is done.
+(Open, unbounded, every-prefix-valid overlay validation is deferred — see Status.)
 
 Failure semantics: a per-member violation MUST cause rejection of the composite (network
-stream: `ERROR` + close). A **torn definite-count group** (stream ends before N members) is
-incomplete: a strict reader MUST reject it; a permissive reader MAY expose the arrived members
-as independent shard tensors but MUST NOT present the composite as complete. A torn **open**
-overlay is valid up to its last complete member (per the prefix property above).
+stream: `ERROR` + close). A **torn definite-count composite** (stream ends before N members,
+of any composition rule) is incomplete: a strict reader MUST reject it; a permissive reader
+MAY expose the arrived members as independent shard tensors but MUST NOT present the
+composite as complete.
 
 ## Alternatives Considered
 
@@ -252,19 +245,22 @@ head has no data, so any real `layout_tag` would misdescribe it; a Virtual tag `
 reintroduces the namespace ADR-010 warned against; forward adjacency binds streamably without
 it. Left as a Deferred item for out-of-order random access.
 
-**Wall-clock timestamps as the version axis (TileDB-style).** Rejected: a writer-controlled
-logical sequence number is simpler, reproducible, and skew-free; wall-clock time, if needed,
-goes in KV metadata.
+**Wall-clock timestamps as the version axis (TileDB-style).** Considered for a future
+versioned-overlay ADR; not part of v1.0 (no version axis ships at all — see Status). A
+writer-controlled logical sequence number would be simpler, reproducible, and skew-free than
+wall-clock time if/when versioning is taken up; wall-clock time, if needed, would go in KV
+metadata.
 
-**Version via member ordinal only (implicit version = position).** Rejected: an explicit
-`member_version` gives a stable, addressable time-travel key, allows several members to share
-one logical version, and survives re-serialization; the non-decreasing-emission-order rule
-keeps single-pass reading as simple as the ordinal scheme.
+**Explicit `member_version` for v1.0 (implicit version = position, rejected in the other
+direction).** Considered and **descoped**: an explicit version field would give a stable,
+addressable time-travel key, but time-travel is not a v1.0 feature, so the field would be
+dead weight. v1.0 uses plain emission order (D6). Left as future work alongside the open
+sentinel.
 
 **Sealed fixed-count composites only, with versioning via external file conventions.**
-Rejected: appending a correction would require rewriting the head (violating immutability and
-requiring a backward seek). The open sentinel makes the head immutable and the history
-append-only.
+This is effectively what v1.0 ships (sealed-only overlay, no version axis). A true append-only
+version log (open sentinel, immutable head, footer-regeneration append) remains the better
+design *if and when* versioning is taken up — descoped here, not rejected outright.
 
 **Keep ADR-026's trimmed "descriptor-tail" region profile for inline 0x06.** Rejected in favour
 of a region being a *full* nested descriptor with a shard section, so inline-region ≡ member
@@ -310,75 +306,75 @@ composition structure, not arbitrary metadata. ADR-010's core decision (no named
 ### Scope, layers touched, and schedule cost (honest)
 
 **Lands in v1.0 (spec + hurray-core):** the `0x0C` head descriptor; the composition-rule
-payload codec; the open-composite sentinel; the `HAS_COMPOSITE_MEMBER` section and its codec;
+payload codec; the `HAS_COMPOSITE_MEMBER` section and its codec (`member_role` only);
 shard-based member positioning (shard section already exists); the cross-member stateful
-validator (a `CompositeValidator` accumulating member boxes + a version/precedence check); and
-the versioned-overlay read model as a *specified* semantic (the merge itself is a consumer
-concern). This is a bounded addition to the Layer-4 core; it does **not** materially delay
-Layers 0–4.
+validator (a `CompositeValidator` accumulating member boxes, bounded to a definite count);
+and the sealed-overlay read model (current view only) as a *specified* semantic (the merge
+itself is a consumer concern). This is a bounded addition to the Layer-4 core; it does
+**not** materially delay Layers 0–4.
 
 **Staged with their layers (not pulled forward):**
 
-- **Layer 5 (streaming):** head→member adjacency; the open-overlay member run and its
-  termination; composite "close" (definite counts) on the Nth `TENSOR_DATA_END`; reuse of
-  shard-consistency validation.
-- **Layer 6 (file):** head + members as consecutive index entries; open-overlay membership by
-  tensor-region delimitation; the **append + footer-regeneration** flow for versioned
-  overlays; time-travel reads by scanning member versions in the index.
-- **Layer 7 (FFI):** a composite handle kind (head handle + member iterator; a version-cutoff
-  read parameter for overlays).
-- **Layer 8 (Python):** a `CompositeTensor` view; `__dlpack__` per member; overlay current /
-  as-of-`V` views materialised on demand.
+- **Layer 5 (streaming):** head→member adjacency; composite "close" (definite counts) on the
+  Nth `TENSOR_DATA_END`; reuse of shard-consistency validation.
+- **Layer 6 (file):** head + members as consecutive index entries.
+- **Layer 7 (FFI):** a composite handle kind (head handle + member iterator).
+- **Layer 8 (Python):** a `CompositeTensor` view; `__dlpack__` per member; overlay current
+  view materialised on demand.
 
-**Deferred (Open Questions):** explicit member IDs / out-of-order random access; wall-clock
-timestamp versioning; tombstone / logical-delete (`member_role = 0x02`); inline 0x06
-compaction; nested composites inside open overlays; heterogeneous per-member device placement.
+**Deferred (Open Questions):** versioned/open overlay in full — `member_version`, the
+`0xFFFFFFFF` sentinel, append + footer-regeneration, time-travel reads (see Status; the
+primary deferral); explicit member IDs / out-of-order random access; wall-clock timestamp
+versioning; tombstone / logical-delete (`member_role = 0x02`); inline 0x06 compaction;
+nested composites inside open overlays; heterogeneous per-member device placement.
 
 **Schedule statement:** ADR-027 replaces (does not add to) the ADR-026 partition
-implementation budget and is likely smaller there; but it introduces a persistent grouping +
-versioning concept threading through Layers 5–8 (notably the file append/footer-regeneration
-and version-cutoff read paths). The v1.0 core work is bounded and non-blocking; the
-transport/binding cost is real and is paid incrementally as those layers are built.
+implementation budget and is smaller there. With versioned overlay descoped, it introduces a
+persistent grouping concept (bounded, definite-count binding + close-time validation) across
+Layers 5–8, but not the open-ended file append/footer-regeneration or version-cutoff read
+paths — those are deferred with the feature that needed them. The v1.0 transport/binding
+cost is therefore comparable in shape to partition's, not materially larger.
 
 ### Positive
 
 - One primitive unifies subpaving, sharding, and grouping; overlay (SpQR/KVQuant) is
-  first-class; **versioned overlay delivers array-database region/partial updates and
-  time-travel reads** with a log-structured, every-prefix-valid history.
+  first-class as a sealed snapshot.
 - Per-member dtype/layout/quantization/statistics/device come from existing machinery.
-- Streamable (forward adjacency; open-overlay append preserves immutability), zero-copy per
-  member, no new namespace.
+- Streamable (forward adjacency), zero-copy per member, no new namespace.
+- Bounded, definite-count validation for every v1.0 composition rule (D5) — no open-ended
+  state, no file-mutation story, kept out of v1.0 until actually needed.
 
 ### Negative / obligations
 
-- A persistent, cross-descriptor, stateful validation + framing concept (now including a
-  version axis and open-ended membership) is new to Layers 5–8.
-- Versioned-overlay file append requires footer regeneration (append + rewrite trailer/index),
-  not a pure in-place append.
-- Overlay's merged/time-travel view is consumer-computed, not zero-copy at the composite level.
+- A persistent, cross-descriptor, stateful validation + framing concept (head→member
+  binding; partition's coverage check; sealed-overlay's base-span check) is new to
+  Layers 5–8, though bounded to a definite count in every case.
+- Overlay's merged view is consumer-computed, not zero-copy at the composite level.
 
 ### Risks
 
-- **Open-overlay membership ambiguity on a stream** — mitigated by the "maximal run of
-  Composite-Member-tagged tensors, terminated by any head/plain tensor/close" rule (D3).
-- **Torn history** — mitigated by the every-prefix-valid property (D5); a truncated open
-  overlay is a valid earlier snapshot.
 - **Overlay misread as zero-copy** — mitigated by the explicit "structure described, merge
   computed" statement (D4/D6).
-- **Scope creep into a general versioned DB** — mitigated by scoping deletes and wall-clock
-  timestamps out, keeping ADR-010's named-archive deferral intact, and bounding composites to
-  composition + a logical version axis.
+- **Scope creep into a general versioned DB** — mitigated directly by descoping the version
+  axis, the open sentinel, and file append/footer-regeneration from v1.0 entirely (see
+  Status), not merely by scoping out deletes and wall-clock timestamps as before.
+- **Deferred work resurfaces as a rushed addition later** — versioned overlay is real,
+  array-DB-vision-serving work, not abandoned; when it's picked up it should get its own ADR,
+  research pass, and spec-checker audit rather than being reconstituted ad hoc.
 
 ## Compatibility Impact
 
-Hurray is **pre-release**; this ADR ships entirely within the initial **v1.0** format. Tag
-`0x0C`, descriptor flag bit 4 (`HAS_COMPOSITE_MEMBER`) and its section, the `buffer_count = 0`
-head rule, `combine_op`, the open-composite sentinel, and versioned overlay are all part of
-v1.0 — no minor-version increment is involved. The ADR-017/019 evolvability contract governs
-only **future, post-1.0** additions listed under Deferred (member IDs, tombstones, inline
-0x06, wall-clock timestamps), each of which would be an additive minor that rebinds no v1.0
-value. Supersedes ADR-026; leaves ADR-004 and ADR-010's core decisions intact.
+Hurray is **pre-release**; the scope of this ADR that ships within the initial **v1.0**
+format is: tag `0x0C`, descriptor flag bit 4 (`HAS_COMPOSITE_MEMBER`) and its section
+(`member_role` only), the `buffer_count = 0` head rule, and `combine_op` — for partition,
+group, and **sealed** overlay only. No minor-version increment is involved. **The
+`0xFFFFFFFF` open-composite sentinel and `member_version` are RESERVED, not usable in
+v1.0**, and are deferred to a future ADR alongside the rest of the Deferred list (member
+IDs, tombstones, inline 0x06, wall-clock timestamps) — each an additive minor under the
+ADR-017/019 evolvability contract that rebinds no v1.0 value. Supersedes ADR-026; leaves
+ADR-004 and ADR-010's core decisions intact.
 
 ## Date
 
-2026-07-07
+2026-07-07 (Draft); scope narrowed and Accepted 2026-07-23 (versioned overlay descoped —
+see § Status)
