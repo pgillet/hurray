@@ -1,6 +1,6 @@
 //! CSF (Compressed Sparse Fiber) layout descriptor.
 //!
-//! Tag `0x0A`. Rank MUST be ≥ 3. Buffer count = 2·rank+1 (values + rank pos arrays + rank crd arrays).
+//! Tag `0x09`. Rank MUST be ≥ 3. Buffer count = 2·rank+1 (values + rank pos arrays + rank crd arrays).
 //! See `docs/spec/layouts/csf.md`.
 
 /// Descriptor for the CSF (Compressed Sparse Fiber) sparse layout.
@@ -38,7 +38,7 @@
 /// // Rank-3 sparse tensor with 4 non-zeros, identity mode_order.
 /// let layout = CsfLayout::new(4, vec![0, 1, 2]);
 /// let desc = LayoutDescriptor::Csf(layout);
-/// assert_eq!(desc.tag(), 0x0A);
+/// assert_eq!(desc.tag(), 0x09);
 /// // 2*rank+1 = 2*3+1 = 7 buffers.
 /// assert_eq!(desc.buffer_count().map(|n| n.get()), Some(7));
 /// ```
@@ -94,18 +94,18 @@ mod tests {
 
     // ── Tag ──────────────────────────────────────────────────────────────────
 
-    /// Spec §csf.md: layout tag MUST be 0x0A.
+    /// Spec §csf.md: layout tag MUST be 0x09.
     #[test]
-    fn csf_tag_is_0x0a() {
+    fn csf_tag_is_0x09() {
         let layout = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2]));
-        assert_eq!(layout.tag(), 0x0A);
+        assert_eq!(layout.tag(), 0x09);
     }
 
     /// Tag is independent of nnz and mode_order content.
     #[test]
-    fn csf_tag_is_0x0a_for_varying_nnz_and_permutation() {
+    fn csf_tag_is_0x09_for_varying_nnz_and_permutation() {
         let layout = LayoutDescriptor::Csf(CsfLayout::new(999, vec![2, 0, 1, 3]));
-        assert_eq!(layout.tag(), 0x0A);
+        assert_eq!(layout.tag(), 0x09);
     }
 
     // ── Buffer count ─────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 //! CSC (Compressed Sparse Column) layout descriptor.
 //!
-//! Tag `0x09`. Rank MUST be 2. Buffer count = 3 (values + row_indices + col_ptr).
+//! Tag `0x08`. Rank MUST be 2. Buffer count = 3 (values + row_indices + col_ptr).
 //! See `docs/spec/layouts/csc.md`.
 
 /// Descriptor for the CSC (Compressed Sparse Column) sparse layout.
@@ -27,7 +27,7 @@
 /// use hurray_core::layout::{CscLayout, LayoutDescriptor};
 ///
 /// let layout = LayoutDescriptor::Csc(CscLayout::new(5));
-/// assert_eq!(layout.tag(), 0x09);
+/// assert_eq!(layout.tag(), 0x08);
 /// assert_eq!(layout.buffer_count().map(|n| n.get()), Some(3));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -59,9 +59,9 @@ mod tests {
     use crate::layout::LayoutDescriptor;
 
     #[test]
-    fn csc_tag_is_0x09() {
+    fn csc_tag_is_0x08() {
         let layout = LayoutDescriptor::Csc(CscLayout::new(0));
-        assert_eq!(layout.tag(), 0x09);
+        assert_eq!(layout.tag(), 0x08);
     }
 
     #[test]

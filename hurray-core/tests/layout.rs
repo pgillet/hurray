@@ -14,10 +14,10 @@ use hurray_core::{
         addressing::csf as csf_addressing, is_invalid_tag, is_private_tag, is_reserved_tag,
         validate_layout_tag_strict, BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout,
         CsfLayout, CsrLayout, HilbertLayout, InnerStrides, KvRole, LayoutDescriptor, MortonLayout,
-        OuterStrides, PrivateExtensionLayout, RegionDescriptor, StridedLayout, SubpavingLayout,
-        TiledLayout, UnknownLayout, MAX_TILED_DEPTH, PRIVATE_LAYOUT_TAG_MAX,
-        PRIVATE_LAYOUT_TAG_MIN, TAG_BLOCK_PAGED, TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSF, TAG_CSR,
-        TAG_HILBERT, TAG_MORTON, TAG_ROW_MAJOR, TAG_STRIDED, TAG_SUBPAVING, TAG_TILED,
+        OuterStrides, PrivateExtensionLayout, StridedLayout, TiledLayout, UnknownLayout,
+        MAX_TILED_DEPTH, PRIVATE_LAYOUT_TAG_MAX, PRIVATE_LAYOUT_TAG_MIN, TAG_BLOCK_PAGED,
+        TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSF, TAG_CSR, TAG_HILBERT, TAG_MORTON, TAG_ROW_MAJOR,
+        TAG_STRIDED, TAG_TILED,
     },
     BufferHandle, DeviceTag, ElementType, Error, Shape, SyncMode, DYNAMIC, MIN_BUFFER_ALIGNMENT,
 };
@@ -26,10 +26,6 @@ use hurray_core::{
 
 fn shape(dims: &[u64]) -> Shape {
     Shape::new(dims.to_vec()).expect("valid shape in test helper")
-}
-
-fn simple_region_2d() -> RegionDescriptor {
-    RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0).expect("valid region in test helper")
 }
 
 // ── ADR-013 invariant 1: tag() returns the correct wire byte ─────────────────
@@ -42,10 +38,11 @@ fn tag_values_match_spec_constants() {
     assert_eq!(TAG_STRIDED, 0x03);
     assert_eq!(TAG_TILED, 0x04);
     assert_eq!(TAG_MORTON, 0x05);
-    assert_eq!(TAG_SUBPAVING, 0x06);
-    assert_eq!(TAG_COO, 0x07);
-    assert_eq!(TAG_CSR, 0x08);
-    assert_eq!(TAG_CSC, 0x09);
+    assert_eq!(TAG_COO, 0x06);
+    assert_eq!(TAG_CSR, 0x07);
+    assert_eq!(TAG_CSC, 0x08);
+    assert_eq!(TAG_CSF, 0x09);
+    assert_eq!(TAG_BLOCK_PAGED, 0x0A);
     assert_eq!(TAG_HILBERT, 0x40);
 }
 
@@ -78,24 +75,18 @@ fn morton_tag_is_0x05() {
 }
 
 #[test]
-fn subpaving_tag_is_0x06() {
-    let sp = SubpavingLayout::new(vec![simple_region_2d()]).unwrap();
-    assert_eq!(LayoutDescriptor::Subpaving(sp).tag(), 0x06);
+fn coo_tag_is_0x06() {
+    assert_eq!(LayoutDescriptor::Coo(CooLayout::new(0, false)).tag(), 0x06);
 }
 
 #[test]
-fn coo_tag_is_0x07() {
-    assert_eq!(LayoutDescriptor::Coo(CooLayout::new(0, false)).tag(), 0x07);
+fn csr_tag_is_0x07() {
+    assert_eq!(LayoutDescriptor::Csr(CsrLayout::new(0)).tag(), 0x07);
 }
 
 #[test]
-fn csr_tag_is_0x08() {
-    assert_eq!(LayoutDescriptor::Csr(CsrLayout::new(0)).tag(), 0x08);
-}
-
-#[test]
-fn csc_tag_is_0x09() {
-    assert_eq!(LayoutDescriptor::Csc(CscLayout::new(0)).tag(), 0x09);
+fn csc_tag_is_0x08() {
+    assert_eq!(LayoutDescriptor::Csc(CscLayout::new(0)).tag(), 0x08);
 }
 
 #[test]
@@ -122,7 +113,7 @@ fn private_extension_tag_passthrough_all_valid_values() {
 /// Unknown tag is passed through verbatim (permissive mode).
 #[test]
 fn unknown_tag_passthrough() {
-    // Use a reserved-range tag (not 0x0A which is now TAG_CSF).
+    // Use a reserved-range tag (0x0A is now TAG_BLOCK_PAGED, the last named tag).
     let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![0xDE, 0xAD]).unwrap());
     assert_eq!(d.tag(), 0x0C);
 }
@@ -159,15 +150,6 @@ fn tiled_buffer_count_is_1() {
 fn morton_buffer_count_is_1() {
     let d = LayoutDescriptor::Morton(MortonLayout::new(vec![2]).unwrap());
     assert_eq!(d.buffer_count(), NonZeroU8::new(1));
-}
-
-#[test]
-fn subpaving_buffer_count_is_1() {
-    let sp = SubpavingLayout::new(vec![simple_region_2d()]).unwrap();
-    assert_eq!(
-        LayoutDescriptor::Subpaving(sp).buffer_count(),
-        NonZeroU8::new(1)
-    );
 }
 
 #[test]
@@ -223,7 +205,7 @@ fn private_extension_buffer_count_is_none() {
 /// Spec §memory-layout.md §Strict vs Permissive: unknown layout buffer count is None.
 #[test]
 fn unknown_buffer_count_is_none() {
-    // Use a reserved-range tag (not 0x0A which is now TAG_CSF).
+    // Use a reserved-range tag (0x0A is now TAG_BLOCK_PAGED, the last named tag).
     let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![]).unwrap());
     assert!(d.buffer_count().is_none());
 }
@@ -234,7 +216,7 @@ fn unknown_buffer_count_is_none() {
 /// This lets permissive readers pass unrecognized tags through without error.
 #[test]
 fn unknown_can_hold_reserved_tag() {
-    // Reserved range tag: 0x0C (0x0A is now TAG_CSF — a named layout).
+    // Reserved range tag: 0x0C (0x0A is now TAG_BLOCK_PAGED — a named layout).
     let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![]).unwrap());
     assert_eq!(d.tag(), 0x0C);
     assert!(d.buffer_count().is_none());
@@ -281,12 +263,13 @@ fn is_invalid_tag_false_for_all_other_values() {
 
 // ── ADR-013 invariant 5: reserved-range tags rejected (ReservedLayoutTag) ────
 
-/// Spec §memory-layout.md: reserved ranges are 0x0C–0x3F, 0x41–0x7F, 0x80–0xEF.
-/// (0x0A is CSF and 0x0B is block-paged — both are named layout tags.)
+/// Spec §memory-layout.md: reserved ranges are 0x0B–0x3F, 0x41–0x7F, 0x80–0xEF.
+/// (0x0A is block-paged, the last named layout tag in this crate. 0x0B is
+/// reserved for the spec's future Composite layout — not yet implemented here.)
 #[test]
 fn validate_strict_rejects_reserved_range_boundaries() {
-    // First and last of each reserved sub-range (0x0A is now CSF, so range starts at 0x0C).
-    let reserved_boundary_pairs = [(0x0C_u8, 0x3F), (0x41, 0x7F), (0x80, 0xEF)];
+    // First and last of each reserved sub-range (0x0A is now block-paged, so range starts at 0x0B).
+    let reserved_boundary_pairs = [(0x0B_u8, 0x3F), (0x41, 0x7F), (0x80, 0xEF)];
     for (lo, hi) in reserved_boundary_pairs {
         assert!(
             matches!(
@@ -307,8 +290,12 @@ fn validate_strict_rejects_reserved_range_boundaries() {
 
 #[test]
 fn is_reserved_tag_true_for_all_reserved_ranges() {
-    // Spot-check each reserved sub-range (0x0A is now CSF — named tag, not reserved).
-    for tag in [0x0C_u8, 0x20, 0x3F, 0x41, 0x60, 0x7F, 0x80, 0xA0, 0xEF] {
+    // Spot-check each reserved sub-range (0x0B is reserved for the spec's
+    // future Composite layout, unimplemented in this crate — not 0x0A, which
+    // is now block-paged — a named tag).
+    for tag in [
+        0x0B_u8, 0x0C, 0x20, 0x3F, 0x41, 0x60, 0x7F, 0x80, 0xA0, 0xEF,
+    ] {
         assert!(is_reserved_tag(tag), "0x{tag:02X} should be reserved");
     }
 }
@@ -327,8 +314,8 @@ fn is_reserved_tag_false_for_named_and_private_tags() {
 
 /// The tag just before the first reserved range must not be reserved.
 #[test]
-fn tag_0x09_not_reserved() {
-    assert!(!is_reserved_tag(0x09));
+fn tag_0x0a_not_reserved() {
+    assert!(!is_reserved_tag(0x0A));
 }
 
 /// The tag just after the reserved range boundary (0x40, the Hilbert tag) must not be reserved.
@@ -774,147 +761,6 @@ fn csc_nnz_zero_is_valid() {
     assert!(d.validate_against_shape(&shape(&[50, 50])).is_ok());
 }
 
-// ── ADR-013 invariant 10: Subpaving out-of-bounds regions ────────────────────
-
-/// Spec §layouts/subpaving.md: every region MUST lie within the tensor shape.
-#[test]
-fn subpaving_rejects_region_exceeding_first_dimension() {
-    // origin[0]=5, region_shape[0]=4 → end=9 > shape[0]=8
-    let r = RegionDescriptor::new(vec![5, 0], vec![4, 8], 0x01, 0, 0).unwrap();
-    let sp = SubpavingLayout::new(vec![r]).unwrap();
-    assert!(matches!(
-        LayoutDescriptor::Subpaving(sp).validate_against_shape(&shape(&[8, 8])),
-        Err(Error::InvalidLayout(_))
-    ));
-}
-
-#[test]
-fn subpaving_rejects_region_exceeding_second_dimension() {
-    // origin[1]=6, region_shape[1]=4 → end=10 > shape[1]=8
-    let r = RegionDescriptor::new(vec![0, 6], vec![4, 4], 0x01, 0, 0).unwrap();
-    let sp = SubpavingLayout::new(vec![r]).unwrap();
-    assert!(matches!(
-        LayoutDescriptor::Subpaving(sp).validate_against_shape(&shape(&[8, 8])),
-        Err(Error::InvalidLayout(_))
-    ));
-}
-
-/// A region that fits exactly at the boundary (origin+size == shape) must be valid.
-/// Paired with a complementary top region so the subpaving also satisfies full coverage.
-#[test]
-fn subpaving_accepts_region_exactly_at_boundary() {
-    // r_bot: origin=[4,0], region_shape=[4,8] → end=[8,8] == shape=[8,8] (the boundary).
-    let r_top = RegionDescriptor::new(vec![0, 0], vec![4, 8], 0x01, 0, 0).unwrap();
-    let r_bot = RegionDescriptor::new(vec![4, 0], vec![4, 8], 0x01, 0, 256).unwrap();
-    let sp = SubpavingLayout::new(vec![r_top, r_bot]).unwrap();
-    assert!(LayoutDescriptor::Subpaving(sp)
-        .validate_against_shape(&shape(&[8, 8]))
-        .is_ok());
-}
-
-/// A region starting at origin zero filling the whole shape must be valid.
-#[test]
-fn subpaving_single_region_covering_whole_shape() {
-    let r = RegionDescriptor::new(vec![0, 0], vec![8, 8], 0x01, 0, 0).unwrap();
-    let sp = SubpavingLayout::new(vec![r]).unwrap();
-    assert!(LayoutDescriptor::Subpaving(sp)
-        .validate_against_shape(&shape(&[8, 8]))
-        .is_ok());
-}
-
-// ── ADR-013 invariant 11: Subpaving overlapping regions ──────────────────────
-
-/// Spec §layouts/subpaving.md: regions MUST NOT overlap.
-#[test]
-fn subpaving_rejects_two_identical_overlapping_regions() {
-    let r1 = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0).unwrap();
-    let r2 = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 64).unwrap();
-    let sp = SubpavingLayout::new(vec![r1, r2]).unwrap();
-    assert!(matches!(
-        LayoutDescriptor::Subpaving(sp).validate_against_shape(&shape(&[8, 8])),
-        Err(Error::InvalidLayout(_))
-    ));
-}
-
-#[test]
-fn subpaving_rejects_partially_overlapping_regions() {
-    // r1: [0,0]–[4,4]; r2: [2,2]–[6,6]. They overlap in [2,2]–[4,4].
-    let r1 = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0).unwrap();
-    let r2 = RegionDescriptor::new(vec![2, 2], vec![4, 4], 0x01, 0, 64).unwrap();
-    let sp = SubpavingLayout::new(vec![r1, r2]).unwrap();
-    assert!(matches!(
-        LayoutDescriptor::Subpaving(sp).validate_against_shape(&shape(&[8, 8])),
-        Err(Error::InvalidLayout(_))
-    ));
-}
-
-/// Non-overlapping adjacent regions (touching edges) must be accepted.
-#[test]
-fn subpaving_accepts_two_adjacent_non_overlapping_regions() {
-    // r1 covers [0,0]–[4,8]; r2 covers [4,0]–[8,8]. They share the edge row 4 but don't overlap.
-    let r1 = RegionDescriptor::new(vec![0, 0], vec![4, 8], 0x01, 0, 0).unwrap();
-    let r2 = RegionDescriptor::new(vec![4, 0], vec![4, 8], 0x01, 0, 256).unwrap();
-    let sp = SubpavingLayout::new(vec![r1, r2]).unwrap();
-    assert!(LayoutDescriptor::Subpaving(sp)
-        .validate_against_shape(&shape(&[8, 8]))
-        .is_ok());
-}
-
-/// Four non-overlapping quadrant regions of an 8×8 tensor must be valid.
-#[test]
-fn subpaving_four_quadrant_regions_valid() {
-    let regions = vec![
-        RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0).unwrap(),
-        RegionDescriptor::new(vec![0, 4], vec![4, 4], 0x01, 0, 64).unwrap(),
-        RegionDescriptor::new(vec![4, 0], vec![4, 4], 0x01, 0, 128).unwrap(),
-        RegionDescriptor::new(vec![4, 4], vec![4, 4], 0x01, 0, 192).unwrap(),
-    ];
-    let sp = SubpavingLayout::new(regions).unwrap();
-    assert!(LayoutDescriptor::Subpaving(sp)
-        .validate_against_shape(&shape(&[8, 8]))
-        .is_ok());
-}
-
-/// An overlap among three regions (the third overlaps with the first) must be detected.
-#[test]
-fn subpaving_rejects_third_region_overlapping_with_first() {
-    let r1 = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0).unwrap();
-    let r2 = RegionDescriptor::new(vec![0, 4], vec![4, 4], 0x01, 0, 64).unwrap();
-    // r3 overlaps r1: [0,0]–[2,2] is within r1.
-    let r3 = RegionDescriptor::new(vec![0, 0], vec![2, 2], 0x01, 0, 128).unwrap();
-    let sp = SubpavingLayout::new(vec![r1, r2, r3]).unwrap();
-    assert!(matches!(
-        LayoutDescriptor::Subpaving(sp).validate_against_shape(&shape(&[8, 8])),
-        Err(Error::InvalidLayout(_))
-    ));
-}
-
-// ── subpaving.md § Coverage Constraint: union must exactly cover the index space ──
-
-/// A subpaving that leaves a gap (region volumes sum to less than the total) MUST be
-/// rejected — the union does not cover every element of the index space.
-#[test]
-fn subpaving_rejects_incomplete_coverage() {
-    // A single region covers only the top half of [8, 8] (32 of 64 elements).
-    let r = RegionDescriptor::new(vec![0, 0], vec![4, 8], 0x01, 0, 0).unwrap();
-    let sp = SubpavingLayout::new(vec![r]).unwrap();
-    assert!(matches!(
-        LayoutDescriptor::Subpaving(sp).validate_against_shape(&shape(&[8, 8])),
-        Err(Error::InvalidLayout(_))
-    ));
-}
-
-/// Coverage cannot be checked when a dimension is dynamic (the total is unknowable), so a
-/// partial region that would otherwise fail coverage is accepted — deferred to the caller.
-#[test]
-fn subpaving_skips_coverage_when_dimension_is_dynamic() {
-    let r = RegionDescriptor::new(vec![0, 0], vec![4, 8], 0x01, 0, 0).unwrap();
-    let sp = SubpavingLayout::new(vec![r]).unwrap();
-    assert!(LayoutDescriptor::Subpaving(sp)
-        .validate_against_shape(&shape(&[DYNAMIC, 8]))
-        .is_ok());
-}
-
 // ── ADR-013 invariant 12: Tiled recursion depth limit ────────────────────────
 
 /// Spec §layouts/tiled.md: maximum nesting depth is MAX_TILED_DEPTH (8).
@@ -1154,78 +1000,6 @@ fn morton_large_bit_count_saturates_at_u64_max() {
         .is_ok());
 }
 
-// ── Spec edge cases: Subpaving ────────────────────────────────────────────────
-
-/// Spec §layouts/subpaving.md: region_count MUST be > 0.
-#[test]
-fn subpaving_rejects_empty_region_list() {
-    assert!(matches!(
-        SubpavingLayout::new(vec![]),
-        Err(Error::InvalidLayout(_))
-    ));
-}
-
-/// RegionDescriptor rejects a zero region_shape dimension.
-#[test]
-fn region_descriptor_rejects_zero_shape_dimension() {
-    assert!(matches!(
-        RegionDescriptor::new(vec![0, 0], vec![0, 4], 0x01, 0, 0),
-        Err(Error::InvalidLayout(_))
-    ));
-}
-
-/// RegionDescriptor rejects mismatched origin and region_shape lengths.
-#[test]
-fn region_descriptor_rejects_mismatched_origin_region_shape_lengths() {
-    // origin has 1 element but region_shape has 2.
-    assert!(matches!(
-        RegionDescriptor::new(vec![0], vec![4, 4], 0x01, 0, 0),
-        Err(Error::InvalidLayout(_))
-    ));
-}
-
-/// RegionDescriptor rejects permanently-invalid layout tags 0x00 and 0xFF.
-#[test]
-fn region_descriptor_rejects_invalid_layout_tag_0x00() {
-    assert!(matches!(
-        RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x00, 0, 0),
-        Err(Error::InvalidLayout(_))
-    ));
-}
-
-#[test]
-fn region_descriptor_rejects_invalid_layout_tag_0xff() {
-    assert!(matches!(
-        RegionDescriptor::new(vec![0, 0], vec![4, 4], 0xFF, 0, 0),
-        Err(Error::InvalidLayout(_))
-    ));
-}
-
-/// RegionDescriptor accepts named and reserved layout tags (it only
-/// rejects 0x00 and 0xFF — the interpretation of non-standard tags is deferred).
-/// 0x0A is TAG_CSF (named), 0x0C is a reserved-range tag; both are accepted.
-#[test]
-fn region_descriptor_accepts_valid_layout_tags() {
-    for tag in [0x01_u8, 0x02, 0x03, 0x06, 0x40, 0xF0, 0x0A, 0x0C] {
-        let result = RegionDescriptor::new(vec![0, 0], vec![4, 4], tag, 0, 0);
-        assert!(
-            result.is_ok(),
-            "tag 0x{tag:02X} should be accepted by RegionDescriptor"
-        );
-    }
-}
-
-/// RegionDescriptor stores all fields faithfully.
-#[test]
-fn region_descriptor_stores_fields() {
-    let r = RegionDescriptor::new(vec![10, 20], vec![4, 8], 0x02, 3, 512).unwrap();
-    assert_eq!(r.origin, [10, 20]);
-    assert_eq!(r.region_shape, [4, 8]);
-    assert_eq!(r.region_layout_tag, 0x02);
-    assert_eq!(r.buffer_index, 3);
-    assert_eq!(r.region_byte_offset, 512);
-}
-
 // ── Spec edge cases: RowMajor / ColMajor accept any rank ─────────────────────
 
 /// Spec: RowMajor and ColMajor place no rank constraints.
@@ -1271,7 +1045,7 @@ fn col_major_valid_for_rank_64() {
 /// Spec §memory-layout.md §Strict vs Permissive: Unknown always passes validate_against_shape.
 #[test]
 fn unknown_passes_validation_for_scalar() {
-    // Use a reserved-range tag (not 0x0A which is now TAG_CSF).
+    // Use a reserved-range tag (not 0x0A which is now TAG_BLOCK_PAGED).
     let d = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![]).unwrap());
     assert!(d.validate_against_shape(&Shape::scalar()).is_ok());
 }
@@ -1300,7 +1074,7 @@ fn private_extension_passes_validation() {
 #[test]
 fn validate_strict_accepts_all_known_tags() {
     for tag in [
-        0x01_u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x40,
+        0x01_u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x40,
     ] {
         assert!(
             validate_layout_tag_strict(tag).is_ok(),
@@ -1311,18 +1085,19 @@ fn validate_strict_accepts_all_known_tags() {
 
 // ── is_* helper functions — exhaustive boundary checks ────────────────────────
 
-/// The first reserved range starts at 0x0C (0x0A is CSF, 0x0B is block-paged).
+/// The first reserved range starts at 0x0B (0x0A is block-paged, the last named
+/// tag in this crate; 0x0B is reserved for the spec's future Composite layout).
 #[test]
 fn first_reserved_range_lower_boundary() {
-    assert!(is_reserved_tag(0x0C));
-    // 0x0A is TAG_CSF — a named layout, not reserved.
+    assert!(is_reserved_tag(0x0B));
+    // 0x0A is TAG_BLOCK_PAGED — a named layout, not reserved.
     assert!(!is_reserved_tag(0x0A));
 }
 
-/// The tag immediately before the first reserved range (0x09) must not be reserved.
+/// The tag immediately before the first reserved range (0x0A) must not be reserved.
 #[test]
-fn tag_0x09_before_first_reserved_range_not_reserved() {
-    assert!(!is_reserved_tag(0x09));
+fn tag_0x0a_before_first_reserved_range_not_reserved() {
+    assert!(!is_reserved_tag(0x0A));
 }
 
 /// The tag immediately after the first reserved range (0x40) must not be reserved.
@@ -1373,7 +1148,6 @@ fn layout_descriptor_debug_is_non_empty() {
 
 #[test]
 fn all_dense_variants_have_buffer_count_1() {
-    let sp = SubpavingLayout::new(vec![simple_region_2d()]).unwrap();
     let dense: Vec<LayoutDescriptor> = vec![
         LayoutDescriptor::RowMajor,
         LayoutDescriptor::ColMajor,
@@ -1382,7 +1156,6 @@ fn all_dense_variants_have_buffer_count_1() {
             TiledLayout::new(vec![4, 4], 0x01, 0x01, None, None, None).unwrap(),
         )),
         LayoutDescriptor::Morton(MortonLayout::new(vec![2, 2]).unwrap()),
-        LayoutDescriptor::Subpaving(sp),
         LayoutDescriptor::Hilbert(HilbertLayout::new(2, 2).unwrap()),
     ];
     for d in &dense {
@@ -1412,19 +1185,6 @@ fn sparse_coo_csr_csc_buffer_counts() {
             d.tag()
         );
     }
-}
-
-// ── Subpaving: rank-mismatch in region origin/shape vs shape rank ─────────────
-
-#[test]
-fn subpaving_validate_rejects_region_with_wrong_rank() {
-    // Region has rank-1 origin/shape, but tensor shape is rank 2.
-    let r = RegionDescriptor::new(vec![0], vec![8], 0x01, 0, 0).unwrap();
-    let sp = SubpavingLayout::new(vec![r]).unwrap();
-    assert!(matches!(
-        LayoutDescriptor::Subpaving(sp).validate_against_shape(&shape(&[8, 8])),
-        Err(Error::InvalidLayout(_))
-    ));
 }
 
 // ── Tiled: validate_against_shape rejects scalar (rank-0) ────────────────────
@@ -1541,13 +1301,14 @@ fn validate_strict_0xfe_gives_private_layout_tag() {
 
 /// All reserved tags must produce ReservedLayoutTag.
 ///
-/// Note: `0x0A` (CSF) and `0x0B` (block-paged) are both now named layout tags,
-/// not reserved. The first reserved range starts at `0x0C`.
+/// Note: `0x0A` (block-paged) is the last named layout tag in this crate.
+/// `0x0B` is reserved for the spec's future Composite layout (ADR-027), not
+/// yet implemented here, so the first reserved range starts at `0x0B`.
 #[test]
 fn validate_strict_all_reserved_ranges_produce_reserved_error() {
-    // Reserved ranges after assigning 0x0A to CSF and 0x0B to block-paged:
-    //   0x0C–0x3F, 0x41–0x7F, 0x80–0xEF.
-    let reserved_tags: Vec<u8> = (0x0C_u8..=0x3F)
+    // Reserved ranges after assigning 0x0A to block-paged:
+    //   0x0B–0x3F, 0x41–0x7F, 0x80–0xEF.
+    let reserved_tags: Vec<u8> = (0x0B_u8..=0x3F)
         .chain(0x41_u8..=0x7F)
         .chain(0x80_u8..=0xEF)
         .collect();
@@ -1564,43 +1325,35 @@ fn validate_strict_all_reserved_ranges_produce_reserved_error() {
 
 // ── Block-paged: tag constant and classification ──────────────────────────────
 
-/// Spec §block-paged.md: layout tag MUST be 0x0B.
+/// Spec §block-paged.md: layout tag MUST be 0x0A.
 #[test]
-fn block_paged_tag_constant_is_0x0b() {
-    assert_eq!(TAG_BLOCK_PAGED, 0x0B);
+fn block_paged_tag_constant_is_0x0a() {
+    assert_eq!(TAG_BLOCK_PAGED, 0x0A);
 }
 
-/// 0x0B is a named layout, not reserved or invalid.
+/// 0x0A is a named layout, not reserved or invalid.
 #[test]
-fn block_paged_tag_0x0b_passes_strict_validation() {
-    assert!(
-        validate_layout_tag_strict(0x0B).is_ok(),
-        "0x0B (block-paged) must pass strict validation"
-    );
-}
-
-/// 0x0A is CSF — a named layout, now passes strict validation.
-#[test]
-fn tag_0x0a_csf_passes_strict_validation() {
+fn block_paged_tag_0x0a_passes_strict_validation() {
     assert!(
         validate_layout_tag_strict(0x0A).is_ok(),
-        "0x0A (CSF) must pass strict validation"
+        "0x0A (block-paged) must pass strict validation"
     );
 }
 
-/// 0x0C (the first reserved slot above block-paged and CSF) is reserved.
+/// 0x0B (the first reserved slot above block-paged) is reserved.
 #[test]
-fn tag_0x0c_above_block_paged_is_reserved() {
+fn tag_0x0b_above_block_paged_is_reserved() {
     assert!(matches!(
-        validate_layout_tag_strict(0x0C),
-        Err(Error::ReservedLayoutTag(0x0C))
+        validate_layout_tag_strict(0x0B),
+        Err(Error::ReservedLayoutTag(0x0B))
     ));
 }
 
-/// 0x0B is NOT in the reserved range (is_reserved_tag must return false).
+/// 0x0B IS in the reserved range now that block-paged occupies 0x0A
+/// (is_reserved_tag must return true).
 #[test]
-fn is_reserved_tag_returns_false_for_0x0b() {
-    assert!(!is_reserved_tag(0x0B));
+fn is_reserved_tag_returns_true_for_0x0b() {
+    assert!(is_reserved_tag(0x0B));
 }
 
 // ── Block-paged: tag() and buffer_count() via LayoutDescriptor ────────────────
@@ -1624,11 +1377,11 @@ fn make_block_paged(
     ))
 }
 
-/// Spec §block-paged.md: layout tag MUST be 0x0B.
+/// Spec §block-paged.md: layout tag MUST be 0x0A.
 #[test]
-fn block_paged_descriptor_tag_is_0x0b() {
+fn block_paged_descriptor_tag_is_0x0a() {
     let d = make_block_paged(16, 64, 2, KvRole::Key, Some(0), BlockTableIndexType::U32);
-    assert_eq!(d.tag(), 0x0B);
+    assert_eq!(d.tag(), 0x0A);
 }
 
 /// Spec §block-paged.md §Buffer Table: buffer_count MUST be 3.
@@ -1900,11 +1653,11 @@ fn block_paged_decoder_rejects_nonzero_reserved_byte() {
     let desc = block_paged_descriptor(layout);
     let encoded = desc.encode().unwrap();
 
-    // layout_tag (0x0B) is at fixed byte 15 in the wire format.
+    // layout_tag (0x0A) is at fixed byte 15 in the wire format.
     // The payload starts 36 bytes after the tag byte:
     //   rank field (4) + shape[3 dims × 8] (24) + byte_offset (8) = 36.
     let tag_byte = 15_usize;
-    assert_eq!(encoded[tag_byte], 0x0B, "layout tag must be at byte 15");
+    assert_eq!(encoded[tag_byte], 0x0A, "layout tag must be at byte 15");
     let payload_start = tag_byte + 1 + 36; // = 52
 
     // _reserved is the last 6 bytes of the 32-byte payload.
@@ -1936,7 +1689,7 @@ fn block_paged_decoder_rejects_unknown_kv_role_byte() {
 
     // layout_tag at byte 15; payload starts at byte 52.
     let tag_byte = 15_usize;
-    assert_eq!(encoded[tag_byte], 0x0B, "layout tag must be at byte 15");
+    assert_eq!(encoded[tag_byte], 0x0A, "layout tag must be at byte 15");
     let payload_start = tag_byte + 1 + 36; // = 52
                                            // kv_role at payload offset 20: page_size(4) + num_pages(8) + paged_axis(4) + num_seqs(4).
     let kv_role_offset = payload_start + 20;
@@ -1966,7 +1719,7 @@ fn block_paged_decoder_rejects_unknown_block_table_index_type_byte() {
 
     // layout_tag at byte 15; payload starts at byte 52.
     let tag_byte = 15_usize;
-    assert_eq!(encoded[tag_byte], 0x0B, "layout tag must be at byte 15");
+    assert_eq!(encoded[tag_byte], 0x0A, "layout tag must be at byte 15");
     let payload_start = tag_byte + 1 + 36; // = 52
                                            // block_table_index_type at payload offset 25:
                                            //   page_size(4) + num_pages(8) + paged_axis(4) + num_seqs(4) + kv_role(1) + layer_index(4) = 25.
@@ -1982,51 +1735,51 @@ fn block_paged_decoder_rejects_unknown_block_table_index_type_byte() {
 // ── CSF (Compressed Sparse Fiber) layout ─────────────────────────────────────
 //
 // Spec: docs/spec/layouts/csf.md
-// Tag: 0x0A  |  Buffer count: 2·rank+1  |  rank >= 3
+// Tag: 0x09  |  Buffer count: 2·rank+1  |  rank >= 3
 
 // ── CSF: tag constant and classification ─────────────────────────────────────
 
-/// Spec §csf.md: TAG_CSF MUST be 0x0A.
+/// Spec §csf.md: TAG_CSF MUST be 0x09.
 #[test]
-fn csf_tag_constant_is_0x0a() {
-    assert_eq!(TAG_CSF, 0x0A);
+fn csf_tag_constant_is_0x09() {
+    assert_eq!(TAG_CSF, 0x09);
 }
 
-/// 0x0A is a named layout, not in any reserved range.
+/// 0x09 is a named layout, not in any reserved range.
 #[test]
-fn csf_tag_0x0a_is_not_reserved() {
+fn csf_tag_0x09_is_not_reserved() {
     use hurray_core::layout::is_reserved_tag;
-    assert!(!is_reserved_tag(0x0A));
+    assert!(!is_reserved_tag(0x09));
 }
 
-/// 0x0A passes strict-mode validation (it is a named layout tag).
+/// 0x09 passes strict-mode validation (it is a named layout tag).
 #[test]
 fn csf_tag_passes_strict_validation() {
     assert!(
-        validate_layout_tag_strict(0x0A).is_ok(),
-        "0x0A (CSF) must pass strict validation"
+        validate_layout_tag_strict(0x09).is_ok(),
+        "0x09 (CSF) must pass strict validation"
     );
 }
 
-/// 0x0C is the first reserved slot after CSF (0x0A) and block-paged (0x0B).
+/// 0x0B is the first reserved slot after CSF (0x09) and block-paged (0x0A).
 #[test]
-fn tag_0x0c_is_reserved_lower_boundary_after_csf() {
+fn tag_0x0b_is_reserved_lower_boundary_after_csf() {
     assert!(
         matches!(
-            validate_layout_tag_strict(0x0C),
-            Err(Error::ReservedLayoutTag(0x0C))
+            validate_layout_tag_strict(0x0B),
+            Err(Error::ReservedLayoutTag(0x0B))
         ),
-        "0x0C must be ReservedLayoutTag (new lower boundary after CSF and block-paged)"
+        "0x0B must be ReservedLayoutTag (new lower boundary after CSF and block-paged)"
     );
 }
 
 // ── CSF: tag() and buffer_count() via LayoutDescriptor ───────────────────────
 
-/// Spec §csf.md: LayoutDescriptor::Csf.tag() == 0x0A.
+/// Spec §csf.md: LayoutDescriptor::Csf.tag() == 0x09.
 #[test]
-fn csf_descriptor_tag_is_0x0a() {
+fn csf_descriptor_tag_is_0x09() {
     let d = LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2]));
-    assert_eq!(d.tag(), 0x0A);
+    assert_eq!(d.tag(), 0x09);
 }
 
 /// Spec §csf.md §Buffer Table: buffer_count = 2·rank+1.  rank=3 → 7.
@@ -2306,7 +2059,7 @@ fn csf_decoder_rejects_nonzero_reserved_byte() {
     let desc = csf_descriptor(layout);
     let encoded = desc.encode().unwrap();
 
-    assert_eq!(encoded[15], 0x0A, "layout tag must be at byte 15");
+    assert_eq!(encoded[15], 0x09, "layout tag must be at byte 15");
     let payload_start = 15 + 1 + 36; // = 52
                                      // _reserved is payload[20..28].
     let reserved_offset = payload_start + 20; // nnz(8) + mode_order(3×4=12) = 20
@@ -2333,7 +2086,7 @@ fn csf_decoder_rejects_mode_order_out_of_range_value() {
     let desc = csf_descriptor(layout);
     let mut encoded = desc.encode().unwrap();
 
-    assert_eq!(encoded[15], 0x0A, "layout tag must be at byte 15");
+    assert_eq!(encoded[15], 0x09, "layout tag must be at byte 15");
     let payload_start = 15 + 1 + 36; // = 52
                                      // mode_order[2] starts at payload[8 + 2*4] = payload[16].
                                      // Write 3u32 LE into mode_order[2].
@@ -2357,7 +2110,7 @@ fn csf_decoder_rejects_mode_order_duplicate_value() {
     let desc = csf_descriptor(layout);
     let mut encoded = desc.encode().unwrap();
 
-    assert_eq!(encoded[15], 0x0A, "layout tag must be at byte 15");
+    assert_eq!(encoded[15], 0x09, "layout tag must be at byte 15");
     let payload_start = 15 + 1 + 36;
     // Overwrite mode_order[2] to be 1 (same as mode_order[1]) → duplicate.
     let mo2_offset = payload_start + 8 + 2 * 4;
@@ -2674,6 +2427,6 @@ fn csf_descriptor_element_offset_returns_multi_buffer_error() {
     let s = Shape::new(vec![2u64, 3, 4]).unwrap();
     assert!(matches!(
         d.element_offset(&[0, 0, 0], &s),
-        Err(Error::LayoutRequiresMultiBuffer { layout_tag: 0x0A })
+        Err(Error::LayoutRequiresMultiBuffer { layout_tag: 0x09 })
     ));
 }

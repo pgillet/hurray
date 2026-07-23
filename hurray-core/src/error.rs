@@ -309,8 +309,10 @@ pub enum Error {
 
     /// Layout tag is in a range reserved for future specification versions.
     ///
-    /// Reserved ranges: `0x0C`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`.
-    /// (`0x0A` is CSF and `0x0B` is block-paged — both are named layout tags.)
+    /// Reserved ranges: `0x0B`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`.
+    /// (`0x0A` is block-paged, the last named layout tag in this crate. `0x0B`
+    /// is reserved by the spec for the future Composite layout (ADR-027), not
+    /// yet implemented in this crate.)
     /// Implementations MUST NOT assign semantics to these tags in strict mode.
     #[error("reserved layout tag: 0x{0:02X} is reserved for future specification versions")]
     ReservedLayoutTag(u8),
@@ -359,17 +361,18 @@ pub enum Error {
     #[error("layout tag 0x{layout_tag:02X} requires multi-buffer access; use the layout-specific method")]
     LayoutRequiresMultiBuffer { layout_tag: u8 },
 
-    /// Subpaving nesting depth exceeded the implementation limit of 8 levels.
-    #[error("subpaving nesting depth exceeds the implementation limit of 8 levels")]
+    /// Recursive layout nesting depth exceeded the implementation limit of 8 levels.
+    ///
+    /// Despite the name, this guards recursion depth for every recursive layout
+    /// descriptor (currently only [`crate::layout::TiledLayout`]) — kept as
+    /// `SubpavingNestingTooDeep` for wire/API stability rather than renamed
+    /// as part of the subpaving removal.
+    #[error("layout nesting depth exceeds the implementation limit of 8 levels")]
     SubpavingNestingTooDeep,
 
     /// A DYNAMIC dimension cannot be used for element addressing.
     #[error("dimension {dim} is DYNAMIC and cannot be used for element addressing")]
     DynamicDimInIndexing { dim: u32 },
-
-    /// No subpaving region contains the given index.
-    #[error("index {index:?} does not fall within any subpaving region")]
-    IndexNotInAnyRegion { index: Vec<u64> },
 
     /// Arithmetic overflow in Morton or Hilbert index computation.
     #[error("index arithmetic overflow in space-filling curve computation")]

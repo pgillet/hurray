@@ -32,7 +32,7 @@ pub use element_type::ElementType;
 pub use error::{Error, Result};
 pub use layout::{
     byte_address_from_element_offset, BlockPagedLayout, BlockTableIndexType, CsfLayout,
-    ElementAddress, KvRole, LayoutDescriptor, SubpavingLocation,
+    ElementAddress, KvRole, LayoutDescriptor,
 };
 pub use quantization::{
     validate_axis, validate_buffer_placement, Mxfp, Nf4, PerBlockAffine, PerChannelAffine,

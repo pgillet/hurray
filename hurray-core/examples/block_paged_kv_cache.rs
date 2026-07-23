@@ -1,6 +1,6 @@
 //! Block-paged layout: a PagedAttention-style KV cache snapshot.
 //!
-//! Demonstrates the block-paged layout (tag `0x0B`) — the interchange form of a
+//! Demonstrates the block-paged layout (tag `0x0A`) — the interchange form of a
 //! paged KV cache used in disaggregated LLM inference. It shows:
 //!
 //! - building the descriptor for one `{kv_role, layer}` snapshot,
