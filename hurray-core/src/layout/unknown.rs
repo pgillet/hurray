@@ -26,8 +26,8 @@ use crate::{Error, Result};
 /// use hurray_core::layout::{LayoutDescriptor, UnknownLayout};
 ///
 /// // Simulate a permissive reader accepting an unrecognised tag.
-/// let layout = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![0x00, 0x01]).unwrap());
-/// assert_eq!(layout.tag(), 0x0A);
+/// let layout = LayoutDescriptor::Unknown(UnknownLayout::new(0x0B, vec![0x00, 0x01]).unwrap());
+/// assert_eq!(layout.tag(), 0x0B);
 /// assert!(layout.buffer_count().is_none());
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -53,8 +53,8 @@ impl UnknownLayout {
     /// ```
     /// use hurray_core::layout::UnknownLayout;
     ///
-    /// let u = UnknownLayout::new(0x0A, vec![1, 2, 3]).unwrap();
-    /// assert_eq!(u.tag, 0x0A);
+    /// let u = UnknownLayout::new(0x0B, vec![1, 2, 3]).unwrap();
+    /// assert_eq!(u.tag, 0x0B);
     /// assert_eq!(u.raw_bytes, [1, 2, 3]);
     ///
     /// // Permanently-invalid sentinels are rejected even in permissive mode.
@@ -77,13 +77,13 @@ mod tests {
 
     #[test]
     fn unknown_tag_passthrough() {
-        let layout = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![]).unwrap());
-        assert_eq!(layout.tag(), 0x0A);
+        let layout = LayoutDescriptor::Unknown(UnknownLayout::new(0x0B, vec![]).unwrap());
+        assert_eq!(layout.tag(), 0x0B);
     }
 
     #[test]
     fn unknown_buffer_count_is_none() {
-        let layout = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![1, 2, 3]).unwrap());
+        let layout = LayoutDescriptor::Unknown(UnknownLayout::new(0x0B, vec![1, 2, 3]).unwrap());
         assert!(layout.buffer_count().is_none());
     }
 
@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn accepts_reserved_range_tag_in_permissive_mode() {
         // Reserved tags are not permanently invalid — permissive mode may accept them.
-        assert!(UnknownLayout::new(0x0A, vec![]).is_ok());
+        assert!(UnknownLayout::new(0x0B, vec![]).is_ok());
         assert!(UnknownLayout::new(0xEF, vec![]).is_ok());
     }
 }

@@ -14,10 +14,7 @@ pub mod hilbert;
 pub mod morton;
 pub mod row_major;
 pub mod strided;
-pub mod subpaving;
 pub mod tiled;
-
-pub use subpaving::SubpavingLocation;
 
 use crate::{ElementType, Error, Result, Shape, DYNAMIC};
 
@@ -173,9 +170,7 @@ pub(crate) fn validate_index(index: &[u64], shape: &Shape) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use crate::layout::{
-        CooLayout, LayoutDescriptor, MortonLayout, RegionDescriptor, StridedLayout, SubpavingLayout,
-    };
+    use crate::layout::{CooLayout, LayoutDescriptor, MortonLayout, StridedLayout};
     use crate::{ElementType, Error, Shape};
 
     use super::byte_address_from_element_offset;
@@ -222,28 +217,15 @@ mod tests {
         assert_eq!(layout.element_offset(&[2, 3], &shape).unwrap(), 14);
     }
 
-    // Subpaving returns LayoutRequiresMultiBuffer with the correct tag.
-    #[test]
-    fn dispatch_subpaving_returns_multi_buffer_error() {
-        let region = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0).unwrap();
-        let layout = LayoutDescriptor::Subpaving(SubpavingLayout::new(vec![region]).unwrap());
-        let shape = Shape::new(vec![4, 4]).unwrap();
-        let err = layout.element_offset(&[0, 0], &shape).unwrap_err();
-        assert!(
-            matches!(err, Error::LayoutRequiresMultiBuffer { layout_tag: 0x06 }),
-            "expected LayoutRequiresMultiBuffer{{0x06}}, got {err:?}"
-        );
-    }
-
-    // COO returns LayoutRequiresMultiBuffer with tag 0x07.
+    // COO returns LayoutRequiresMultiBuffer with tag 0x06.
     #[test]
     fn dispatch_coo_returns_multi_buffer_error() {
         let layout = LayoutDescriptor::Coo(CooLayout::new(0, false));
         let shape = Shape::new(vec![4, 4]).unwrap();
         let err = layout.element_offset(&[0, 0], &shape).unwrap_err();
         assert!(
-            matches!(err, Error::LayoutRequiresMultiBuffer { layout_tag: 0x07 }),
-            "expected LayoutRequiresMultiBuffer{{0x07}}, got {err:?}"
+            matches!(err, Error::LayoutRequiresMultiBuffer { layout_tag: 0x06 }),
+            "expected LayoutRequiresMultiBuffer{{0x06}}, got {err:?}"
         );
     }
 

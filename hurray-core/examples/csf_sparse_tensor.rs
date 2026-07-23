@@ -1,6 +1,6 @@
 //! CSF (Compressed Sparse Fiber): a rank-N sparse tensor.
 //!
-//! Demonstrates the CSF layout (tag `0x0A`) — the rank-N generalization of CSR/CSC.
+//! Demonstrates the CSF layout (tag `0x09`) — the rank-N generalization of CSR/CSC.
 //! It shows:
 //!
 //! - building the descriptor (`nnz` + a `mode_order` permutation),

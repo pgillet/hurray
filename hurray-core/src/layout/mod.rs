@@ -10,10 +10,8 @@
 //! | Range | Allocation |
 //! |-------|-----------|
 //! | `0x00` | Reserved (permanently invalid) |
-//! | `0x01`–`0x09` | Core named layouts (Tier 1) |
-//! | `0x0A` | CSF (Compressed Sparse Fiber) sparse layout (Tier 1) |
-//! | `0x0B` | Block-paged indirect layout (Tier 1) |
-//! | `0x0C`–`0x3F` | Reserved for future specification versions |
+//! | `0x01`–`0x0A` | Core named layouts (Tier 1) |
+//! | `0x0B`–`0x3F` | Reserved for future specification versions |
 //! | `0x40` | Hilbert curve layout (Tier 2) |
 //! | `0x41`–`0x7F` | Reserved for future specification versions |
 //! | `0x80`–`0xEF` | Reserved for future specification versions |
@@ -45,11 +43,10 @@ pub mod morton;
 pub mod private_extension;
 pub mod row_major;
 pub mod strided;
-pub mod subpaving;
 pub mod tiled;
 pub mod unknown;
 
-pub use addressing::{byte_address_from_element_offset, ElementAddress, SubpavingLocation};
+pub use addressing::{byte_address_from_element_offset, ElementAddress};
 pub use block_paged::{BlockPagedLayout, BlockTableIndexType, KvRole};
 pub use coo::CooLayout;
 pub use csc::CscLayout;
@@ -61,7 +58,6 @@ pub use private_extension::{
     PrivateExtensionLayout, PRIVATE_LAYOUT_TAG_MAX, PRIVATE_LAYOUT_TAG_MIN,
 };
 pub use strided::StridedLayout;
-pub use subpaving::{RegionDescriptor, SubpavingLayout};
 pub use tiled::{InnerStrides, OuterStrides, TiledLayout, MAX_TILED_DEPTH};
 pub use unknown::UnknownLayout;
 
@@ -81,18 +77,16 @@ pub const TAG_STRIDED: u8 = 0x03;
 pub const TAG_TILED: u8 = 0x04;
 /// Layout tag for Morton (Z-order) layout.
 pub const TAG_MORTON: u8 = 0x05;
-/// Layout tag for general subpaving layout.
-pub const TAG_SUBPAVING: u8 = 0x06;
 /// Layout tag for COO (Coordinate) sparse layout.
-pub const TAG_COO: u8 = 0x07;
+pub const TAG_COO: u8 = 0x06;
 /// Layout tag for CSR (Compressed Sparse Row) layout.
-pub const TAG_CSR: u8 = 0x08;
+pub const TAG_CSR: u8 = 0x07;
 /// Layout tag for CSC (Compressed Sparse Column) layout.
-pub const TAG_CSC: u8 = 0x09;
+pub const TAG_CSC: u8 = 0x08;
 /// Layout tag for CSF (Compressed Sparse Fiber) layout.
-pub const TAG_CSF: u8 = 0x0A;
+pub const TAG_CSF: u8 = 0x09;
 /// Layout tag for block-paged indirect layout.
-pub const TAG_BLOCK_PAGED: u8 = 0x0B;
+pub const TAG_BLOCK_PAGED: u8 = 0x0A;
 /// Layout tag for Hilbert curve layout.
 pub const TAG_HILBERT: u8 = 0x40;
 
@@ -115,17 +109,20 @@ pub fn is_invalid_tag(tag: u8) -> bool {
 }
 
 /// Returns `true` if `tag` falls in a range reserved for future specification
-/// versions (`0x0C`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`).
+/// versions (`0x0B`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`).
 ///
-/// Tags `0x0A` (CSF) and `0x0B` (block-paged) are NOT reserved — they are named layout tags.
+/// Tag `0x0A` (block-paged) is the last named layout tag in this crate. The
+/// spec reserves `0x0B` for the future Composite layout (see ADR-027), but
+/// this crate does not implement Composite yet, so `0x0B` is treated as
+/// reserved along with the rest of the unassigned range.
 ///
 /// # Examples
 ///
 /// ```
 /// use hurray_core::layout::is_reserved_tag;
 ///
-/// assert!(!is_reserved_tag(0x0A)); // CSF — named tag
-/// assert!(!is_reserved_tag(0x0B)); // block-paged — named tag
+/// assert!(!is_reserved_tag(0x0A)); // block-paged — named tag
+/// assert!(is_reserved_tag(0x0B)); // reserved for future Composite layout
 /// assert!(is_reserved_tag(0x0C));
 /// assert!(is_reserved_tag(0x3F));
 /// assert!(is_reserved_tag(0x41));
@@ -135,8 +132,9 @@ pub fn is_invalid_tag(tag: u8) -> bool {
 /// ```
 #[inline]
 pub fn is_reserved_tag(tag: u8) -> bool {
-    // 0x0A is TAG_CSF and 0x0B is TAG_BLOCK_PAGED — both named layouts, not reserved.
-    matches!(tag, 0x0C..=0x3F | 0x41..=0x7F | 0x80..=0xEF)
+    // 0x0B is reserved for spec's future Composite tag (ADR-027); not implemented
+    // in this crate yet, so it falls in the reserved range like 0x0C-0x3F.
+    matches!(tag, 0x0B..=0x3F | 0x41..=0x7F | 0x80..=0xEF)
 }
 
 /// Returns `true` if `tag` is in the private-extension range (`0xF0`–`0xFE`).
@@ -167,7 +165,7 @@ pub fn is_private_tag(tag: u8) -> bool {
 /// | Tag range | Error |
 /// |-----------|-------|
 /// | `0x00`, `0xFF` | [`Error::InvalidLayoutTag`] |
-/// | `0x0C`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF` | [`Error::ReservedLayoutTag`] |
+/// | `0x0B`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF` | [`Error::ReservedLayoutTag`] |
 /// | `0xF0`–`0xFE` | [`Error::PrivateLayoutTag`] |
 /// | Any other unrecognised value | [`Error::UnknownLayoutTag`] |
 ///
@@ -177,10 +175,10 @@ pub fn is_private_tag(tag: u8) -> bool {
 /// use hurray_core::{Error, layout::validate_layout_tag_strict};
 ///
 /// assert!(validate_layout_tag_strict(0x01).is_ok());
-/// assert!(validate_layout_tag_strict(0x0A).is_ok()); // CSF
+/// assert!(validate_layout_tag_strict(0x09).is_ok()); // CSF
 /// assert!(matches!(validate_layout_tag_strict(0x00), Err(Error::InvalidLayoutTag(0x00))));
 /// assert!(matches!(validate_layout_tag_strict(0xFF), Err(Error::InvalidLayoutTag(0xFF))));
-/// assert!(matches!(validate_layout_tag_strict(0x0C), Err(Error::ReservedLayoutTag(0x0C))));
+/// assert!(matches!(validate_layout_tag_strict(0x0B), Err(Error::ReservedLayoutTag(0x0B))));
 /// assert!(matches!(validate_layout_tag_strict(0xF0), Err(Error::PrivateLayoutTag(0xF0))));
 /// ```
 pub fn validate_layout_tag_strict(tag: u8) -> Result<()> {
@@ -188,8 +186,8 @@ pub fn validate_layout_tag_strict(tag: u8) -> Result<()> {
         0x00 | 0xFF => Err(Error::InvalidLayoutTag(tag)),
         t if is_reserved_tag(t) => Err(Error::ReservedLayoutTag(tag)),
         t if is_private_tag(t) => Err(Error::PrivateLayoutTag(tag)),
-        TAG_ROW_MAJOR | TAG_COL_MAJOR | TAG_STRIDED | TAG_TILED | TAG_MORTON | TAG_SUBPAVING
-        | TAG_COO | TAG_CSR | TAG_CSC | TAG_CSF | TAG_BLOCK_PAGED | TAG_HILBERT => Ok(()),
+        TAG_ROW_MAJOR | TAG_COL_MAJOR | TAG_STRIDED | TAG_TILED | TAG_MORTON | TAG_COO
+        | TAG_CSR | TAG_CSC | TAG_CSF | TAG_BLOCK_PAGED | TAG_HILBERT => Ok(()),
         _ => Err(Error::UnknownLayoutTag(tag)),
     }
 }
@@ -230,7 +228,7 @@ pub fn validate_layout_tag_strict(tag: u8) -> Result<()> {
 ///
 /// // Sparse COO layout.
 /// let coo = LayoutDescriptor::Coo(CooLayout::new(42, true));
-/// assert_eq!(coo.tag(), 0x07);
+/// assert_eq!(coo.tag(), 0x06);
 /// assert_eq!(coo.buffer_count().map(|n| n.get()), Some(2));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -254,19 +252,16 @@ pub enum LayoutDescriptor {
     /// Morton (Z-order curve) layout. Tag `0x05`.
     Morton(MortonLayout),
 
-    /// General subpaving layout (irregular rectangular regions). Tag `0x06`.
-    Subpaving(SubpavingLayout),
-
-    /// COO (Coordinate) sparse layout. Tag `0x07`. Buffer count = 2.
+    /// COO (Coordinate) sparse layout. Tag `0x06`. Buffer count = 2.
     Coo(CooLayout),
 
-    /// CSR (Compressed Sparse Row) layout. Tag `0x08`. Buffer count = 3.
+    /// CSR (Compressed Sparse Row) layout. Tag `0x07`. Buffer count = 3.
     Csr(CsrLayout),
 
-    /// CSC (Compressed Sparse Column) layout. Tag `0x09`. Buffer count = 3.
+    /// CSC (Compressed Sparse Column) layout. Tag `0x08`. Buffer count = 3.
     Csc(CscLayout),
 
-    /// CSF (Compressed Sparse Fiber) layout. Tag `0x0A`. Buffer count = `2·rank+1`.
+    /// CSF (Compressed Sparse Fiber) layout. Tag `0x09`. Buffer count = `2·rank+1`.
     ///
     /// The rank-N generalisation of CSR/CSC, storing a sparse tensor as a tree of
     /// `rank` levels. Only valid for rank ≥ 3. Buffer count is rank-dependent because
@@ -275,7 +270,7 @@ pub enum LayoutDescriptor {
     /// See `docs/spec/layouts/csf.md`.
     Csf(CsfLayout),
 
-    /// Block-paged indirect layout. Tag `0x0B`. Buffer count = 3 (+ optional quant buffers).
+    /// Block-paged indirect layout. Tag `0x0A`. Buffer count = 3 (+ optional quant buffers).
     ///
     /// Stores a KV-cache tensor whose paged axis is divided into fixed-size pages
     /// drawn from a shared page pool, with a block table mapping logical page
@@ -311,8 +306,8 @@ impl LayoutDescriptor {
     ///
     /// assert_eq!(LayoutDescriptor::RowMajor.tag(), 0x01);
     /// assert_eq!(LayoutDescriptor::ColMajor.tag(), 0x02);
-    /// assert_eq!(LayoutDescriptor::Coo(CooLayout::new(0, false)).tag(), 0x07);
-    /// assert_eq!(LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2])).tag(), 0x0A);
+    /// assert_eq!(LayoutDescriptor::Coo(CooLayout::new(0, false)).tag(), 0x06);
+    /// assert_eq!(LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2])).tag(), 0x09);
     ///
     /// // Unknown passthrough (with a reserved tag outside the named set).
     /// let u = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![]).unwrap());
@@ -326,7 +321,6 @@ impl LayoutDescriptor {
             Self::Strided(_) => TAG_STRIDED,
             Self::Tiled(_) => TAG_TILED,
             Self::Morton(_) => TAG_MORTON,
-            Self::Subpaving(_) => TAG_SUBPAVING,
             Self::Coo(_) => TAG_COO,
             Self::Csr(_) => TAG_CSR,
             Self::Csc(_) => TAG_CSC,
@@ -347,7 +341,7 @@ impl LayoutDescriptor {
     ///
     /// | Layout | Buffer count |
     /// |--------|-------------|
-    /// | RowMajor, ColMajor, Strided, Tiled, Morton, Subpaving, Hilbert | 1 |
+    /// | RowMajor, ColMajor, Strided, Tiled, Morton, Hilbert | 1 |
     /// | COO | 2 |
     /// | CSR, CSC, BlockPaged | 3 |
     /// | CSF | `2·rank+1` (rank-dependent; embedded in `mode_order.len()`) |
@@ -390,7 +384,6 @@ impl LayoutDescriptor {
             | Self::Strided(_)
             | Self::Tiled(_)
             | Self::Morton(_)
-            | Self::Subpaving(_)
             | Self::Hilbert(_) => NonZeroU8::new(1),
 
             // COO: values + indices.
@@ -431,7 +424,6 @@ impl LayoutDescriptor {
     /// | `Tiled` | `tile_shape.len() == shape.rank()`; each `tile_shape[k] > 0` |
     /// | `Morton` | `morton_bits.len() == shape.rank()`; `shape[k] <= 2^morton_bits[k]` for all static dims |
     /// | `Hilbert` | `hilbert_rank == shape.rank()`; `hilbert_rank >= 2`; each static dim == `2^hilbert_order` |
-    /// | `Subpaving` | each region: `origin.len() == shape.rank()`, `region_shape.len() == shape.rank()`; all regions within bounds; no overlaps |
     /// | `Coo` | `shape.rank() >= 1` (no scalar sparse tensors) |
     /// | `Csr` | `shape.rank() == 2` |
     /// | `Csc` | `shape.rank() == 2` |
@@ -519,92 +511,6 @@ impl LayoutDescriptor {
                         return Err(Error::InvalidLayout(format!(
                             "Morton layout: shape[{k}] ({dim}) > 2^morton_bits[{k}] ({max_dim})"
                         )));
-                    }
-                }
-                Ok(())
-            }
-
-            Self::Subpaving(sp) => {
-                let rank = shape.rank();
-                for (i, region) in sp.regions.iter().enumerate() {
-                    if region.origin.len() != rank {
-                        return Err(Error::InvalidLayout(format!(
-                            "subpaving region {i}: origin.len() ({}) != shape.rank() ({rank})",
-                            region.origin.len()
-                        )));
-                    }
-                    if region.region_shape.len() != rank {
-                        return Err(Error::InvalidLayout(format!(
-                            "subpaving region {i}: region_shape.len() ({}) != shape.rank() ({rank})",
-                            region.region_shape.len()
-                        )));
-                    }
-                    // Validate each region is within shape bounds (for static dims).
-                    for k in 0..rank {
-                        let dim = shape.dims()[k];
-                        if dim == crate::shape::DYNAMIC {
-                            continue;
-                        }
-                        let end = region.origin[k].saturating_add(region.region_shape[k]);
-                        if end > dim {
-                            return Err(Error::InvalidLayout(format!(
-                                "subpaving region {i}: dimension {k}: \
-                                 origin[{k}] ({}) + region_shape[{k}] ({}) = {end} > shape[{k}] ({dim})",
-                                region.origin[k], region.region_shape[k]
-                            )));
-                        }
-                    }
-                }
-                // Non-overlap check (SHOULD validate per spec — we enforce it in strict mode).
-                // O(n^2) over regions; acceptable for descriptor validation (not a hot path).
-                let n = sp.regions.len();
-                for i in 0..n {
-                    for j in (i + 1)..n {
-                        if regions_overlap(&sp.regions[i], &sp.regions[j], shape) {
-                            return Err(Error::InvalidLayout(format!(
-                                "subpaving regions {i} and {j} overlap"
-                            )));
-                        }
-                    }
-                }
-
-                // Full-coverage check via volume sum. Combined with the per-region bounds
-                // check above (every region lies within the index space) and the non-overlap
-                // check, `∑ region volumes == total elements` is *sufficient* for full
-                // coverage: disjoint, in-bounds regions whose volumes fill the whole space
-                // cannot leave a gap. O(n·rank), avoiding the O(∏ shape) of a cell-by-cell
-                // scan. Skipped when any dimension is dynamic or a product overflows u64 —
-                // the total cannot then be computed reliably, so coverage is left to the
-                // application layer rather than risking a false rejection.
-                let total = shape.dims().iter().try_fold(1u64, |acc, &d| {
-                    if d == crate::shape::DYNAMIC {
-                        None
-                    } else {
-                        acc.checked_mul(d)
-                    }
-                });
-                if let Some(total) = total {
-                    let mut covered: Option<u64> = Some(0);
-                    for region in &sp.regions {
-                        let vol = region.region_shape.iter().try_fold(1u64, |acc, &d| {
-                            if d == crate::shape::DYNAMIC {
-                                None
-                            } else {
-                                acc.checked_mul(d)
-                            }
-                        });
-                        covered = match (covered, vol) {
-                            (Some(c), Some(v)) => c.checked_add(v),
-                            _ => None,
-                        };
-                    }
-                    if let Some(covered) = covered {
-                        if covered != total {
-                            return Err(Error::InvalidLayout(format!(
-                                "subpaving regions do not exactly cover the tensor: \
-                                 sum of region volumes ({covered}) != total elements ({total})"
-                            )));
-                        }
                     }
                 }
                 Ok(())
@@ -741,9 +647,8 @@ impl LayoutDescriptor {
     /// Returns the linear element offset for a multi-dimensional logical index.
     ///
     /// Dispatches to the layout-specific [`addressing::ElementAddress`] implementation.
-    /// For multi-buffer layouts (sparse formats, general subpaving), returns
-    /// [`Error::LayoutRequiresMultiBuffer`] — use the layout-specific method instead
-    /// (e.g., [`SubpavingLocation`] via [`SubpavingLayout::locate_element`]).
+    /// For multi-buffer (sparse) layouts, returns [`Error::LayoutRequiresMultiBuffer`] —
+    /// use the layout-specific addressing method instead.
     ///
     /// # Examples
     ///
@@ -768,10 +673,6 @@ impl LayoutDescriptor {
             Self::Tiled(t) => t.element_offset(index, shape),
             Self::Morton(m) => m.element_offset(index, shape),
             Self::Hilbert(h) => h.element_offset(index, shape),
-            // Subpaving is multi-buffer; use SubpavingLayout::locate_element.
-            Self::Subpaving(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
-                layout_tag: TAG_SUBPAVING,
-            }),
             Self::Coo(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
                 layout_tag: TAG_COO,
             }),
@@ -793,39 +694,6 @@ impl LayoutDescriptor {
             Self::Unknown(u) => Err(crate::Error::UnknownLayoutTag(u.tag)),
         }
     }
-}
-
-// ── Internal helpers ─────────────────────────────────────────────────────────
-
-/// Returns `true` if two subpaving regions overlap along all dimensions.
-///
-/// Overlap along dimension `k` iff:
-/// `A.origin[k] < B.origin[k] + B.region_shape[k]`
-/// AND `B.origin[k] < A.origin[k] + A.region_shape[k]`
-///
-/// DYNAMIC dimensions are treated conservatively: if either region's bound
-/// is dynamic we skip the check for that dimension (cannot prove no overlap).
-fn regions_overlap(a: &RegionDescriptor, b: &RegionDescriptor, shape: &Shape) -> bool {
-    for k in 0..a.origin.len() {
-        let dim = if k < shape.dims().len() {
-            shape.dims()[k]
-        } else {
-            // If shape has fewer dims than regions (shouldn't happen post earlier check),
-            // treat as dynamic.
-            crate::shape::DYNAMIC
-        };
-        if dim == crate::shape::DYNAMIC {
-            // Cannot determine overlap for dynamic dims; skip conservatively.
-            continue;
-        }
-        let a_end = a.origin[k].saturating_add(a.region_shape[k]);
-        let b_end = b.origin[k].saturating_add(b.region_shape[k]);
-        // No overlap on this dimension — regions are disjoint.
-        if a.origin[k] >= b_end || b.origin[k] >= a_end {
-            return false;
-        }
-    }
-    true
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -856,28 +724,18 @@ mod tests {
             0x05
         );
         assert_eq!(
-            LayoutDescriptor::Subpaving(
-                SubpavingLayout::new(vec![
-                    RegionDescriptor::new(vec![0], vec![4], 0x01, 0, 0).unwrap()
-                ])
-                .unwrap()
-            )
-            .tag(),
-            0x06
-        );
-        assert_eq!(
             LayoutDescriptor::Coo(CooLayout {
                 nnz: 0,
                 is_sorted: false
             })
             .tag(),
-            0x07
+            0x06
         );
-        assert_eq!(LayoutDescriptor::Csr(CsrLayout { nnz: 0 }).tag(), 0x08);
-        assert_eq!(LayoutDescriptor::Csc(CscLayout { nnz: 0 }).tag(), 0x09);
+        assert_eq!(LayoutDescriptor::Csr(CsrLayout { nnz: 0 }).tag(), 0x07);
+        assert_eq!(LayoutDescriptor::Csc(CscLayout { nnz: 0 }).tag(), 0x08);
         assert_eq!(
             LayoutDescriptor::Csf(CsfLayout::new(0, vec![0, 1, 2])).tag(),
-            0x0A
+            0x09
         );
         assert_eq!(
             LayoutDescriptor::Hilbert(HilbertLayout::new(2, 2).unwrap()).tag(),
@@ -897,17 +755,6 @@ mod tests {
                 TiledLayout::new(vec![4, 4], 0x01, 0x01, None, None, None).unwrap(),
             )),
             LayoutDescriptor::Morton(MortonLayout::new(vec![2, 2]).unwrap()),
-            LayoutDescriptor::Subpaving(
-                SubpavingLayout::new(vec![RegionDescriptor::new(
-                    vec![0, 0],
-                    vec![4, 4],
-                    0x01,
-                    0,
-                    0,
-                )
-                .unwrap()])
-                .unwrap(),
-            ),
             LayoutDescriptor::Hilbert(HilbertLayout::new(2, 2).unwrap()),
         ];
         for layout in &dense {
@@ -958,7 +805,7 @@ mod tests {
 
     #[test]
     fn unknown_buffer_count_is_none() {
-        // Use a tag in the reserved range (not 0x0A which is now CSF).
+        // Use a tag in the reserved range (0x0A is now the last named tag, block-paged).
         let layout = LayoutDescriptor::Unknown(UnknownLayout {
             tag: 0x0C,
             raw_bytes: vec![],
@@ -971,7 +818,7 @@ mod tests {
     #[test]
     fn known_tags_pass_strict_validation() {
         for tag in [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x40,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x40,
         ] {
             assert!(
                 validate_layout_tag_strict(tag).is_ok(),
@@ -994,8 +841,9 @@ mod tests {
 
     #[test]
     fn reserved_tags_rejected() {
-        // 0x0A is now CSF (named tag), not reserved. Use 0x0C as the first reserved tag.
-        for tag in [0x0C_u8, 0x3F, 0x41, 0x7F, 0x80, 0xEF] {
+        // 0x0A is now block-paged (named tag), not reserved. 0x0B is reserved for
+        // the spec's future Composite layout, unimplemented in this crate.
+        for tag in [0x0B_u8, 0x0C, 0x3F, 0x41, 0x7F, 0x80, 0xEF] {
             assert!(
                 matches!(
                     validate_layout_tag_strict(tag),
@@ -1126,34 +974,8 @@ mod tests {
     }
 
     #[test]
-    fn subpaving_rejects_overlapping_regions() {
-        // Two identical overlapping regions.
-        let r1 = RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0).unwrap();
-        let r2 = RegionDescriptor::new(vec![2, 2], vec![4, 4], 0x01, 0, 64).unwrap();
-        let sp = SubpavingLayout::new(vec![r1, r2]).unwrap();
-        let shape = Shape::new(vec![8, 8]).unwrap();
-        let layout = LayoutDescriptor::Subpaving(sp);
-        assert!(matches!(
-            layout.validate_against_shape(&shape),
-            Err(Error::InvalidLayout(_))
-        ));
-    }
-
-    #[test]
-    fn subpaving_rejects_region_out_of_shape_bounds() {
-        let r = RegionDescriptor::new(vec![5, 0], vec![4, 4], 0x01, 0, 0).unwrap(); // 5+4=9 > 8
-        let sp = SubpavingLayout::new(vec![r]).unwrap();
-        let shape = Shape::new(vec![8, 8]).unwrap();
-        let layout = LayoutDescriptor::Subpaving(sp);
-        assert!(matches!(
-            layout.validate_against_shape(&shape),
-            Err(Error::InvalidLayout(_))
-        ));
-    }
-
-    #[test]
     fn unknown_always_passes_validation() {
-        // 0x0A is now CSF; use a reserved-range tag for Unknown.
+        // 0x0A is now block-paged; use a reserved-range tag for Unknown.
         let layout = LayoutDescriptor::Unknown(UnknownLayout {
             tag: 0x0C,
             raw_bytes: vec![],

@@ -28,7 +28,7 @@ use half::{bf16, f16};
 
 use hurray_core::{
     descriptor::TensorDescriptor,
-    layout::{LayoutDescriptor, SubpavingLayout, TiledLayout},
+    layout::{LayoutDescriptor, TiledLayout},
     DYNAMIC,
 };
 
@@ -474,10 +474,11 @@ fn layout_tag_name(tag: u8) -> &'static str {
         0x03 => "strided",
         0x04 => "tiled",
         0x05 => "morton",
-        0x06 => "subpaving",
-        0x07 => "COO",
-        0x08 => "CSR",
-        0x09 => "CSC",
+        0x06 => "COO",
+        0x07 => "CSR",
+        0x08 => "CSC",
+        0x09 => "CSF",
+        0x0A => "block-paged",
         0x40 => "hilbert",
         0xF0..=0xFE => "private-extension",
         _ => "unknown",
@@ -505,8 +506,6 @@ fn layout_rows(reader: &mut Reader<'_>, layout: &LayoutDescriptor) -> Vec<Row> {
             .enumerate()
             .map(|(i, &v)| reader.take_row(4, format!("morton_bits[{i}] = {v}")))
             .collect(),
-
-        LayoutDescriptor::Subpaving(s) => subpaving_rows(reader, s),
 
         LayoutDescriptor::Coo(c) => vec![
             reader.take_row(8, format!("nnz = {}", c.nnz)),
@@ -597,47 +596,6 @@ fn tiled_rows(reader: &mut Reader<'_>, tiled: &TiledLayout) -> Vec<Row> {
         }
     } else if let Some(inner) = &tiled.inner_tiled {
         rows.extend(tiled_rows(reader, inner));
-    }
-
-    rows
-}
-
-fn subpaving_rows(reader: &mut Reader<'_>, layout: &SubpavingLayout) -> Vec<Row> {
-    let mut rows = Vec::new();
-
-    rows.push(reader.take_row(4, format!("region_count = {}", layout.regions.len())));
-
-    for (r, region) in layout.regions.iter().enumerate() {
-        for (i, &v) in region.origin.iter().enumerate() {
-            rows.push(reader.take_row(8, format!("region[{r}].origin[{i}] = {v}")));
-        }
-        for (i, &v) in region.region_shape.iter().enumerate() {
-            rows.push(reader.take_row(8, format!("region[{r}].region_shape[{i}] = {v}")));
-        }
-        rows.push(reader.take_row(
-            1,
-            format!(
-                "region[{r}].region_layout_tag = 0x{:02X} ({})",
-                region.region_layout_tag,
-                layout_tag_name(region.region_layout_tag)
-            ),
-        ));
-        rows.push(reader.take_row(3, "region._reserved".to_string()));
-        rows.push(reader.take_row(
-            4,
-            format!("region[{r}].buffer_index = {}", region.buffer_index),
-        ));
-        rows.push(reader.take_row(
-            8,
-            format!(
-                "region[{r}].region_byte_offset = {}",
-                region.region_byte_offset
-            ),
-        ));
-
-        if let Some(inner) = &region.inner_layout {
-            rows.extend(layout_rows(reader, inner));
-        }
     }
 
     rows

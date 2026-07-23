@@ -13,8 +13,7 @@ use hurray_core::{
     layout::{
         BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout, CsfLayout, CsrLayout,
         HilbertLayout, KvRole, LayoutDescriptor, MortonLayout, OuterStrides,
-        PrivateExtensionLayout, RegionDescriptor, StridedLayout, SubpavingLayout, TiledLayout,
-        UnknownLayout,
+        PrivateExtensionLayout, StridedLayout, TiledLayout, UnknownLayout,
     },
     Shape,
 };
@@ -92,24 +91,7 @@ fn main() {
         morton.validate_against_shape(&morton_shape).is_ok(),
     );
 
-    // ── General Subpaving (0x06) — four 4×4 quadrants of an 8×8 tensor ───────
-    let sp_shape = Shape::new(vec![8, 8]).unwrap();
-    let regions = vec![
-        RegionDescriptor::new(vec![0, 0], vec![4, 4], 0x01, 0, 0).unwrap(),
-        RegionDescriptor::new(vec![0, 4], vec![4, 4], 0x01, 0, 64).unwrap(),
-        RegionDescriptor::new(vec![4, 0], vec![4, 4], 0x01, 0, 128).unwrap(),
-        RegionDescriptor::new(vec![4, 4], vec![4, 4], 0x01, 0, 192).unwrap(),
-    ];
-    let subpaving =
-        LayoutDescriptor::Subpaving(SubpavingLayout::new(regions).expect("valid subpaving"));
-    println!(
-        "Subpaving:  tag=0x{:02X}  buffers={:?}  valid={}  (four 4×4 row-major quadrants)",
-        subpaving.tag(),
-        subpaving.buffer_count().map(|n| n.get()),
-        subpaving.validate_against_shape(&sp_shape).is_ok(),
-    );
-
-    // ── COO sparse (0x07) — buffer_count = 2 ─────────────────────────────────
+    // ── COO sparse (0x06) — buffer_count = 2 ─────────────────────────────────
     let coo_shape = Shape::new(vec![4, 4]).unwrap();
     let coo = LayoutDescriptor::Coo(CooLayout::new(3, true));
     println!(
@@ -119,7 +101,7 @@ fn main() {
         coo.validate_against_shape(&coo_shape).is_ok(),
     );
 
-    // ── CSR sparse (0x08) — buffer_count = 3 ─────────────────────────────────
+    // ── CSR sparse (0x07) — buffer_count = 3 ─────────────────────────────────
     let csr_shape = Shape::new(vec![4, 5]).unwrap();
     let csr = LayoutDescriptor::Csr(CsrLayout::new(5));
     println!(
@@ -129,7 +111,7 @@ fn main() {
         csr.validate_against_shape(&csr_shape).is_ok(),
     );
 
-    // ── CSC sparse (0x09) — buffer_count = 3 ─────────────────────────────────
+    // ── CSC sparse (0x08) — buffer_count = 3 ─────────────────────────────────
     let csc_shape = Shape::new(vec![4, 5]).unwrap();
     let csc = LayoutDescriptor::Csc(CscLayout::new(5));
     println!(
@@ -139,7 +121,7 @@ fn main() {
         csc.validate_against_shape(&csc_shape).is_ok(),
     );
 
-    // ── CSF sparse (0x0A) — rank-N, buffer_count = 2·rank+1 ──────────────────
+    // ── CSF sparse (0x09) — rank-N, buffer_count = 2·rank+1 ──────────────────
     let csf_shape = Shape::new(vec![2, 3, 4]).unwrap();
     let csf = LayoutDescriptor::Csf(CsfLayout::new(4, vec![0, 1, 2]));
     println!(
@@ -149,7 +131,7 @@ fn main() {
         csf.validate_against_shape(&csf_shape).is_ok(),
     );
 
-    // ── Block-paged (0x0B) — PagedAttention KV cache, rank-3, buffer_count = 3 ─
+    // ── Block-paged (0x0A) — PagedAttention KV cache, rank-3, buffer_count = 3 ─
     let bp_shape = Shape::new(vec![6, 2, 8]).unwrap(); // [total_tokens, num_heads, head_dim]
     let block_paged = LayoutDescriptor::BlockPaged(BlockPagedLayout::new(
         4,                        // page_size (tokens/page)
@@ -189,7 +171,7 @@ fn main() {
     );
 
     // ── Unknown (permissive mode passthrough) ─────────────────────────────────
-    let unknown = LayoutDescriptor::Unknown(UnknownLayout::new(0x0A, vec![0xAB, 0xCD]).unwrap());
+    let unknown = LayoutDescriptor::Unknown(UnknownLayout::new(0x0B, vec![0xAB, 0xCD]).unwrap());
     println!(
         "Unknown:    tag=0x{:02X}  buffers={:?}  valid={}  (permissive mode — never dereference data)",
         unknown.tag(),

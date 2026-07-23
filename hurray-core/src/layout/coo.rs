@@ -1,6 +1,6 @@
 //! COO (Coordinate) sparse layout descriptor.
 //!
-//! Tag `0x07`. Buffer count = 2 (values + indices).
+//! Tag `0x06`. Buffer count = 2 (values + indices).
 //! See `docs/spec/layouts/coo.md`.
 
 /// Descriptor for the COO (Coordinate list) sparse layout.
@@ -22,7 +22,7 @@
 /// use hurray_core::layout::{CooLayout, LayoutDescriptor};
 ///
 /// let layout = LayoutDescriptor::Coo(CooLayout::new(3, true));
-/// assert_eq!(layout.tag(), 0x07);
+/// assert_eq!(layout.tag(), 0x06);
 /// assert_eq!(layout.buffer_count().map(|n| n.get()), Some(2));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -59,9 +59,9 @@ mod tests {
     use crate::layout::LayoutDescriptor;
 
     #[test]
-    fn coo_tag_is_0x07() {
+    fn coo_tag_is_0x06() {
         let layout = LayoutDescriptor::Coo(CooLayout::new(0, false));
-        assert_eq!(layout.tag(), 0x07);
+        assert_eq!(layout.tag(), 0x06);
     }
 
     #[test]

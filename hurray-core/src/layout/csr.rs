@@ -1,6 +1,6 @@
 //! CSR (Compressed Sparse Row) layout descriptor.
 //!
-//! Tag `0x08`. Rank MUST be 2. Buffer count = 3 (values + col_indices + row_ptr).
+//! Tag `0x07`. Rank MUST be 2. Buffer count = 3 (values + col_indices + row_ptr).
 //! See `docs/spec/layouts/csr.md`.
 
 /// Descriptor for the CSR (Compressed Sparse Row) sparse layout.
@@ -25,7 +25,7 @@
 /// use hurray_core::layout::{CsrLayout, LayoutDescriptor};
 ///
 /// let layout = LayoutDescriptor::Csr(CsrLayout::new(5));
-/// assert_eq!(layout.tag(), 0x08);
+/// assert_eq!(layout.tag(), 0x07);
 /// assert_eq!(layout.buffer_count().map(|n| n.get()), Some(3));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -57,9 +57,9 @@ mod tests {
     use crate::layout::LayoutDescriptor;
 
     #[test]
-    fn csr_tag_is_0x08() {
+    fn csr_tag_is_0x07() {
         let layout = LayoutDescriptor::Csr(CsrLayout::new(0));
-        assert_eq!(layout.tag(), 0x08);
+        assert_eq!(layout.tag(), 0x07);
     }
 
     #[test]

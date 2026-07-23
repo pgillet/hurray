@@ -1,6 +1,6 @@
 //! Block-paged layout descriptor.
 //!
-//! Tag `0x0B`. Rank MUST be 3. Buffer count = 3 (page_pool + block_table + seq_ptr).
+//! Tag `0x0A`. Rank MUST be 3. Buffer count = 3 (page_pool + block_table + seq_ptr).
 //! See `docs/spec/layouts/block-paged.md`.
 
 /// KV-cache role for a block-paged tensor.
@@ -197,7 +197,7 @@ pub(crate) const LAYER_INDEX_NONE: u32 = 0xFFFF_FFFF;
 /// assert_eq!(layout.layer_index, Some(3));
 ///
 /// let desc = LayoutDescriptor::BlockPaged(layout);
-/// assert_eq!(desc.tag(), 0x0B);
+/// assert_eq!(desc.tag(), 0x0A);
 /// assert_eq!(desc.buffer_count().map(|n| n.get()), Some(3));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -508,13 +508,13 @@ mod tests {
 
     // ── BlockPagedLayout tag and buffer count ─────────────────────────────────
 
-    /// Spec §block-paged.md: layout tag MUST be 0x0B.
+    /// Spec §block-paged.md: layout tag MUST be 0x0A.
     #[test]
-    fn block_paged_layout_tag_is_0x0b() {
+    fn block_paged_layout_tag_is_0x0a() {
         let layout =
             BlockPagedLayout::new(16, 64, 0, 2, KvRole::Key, Some(0), BlockTableIndexType::U32);
         let desc = LayoutDescriptor::BlockPaged(layout);
-        assert_eq!(desc.tag(), 0x0B);
+        assert_eq!(desc.tag(), 0x0A);
     }
 
     /// Spec §block-paged.md §Buffer Table: buffer_count MUST be 3.
