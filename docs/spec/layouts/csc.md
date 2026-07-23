@@ -1,6 +1,6 @@
 # CSC (Compressed Sparse Column) Layout — Hurray Format Specification
 
-**Layout tag:** `0x09` | **Tier:** 1
+**Layout tag:** `0x08` | **Tier:** 1
 
 > Also known as: **CCS (Compressed Column Storage)**
 

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The **block-paged** layout (tag `0x0B`) is the interchange form of a PagedAttention-style
+The **block-paged** layout (tag `0x0A`) is the interchange form of a PagedAttention-style
 KV cache — the central data structure moved between prefill and decode workers in
 disaggregated LLM inference. It is an *indirect* layout: every logical element exists, but
 the mapping from a logical index to a physical buffer position is resolved through a
@@ -41,7 +41,7 @@ let layout = LayoutDescriptor::BlockPaged(BlockPagedLayout::new(
     BlockTableIndexType::U32, // 32-bit block_table / seq_ptr (U64 for huge pools)
 ));
 
-assert_eq!(layout.tag(), 0x0B);
+assert_eq!(layout.tag(), 0x0A);
 assert_eq!(layout.buffer_count().map(|n| n.get()), Some(3));
 
 // Block-paged is rank-3 only.

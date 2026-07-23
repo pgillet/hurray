@@ -45,12 +45,12 @@ descriptor whose major version field exceeds the reader's supported major versio
 | [layouts/strided.md](layouts/strided.md) | Strided layout with negative/zero stride support — tag `0x03` |
 | [layouts/tiled.md](layouts/tiled.md) | Tiled / blocked layout with recursive nesting — tag `0x04` |
 | [layouts/morton.md](layouts/morton.md) | Morton (Z-order curve) layout — tag `0x05` |
-| [layouts/subpaving.md](layouts/subpaving.md) | General subpaving (irregular regions) layout — tag `0x06` |
-| [layouts/coo.md](layouts/coo.md) | COO (Coordinate) sparse layout — tag `0x07` |
-| [layouts/csr.md](layouts/csr.md) | CSR (Compressed Sparse Row) sparse layout — tag `0x08` |
-| [layouts/csc.md](layouts/csc.md) | CSC (Compressed Sparse Column) sparse layout — tag `0x09` (also known as CCS) |
-| [layouts/csf.md](layouts/csf.md) | CSF (Compressed Sparse Fiber) sparse layout — tag `0x0A` |
-| [layouts/block-paged.md](layouts/block-paged.md) | Block-paged (PagedAttention KV cache) layout — tag `0x0B` |
+| [layouts/coo.md](layouts/coo.md) | COO (Coordinate) sparse layout — tag `0x06` |
+| [layouts/csr.md](layouts/csr.md) | CSR (Compressed Sparse Row) sparse layout — tag `0x07` |
+| [layouts/csc.md](layouts/csc.md) | CSC (Compressed Sparse Column) sparse layout — tag `0x08` (also known as CCS) |
+| [layouts/csf.md](layouts/csf.md) | CSF (Compressed Sparse Fiber) sparse layout — tag `0x09` |
+| [layouts/block-paged.md](layouts/block-paged.md) | Block-paged (PagedAttention KV cache) layout — tag `0x0A` |
+| [layouts/composite.md](layouts/composite.md) | Composite / Virtual tensor (head + members) — tag `0x0B` |
 | [layouts/hilbert.md](layouts/hilbert.md) | Hilbert curve layout — tag `0x40` |
 | [buffer-protocol.md](buffer-protocol.md) | Zero-copy semantics, alignment, device memory |
 | [metadata.md](metadata.md) | Tensor descriptor binary encoding |

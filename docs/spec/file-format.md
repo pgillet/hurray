@@ -211,6 +211,49 @@ byte comparison, no Unicode normalisation).
 
 ---
 
+## Composite Tensors
+
+A composite tensor (head + members; see `layouts/composite.md`) is written as a **head**
+descriptor followed by its `member_count = N` members, all as **consecutive tensors** in
+the tensor region, in that order. The head is an ordinary tensor with `layout_tag = 0x0B`
+and `buffer_count = 0`, so its data region occupies `0` bytes (its `data_length` in the
+index is `0`); each member is written as an ordinary tensor with its own descriptor and
+data buffers. Every tensor — head and members alike — gets its own index entry.
+
+**No `data_buffer_alignment` padding after a head.** § Data Buffer Placement's alignment
+rule applies to a tensor's data buffer(s); a `buffer_count = 0` head has none — unlike an
+*empty* tensor (§ Empty Tensors), which still has one buffer of `byte_size = 0` and is
+therefore still aligned as a buffer. A writer MUST NOT insert `data_buffer_alignment`
+padding after a composite head's descriptor. The next descriptor (the head's first
+member) follows at the ordinary `8`-byte descriptor-aligned offset (§ Descriptor
+Placement).
+
+Membership is recovered from the head's `member_count` plus **descriptor-offset order**:
+the members are the next `N` tensors, ordered by ascending `descriptor_offset`, following
+the head. This recovery rule uses `descriptor_offset` order (write order in the tensor
+region), which is preserved **regardless of whether the `SORTED_INDEX` file flag is set**.
+Setting `SORTED_INDEX` reorders only the *index entries* (by tensor name, for binary
+search); it does not move tensors within the tensor region, so `descriptor_offset` order
+still recovers head→member adjacency.
+
+The composite **closes** at the Nth member. A reader MUST run the close-time validation for
+the composition rule (`layouts/composite.md` § Validation) once all N members are located.
+A file in which fewer than N members follow a head (a torn composite) is invalid: a strict
+reader MUST reject it; a permissive reader MAY treat the arrived members as independent
+shard tensors but MUST NOT present the composite as complete.
+
+Nested composites are permitted: a member MAY itself be a head, whose own members are the
+immediately following tensors (pre-order), subject to the depth limit in
+`layouts/composite.md` § Binding.
+
+> **Note (non-normative):** Because membership is positional, composite members are not
+> required to carry distinguishing names beyond the file format's per-tensor uniqueness
+> rule. A reader that only wants the merged logical view resolves it from the head plus its
+> N following members; a reader indexing by name still sees each member as an addressable
+> tensor.
+
+---
+
 ## Trailer
 
 The trailer occupies the last 40 bytes of the file (bytes `file_size - 40` through

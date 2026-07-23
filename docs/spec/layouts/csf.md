@@ -1,6 +1,6 @@
 # CSF (Compressed Sparse Fiber) Layout — Hurray Format Specification
 
-**Layout tag:** `0x0A` | **Tier:** 1
+**Layout tag:** `0x09` | **Tier:** 1
 
 > This section uses RFC 2119 key words: MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT,
 > SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL.

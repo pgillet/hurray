@@ -33,7 +33,7 @@ Hurray is designed to evolve. Within major version `1.x`, the format is BACKWARD
 
 ### 5. Rich Memory Layout Vocabulary
 
-Twelve layout types are defined: row-major, column-major, strided, tiled/blocked (for GEMM), Morton Z-order, Hilbert curve, general subpaving, sparse COO/CSR/CSC/CSF (CSF is the rank-N generalization of CSR/CSC), and block-paged (for PagedAttention KV caches). Strides are expressed in logical elements, not bytes. Negative and zero strides are valid. Sub-byte packing (int4, bool) is first-class.
+Twelve layout types are defined: row-major, column-major, strided, tiled/blocked (for GEMM), Morton Z-order, Hilbert curve, sparse COO/CSR/CSC/CSF (CSF is the rank-N generalization of CSR/CSC), block-paged (for PagedAttention KV caches), and composite (head + members, for partitioning, overlay, and grouping). Strides are expressed in logical elements, not bytes. Negative and zero strides are valid. Sub-byte packing (int4, bool) is first-class.
 
 ### 6. First-Class Quantization
 
