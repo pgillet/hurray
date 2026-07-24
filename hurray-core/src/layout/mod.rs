@@ -10,8 +10,8 @@
 //! | Range | Allocation |
 //! |-------|-----------|
 //! | `0x00` | Reserved (permanently invalid) |
-//! | `0x01`–`0x0A` | Core named layouts (Tier 1) |
-//! | `0x0B`–`0x3F` | Reserved for future specification versions |
+//! | `0x01`–`0x0B` | Core named layouts (Tier 1), including the Composite / Virtual head (`0x0B`, ADR-027) |
+//! | `0x0C`–`0x3F` | Reserved for future specification versions |
 //! | `0x40` | Hilbert curve layout (Tier 2) |
 //! | `0x41`–`0x7F` | Reserved for future specification versions |
 //! | `0x80`–`0xEF` | Reserved for future specification versions |
@@ -34,6 +34,7 @@
 pub mod addressing;
 pub mod block_paged;
 pub mod col_major;
+pub mod composite;
 pub mod coo;
 pub mod csc;
 pub mod csf;
@@ -48,6 +49,7 @@ pub mod unknown;
 
 pub use addressing::{byte_address_from_element_offset, ElementAddress};
 pub use block_paged::{BlockPagedLayout, BlockTableIndexType, KvRole};
+pub use composite::{CombineOp, CompositeLayout, CompositionRule};
 pub use coo::CooLayout;
 pub use csc::CscLayout;
 pub use csf::CsfLayout;
@@ -87,6 +89,8 @@ pub const TAG_CSC: u8 = 0x08;
 pub const TAG_CSF: u8 = 0x09;
 /// Layout tag for block-paged indirect layout.
 pub const TAG_BLOCK_PAGED: u8 = 0x0A;
+/// Layout tag for the composite / virtual head (ADR-027). See `docs/spec/layouts/composite.md`.
+pub const TAG_COMPOSITE: u8 = 0x0B;
 /// Layout tag for Hilbert curve layout.
 pub const TAG_HILBERT: u8 = 0x40;
 
@@ -109,12 +113,11 @@ pub fn is_invalid_tag(tag: u8) -> bool {
 }
 
 /// Returns `true` if `tag` falls in a range reserved for future specification
-/// versions (`0x0B`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`).
+/// versions (`0x0C`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`).
 ///
-/// Tag `0x0A` (block-paged) is the last named layout tag in this crate. The
-/// spec reserves `0x0B` for the future Composite layout (see ADR-027), but
-/// this crate does not implement Composite yet, so `0x0B` is treated as
-/// reserved along with the rest of the unassigned range.
+/// Tag `0x0B` (composite / virtual head, ADR-027) is now a named Tier-1 tag and is
+/// therefore no longer reserved — it moved out of this range when Composite was
+/// implemented.
 ///
 /// # Examples
 ///
@@ -122,7 +125,7 @@ pub fn is_invalid_tag(tag: u8) -> bool {
 /// use hurray_core::layout::is_reserved_tag;
 ///
 /// assert!(!is_reserved_tag(0x0A)); // block-paged — named tag
-/// assert!(is_reserved_tag(0x0B)); // reserved for future Composite layout
+/// assert!(!is_reserved_tag(0x0B)); // composite / virtual head — named tag
 /// assert!(is_reserved_tag(0x0C));
 /// assert!(is_reserved_tag(0x3F));
 /// assert!(is_reserved_tag(0x41));
@@ -132,9 +135,7 @@ pub fn is_invalid_tag(tag: u8) -> bool {
 /// ```
 #[inline]
 pub fn is_reserved_tag(tag: u8) -> bool {
-    // 0x0B is reserved for spec's future Composite tag (ADR-027); not implemented
-    // in this crate yet, so it falls in the reserved range like 0x0C-0x3F.
-    matches!(tag, 0x0B..=0x3F | 0x41..=0x7F | 0x80..=0xEF)
+    matches!(tag, 0x0C..=0x3F | 0x41..=0x7F | 0x80..=0xEF)
 }
 
 /// Returns `true` if `tag` is in the private-extension range (`0xF0`–`0xFE`).
@@ -165,7 +166,7 @@ pub fn is_private_tag(tag: u8) -> bool {
 /// | Tag range | Error |
 /// |-----------|-------|
 /// | `0x00`, `0xFF` | [`Error::InvalidLayoutTag`] |
-/// | `0x0B`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF` | [`Error::ReservedLayoutTag`] |
+/// | `0x0C`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF` | [`Error::ReservedLayoutTag`] |
 /// | `0xF0`–`0xFE` | [`Error::PrivateLayoutTag`] |
 /// | Any other unrecognised value | [`Error::UnknownLayoutTag`] |
 ///
@@ -176,9 +177,10 @@ pub fn is_private_tag(tag: u8) -> bool {
 ///
 /// assert!(validate_layout_tag_strict(0x01).is_ok());
 /// assert!(validate_layout_tag_strict(0x09).is_ok()); // CSF
+/// assert!(validate_layout_tag_strict(0x0B).is_ok()); // composite / virtual head
 /// assert!(matches!(validate_layout_tag_strict(0x00), Err(Error::InvalidLayoutTag(0x00))));
 /// assert!(matches!(validate_layout_tag_strict(0xFF), Err(Error::InvalidLayoutTag(0xFF))));
-/// assert!(matches!(validate_layout_tag_strict(0x0B), Err(Error::ReservedLayoutTag(0x0B))));
+/// assert!(matches!(validate_layout_tag_strict(0x0C), Err(Error::ReservedLayoutTag(0x0C))));
 /// assert!(matches!(validate_layout_tag_strict(0xF0), Err(Error::PrivateLayoutTag(0xF0))));
 /// ```
 pub fn validate_layout_tag_strict(tag: u8) -> Result<()> {
@@ -187,7 +189,7 @@ pub fn validate_layout_tag_strict(tag: u8) -> Result<()> {
         t if is_reserved_tag(t) => Err(Error::ReservedLayoutTag(tag)),
         t if is_private_tag(t) => Err(Error::PrivateLayoutTag(tag)),
         TAG_ROW_MAJOR | TAG_COL_MAJOR | TAG_STRIDED | TAG_TILED | TAG_MORTON | TAG_COO
-        | TAG_CSR | TAG_CSC | TAG_CSF | TAG_BLOCK_PAGED | TAG_HILBERT => Ok(()),
+        | TAG_CSR | TAG_CSC | TAG_CSF | TAG_BLOCK_PAGED | TAG_COMPOSITE | TAG_HILBERT => Ok(()),
         _ => Err(Error::UnknownLayoutTag(tag)),
     }
 }
@@ -279,6 +281,16 @@ pub enum LayoutDescriptor {
     /// See `docs/spec/layouts/block-paged.md`.
     BlockPaged(BlockPagedLayout),
 
+    /// Composite / Virtual head. Tag `0x0B`. Owns no data (`buffer_count = 0`).
+    ///
+    /// The head presents a single logical `shape`/`type_tag` view over an ordered
+    /// set of **member** tensor descriptors bound by forward stream adjacency (see
+    /// [`crate::composite::CompositeTensor`]). This is a new addressing category,
+    /// **Virtual**, alongside Dense, Sparse, and Indirect.
+    ///
+    /// See `docs/spec/layouts/composite.md`.
+    Composite(CompositeLayout),
+
     /// Hilbert curve layout. Tag `0x40`.
     Hilbert(HilbertLayout),
 
@@ -326,15 +338,18 @@ impl LayoutDescriptor {
             Self::Csc(_) => TAG_CSC,
             Self::Csf(_) => TAG_CSF,
             Self::BlockPaged(_) => TAG_BLOCK_PAGED,
+            Self::Composite(_) => TAG_COMPOSITE,
             Self::Hilbert(_) => TAG_HILBERT,
             Self::PrivateExtension(p) => p.tag,
             Self::Unknown(u) => u.tag,
         }
     }
 
-    /// Returns the number of data buffers this layout requires, or `None` if
-    /// the count is not statically known (only for [`LayoutDescriptor::Unknown`]
-    /// and [`LayoutDescriptor::PrivateExtension`]).
+    /// Returns the number of data buffers this layout requires, or `None` if the
+    /// count is either not statically known ([`LayoutDescriptor::Unknown`],
+    /// [`LayoutDescriptor::PrivateExtension`]) or is a virtual "known zero"
+    /// ([`LayoutDescriptor::Composite`] — use [`LayoutDescriptor::is_virtual`] to
+    /// tell the two apart).
     ///
     /// Dense layouts always require 1 buffer. Sparse layouts require a fixed
     /// number of component buffers as defined per format:
@@ -345,7 +360,8 @@ impl LayoutDescriptor {
     /// | COO | 2 |
     /// | CSR, CSC, BlockPaged | 3 |
     /// | CSF | `2·rank+1` (rank-dependent; embedded in `mode_order.len()`) |
-    /// | PrivateExtension, Unknown | `None` |
+    /// | Composite | `0`, not `NonZeroU8`-representable — reported as `None` |
+    /// | PrivateExtension, Unknown | `None` (genuinely unknown) |
     ///
     /// > **Note:** This is the layout's **minimum** buffer count, not the total size
     /// > of the tensor descriptor's buffer table. Quantization-parameter buffers are
@@ -404,9 +420,39 @@ impl LayoutDescriptor {
                 NonZeroU8::new(count)
             }
 
+            // Composite: a virtual head owns exactly zero buffers, but "known zero" isn't
+            // representable via NonZeroU8 — callers MUST use `is_virtual()` to distinguish
+            // this case from PrivateExtension/Unknown's genuinely-unknown count.
+            Self::Composite(_) => None,
+
             // Private and unknown: buffer requirements are not known statically.
             Self::PrivateExtension(_) | Self::Unknown(_) => None,
         }
+    }
+
+    /// Returns `true` if this layout is **virtual** (owns no data buffer).
+    ///
+    /// Only [`LayoutDescriptor::Composite`] is virtual. This lets callers
+    /// distinguish "buffer count is `None` because the layout is virtual (a
+    /// known zero, per spec)" from "buffer count is `None` because it is not
+    /// statically known" ([`LayoutDescriptor::Unknown`],
+    /// [`LayoutDescriptor::PrivateExtension`]) — both report `None` from
+    /// [`LayoutDescriptor::buffer_count`], but only the former is genuinely zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::layout::{CompositeLayout, CompositionRule, LayoutDescriptor};
+    ///
+    /// let composite = LayoutDescriptor::Composite(
+    ///     CompositeLayout::new(CompositionRule::Group, 0).unwrap(),
+    /// );
+    /// assert!(composite.is_virtual());
+    /// assert!(!LayoutDescriptor::RowMajor.is_virtual());
+    /// ```
+    #[inline]
+    pub fn is_virtual(&self) -> bool {
+        matches!(self, Self::Composite(_))
     }
 
     /// Validates layout-specific constraints against the provided tensor shape.
@@ -607,6 +653,25 @@ impl LayoutDescriptor {
                 Ok(())
             }
 
+            Self::Composite(c) => {
+                // Spec (composite.md § Head Descriptor): partition and overlay
+                // heads present a coverage/box-addressed index space, so a DYNAMIC
+                // dimension (unresolved size) would make coverage math ill-defined.
+                // Group has no spatial semantics, so it is unaffected. This check has
+                // the composition rule in hand here (unlike a bare shape check), so it
+                // belongs at this layer rather than being deferred to the cross-member
+                // validator in `crate::composite`, which only sees whole descriptors.
+                let needs_static_shape = !matches!(c.rule, CompositionRule::Group);
+                if needs_static_shape && shape.has_dynamic() {
+                    return Err(Error::InvalidLayout(
+                        "composite head: partition/overlay composition requires a fully \
+                         static shape (no DYNAMIC dimension)"
+                            .to_string(),
+                    ));
+                }
+                Ok(())
+            }
+
             Self::Hilbert(h) => {
                 if h.hilbert_rank as usize != shape.rank() {
                     return Err(Error::InvalidLayout(format!(
@@ -689,6 +754,14 @@ impl LayoutDescriptor {
             // BlockPaged is indirect (multi-buffer); use addressing::block_paged directly.
             Self::BlockPaged(_) => Err(crate::Error::LayoutRequiresMultiBuffer {
                 layout_tag: TAG_BLOCK_PAGED,
+            }),
+            // Composite is virtual (zero buffers, not "many buffers") — a distinct failure
+            // mode from LayoutRequiresMultiBuffer, so it gets its own error rather than
+            // overloading that variant's "use the layout-specific method instead" framing.
+            // Addressing a composite means resolving to a member first; see
+            // `crate::composite::CompositeTensor`.
+            Self::Composite(_) => Err(crate::Error::LayoutIsVirtual {
+                layout_tag: TAG_COMPOSITE,
             }),
             Self::PrivateExtension(p) => Err(crate::Error::PrivateLayoutTag(p.tag)),
             Self::Unknown(u) => Err(crate::Error::UnknownLayoutTag(u.tag)),
@@ -841,9 +914,9 @@ mod tests {
 
     #[test]
     fn reserved_tags_rejected() {
-        // 0x0A is now block-paged (named tag), not reserved. 0x0B is reserved for
-        // the spec's future Composite layout, unimplemented in this crate.
-        for tag in [0x0B_u8, 0x0C, 0x3F, 0x41, 0x7F, 0x80, 0xEF] {
+        // 0x0A is block-paged and 0x0B is the composite / virtual head (ADR-027)
+        // — both named tags, not reserved. 0x0C is now the lower boundary.
+        for tag in [0x0C_u8, 0x3F, 0x41, 0x7F, 0x80, 0xEF] {
             assert!(
                 matches!(
                     validate_layout_tag_strict(tag),

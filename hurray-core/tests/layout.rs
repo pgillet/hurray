@@ -263,13 +263,13 @@ fn is_invalid_tag_false_for_all_other_values() {
 
 // ── ADR-013 invariant 5: reserved-range tags rejected (ReservedLayoutTag) ────
 
-/// Spec §memory-layout.md: reserved ranges are 0x0B–0x3F, 0x41–0x7F, 0x80–0xEF.
-/// (0x0A is block-paged, the last named layout tag in this crate. 0x0B is
-/// reserved for the spec's future Composite layout — not yet implemented here.)
+/// Spec §memory-layout.md: reserved ranges are 0x0C–0x3F, 0x41–0x7F, 0x80–0xEF.
+/// (0x0A is block-paged and 0x0B is the composite / virtual head (ADR-027), the
+/// last two named layout tags in this crate.)
 #[test]
 fn validate_strict_rejects_reserved_range_boundaries() {
-    // First and last of each reserved sub-range (0x0A is now block-paged, so range starts at 0x0B).
-    let reserved_boundary_pairs = [(0x0B_u8, 0x3F), (0x41, 0x7F), (0x80, 0xEF)];
+    // First and last of each reserved sub-range (0x0A/0x0B are now named tags, so range starts at 0x0C).
+    let reserved_boundary_pairs = [(0x0C_u8, 0x3F), (0x41, 0x7F), (0x80, 0xEF)];
     for (lo, hi) in reserved_boundary_pairs {
         assert!(
             matches!(
@@ -290,12 +290,9 @@ fn validate_strict_rejects_reserved_range_boundaries() {
 
 #[test]
 fn is_reserved_tag_true_for_all_reserved_ranges() {
-    // Spot-check each reserved sub-range (0x0B is reserved for the spec's
-    // future Composite layout, unimplemented in this crate — not 0x0A, which
-    // is now block-paged — a named tag).
-    for tag in [
-        0x0B_u8, 0x0C, 0x20, 0x3F, 0x41, 0x60, 0x7F, 0x80, 0xA0, 0xEF,
-    ] {
+    // Spot-check each reserved sub-range (0x0A is block-paged and 0x0B is the
+    // composite / virtual head — both named tags, not reserved).
+    for tag in [0x0C_u8, 0x20, 0x3F, 0x41, 0x60, 0x7F, 0x80, 0xA0, 0xEF] {
         assert!(is_reserved_tag(tag), "0x{tag:02X} should be reserved");
     }
 }
@@ -1085,13 +1082,14 @@ fn validate_strict_accepts_all_known_tags() {
 
 // ── is_* helper functions — exhaustive boundary checks ────────────────────────
 
-/// The first reserved range starts at 0x0B (0x0A is block-paged, the last named
-/// tag in this crate; 0x0B is reserved for the spec's future Composite layout).
+/// The first reserved range starts at 0x0C (0x0A is block-paged and 0x0B is the
+/// composite / virtual head, ADR-027 — both named tags in this crate).
 #[test]
 fn first_reserved_range_lower_boundary() {
-    assert!(is_reserved_tag(0x0B));
-    // 0x0A is TAG_BLOCK_PAGED — a named layout, not reserved.
+    assert!(is_reserved_tag(0x0C));
+    // 0x0A is TAG_BLOCK_PAGED and 0x0B is TAG_COMPOSITE — named layouts, not reserved.
     assert!(!is_reserved_tag(0x0A));
+    assert!(!is_reserved_tag(0x0B));
 }
 
 /// The tag immediately before the first reserved range (0x0A) must not be reserved.
@@ -1301,14 +1299,14 @@ fn validate_strict_0xfe_gives_private_layout_tag() {
 
 /// All reserved tags must produce ReservedLayoutTag.
 ///
-/// Note: `0x0A` (block-paged) is the last named layout tag in this crate.
-/// `0x0B` is reserved for the spec's future Composite layout (ADR-027), not
-/// yet implemented here, so the first reserved range starts at `0x0B`.
+/// Note: `0x0A` (block-paged) and `0x0B` (composite / virtual head, ADR-027)
+/// are the last two named layout tags in this crate, so the first reserved
+/// range starts at `0x0C`.
 #[test]
 fn validate_strict_all_reserved_ranges_produce_reserved_error() {
-    // Reserved ranges after assigning 0x0A to block-paged:
-    //   0x0B–0x3F, 0x41–0x7F, 0x80–0xEF.
-    let reserved_tags: Vec<u8> = (0x0B_u8..=0x3F)
+    // Reserved ranges after assigning 0x0A to block-paged and 0x0B to composite:
+    //   0x0C–0x3F, 0x41–0x7F, 0x80–0xEF.
+    let reserved_tags: Vec<u8> = (0x0C_u8..=0x3F)
         .chain(0x41_u8..=0x7F)
         .chain(0x80_u8..=0xEF)
         .collect();
@@ -1340,20 +1338,21 @@ fn block_paged_tag_0x0a_passes_strict_validation() {
     );
 }
 
-/// 0x0B (the first reserved slot above block-paged) is reserved.
+/// 0x0B is the composite / virtual head (ADR-027) — a named tag, not reserved.
 #[test]
-fn tag_0x0b_above_block_paged_is_reserved() {
-    assert!(matches!(
-        validate_layout_tag_strict(0x0B),
-        Err(Error::ReservedLayoutTag(0x0B))
-    ));
+fn tag_0x0b_composite_passes_strict_validation() {
+    assert!(
+        validate_layout_tag_strict(0x0B).is_ok(),
+        "0x0B (composite / virtual head) must pass strict validation"
+    );
 }
 
-/// 0x0B IS in the reserved range now that block-paged occupies 0x0A
-/// (is_reserved_tag must return true).
+/// 0x0B is NOT in the reserved range — it is the composite / virtual head tag
+/// (`is_reserved_tag` must return false). 0x0C is the new reserved lower bound.
 #[test]
-fn is_reserved_tag_returns_true_for_0x0b() {
-    assert!(is_reserved_tag(0x0B));
+fn is_reserved_tag_returns_false_for_0x0b_true_for_0x0c() {
+    assert!(!is_reserved_tag(0x0B));
+    assert!(is_reserved_tag(0x0C));
 }
 
 // ── Block-paged: tag() and buffer_count() via LayoutDescriptor ────────────────
@@ -1761,15 +1760,16 @@ fn csf_tag_passes_strict_validation() {
     );
 }
 
-/// 0x0B is the first reserved slot after CSF (0x09) and block-paged (0x0A).
+/// 0x0C is the first reserved slot after CSF (0x09), block-paged (0x0A), and
+/// the composite / virtual head (0x0B, ADR-027).
 #[test]
-fn tag_0x0b_is_reserved_lower_boundary_after_csf() {
+fn tag_0x0c_is_reserved_lower_boundary_after_composite() {
     assert!(
         matches!(
-            validate_layout_tag_strict(0x0B),
-            Err(Error::ReservedLayoutTag(0x0B))
+            validate_layout_tag_strict(0x0C),
+            Err(Error::ReservedLayoutTag(0x0C))
         ),
-        "0x0B must be ReservedLayoutTag (new lower boundary after CSF and block-paged)"
+        "0x0C must be ReservedLayoutTag (new lower boundary after CSF, block-paged, composite)"
     );
 }
 

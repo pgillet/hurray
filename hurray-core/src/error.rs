@@ -363,8 +363,10 @@ pub enum Error {
 
     /// Recursive layout nesting depth exceeded the implementation limit of 8 levels.
     ///
-    /// Despite the name, this guards recursion depth for every recursive layout
-    /// descriptor (currently only [`crate::layout::TiledLayout`]) — kept as
+    /// Despite the name, this guards recursion depth for every recursive
+    /// structure in the crate: [`crate::layout::TiledLayout`]'s nested layout
+    /// payload, and [`crate::composite::CompositeTensor`]'s cross-descriptor
+    /// nesting (a member whose own layout is itself `Composite`). Kept as
     /// `SubpavingNestingTooDeep` for wire/API stability rather than renamed
     /// as part of the subpaving removal.
     #[error("layout nesting depth exceeds the implementation limit of 8 levels")]
@@ -494,6 +496,159 @@ pub enum Error {
         declared: u32,
         /// The actual number of bytes consumed when parsing.
         actual: usize,
+    },
+
+    // ── Composite / Virtual (ADR-027, Layer 4) errors ─────────────────────────
+    /// A composite head (`layout_tag = 0x0B`) declared a non-empty buffer table.
+    #[error(
+        "composite head has {count} buffer(s); a composite head (layout_tag 0x0B) MUST have buffer_count = 0"
+    )]
+    CompositeHeadHasBuffers {
+        /// The (non-zero) buffer count found on the wire.
+        count: u8,
+    },
+
+    /// A composite head declared a non-zero `byte_offset`.
+    #[error(
+        "composite head has byte_offset {byte_offset}; a composite head MUST have byte_offset = 0"
+    )]
+    CompositeHeadHasByteOffset {
+        /// The offending `byte_offset` value.
+        byte_offset: u64,
+    },
+
+    /// A composite head set the `HAS_QUANTIZATION` flag, but a virtual head owns no stored data.
+    #[error("composite head MUST NOT set HAS_QUANTIZATION (a virtual head owns no stored data)")]
+    CompositeHeadHasQuantization,
+
+    /// The `composition_rule` byte `0xFF` is permanently invalid.
+    #[error("invalid composition rule: 0x{0:02X} is permanently reserved")]
+    InvalidCompositionRule(u8),
+
+    /// The `composition_rule` byte falls in the range reserved for future specification
+    /// versions (`0x00` and `0x04`–`0xEF`).
+    #[error("reserved composition rule: 0x{0:02X} is reserved for future specification versions")]
+    ReservedCompositionRule(u8),
+
+    /// The `composition_rule` byte is in the implementation-private range `0xF0`–`0xFE`.
+    #[error(
+        "private composition rule: 0x{0:02X} is implementation-private and not interpretable by this crate"
+    )]
+    PrivateCompositionRule(u8),
+
+    /// The `combine_op` byte is not legal for the given `composition_rule`.
+    #[error("invalid combine_op 0x{combine_op:02X} for composition rule 0x{rule:02X}")]
+    InvalidCombineOp {
+        /// The wire `composition_rule` byte.
+        rule: u8,
+        /// The offending `combine_op` byte.
+        combine_op: u8,
+    },
+
+    /// The `member_count` sentinel `0xFFFFFFFF` (open composite) is RESERVED and not usable in v1.0.
+    #[error("member_count = 0xFFFFFFFF (open composite) is reserved and not usable in v1.0")]
+    OpenCompositeReserved,
+
+    /// The Composite Member section's `member_role` byte is not `0x00` or `0x01`.
+    #[error("invalid composite member_role: 0x{0:02X} (MUST be 0x00 correction or 0x01 base)")]
+    InvalidMemberRole(u8),
+
+    /// A member's `HAS_COMPOSITE_MEMBER` flag disagrees with what its composition rule requires.
+    ///
+    /// Overlay members MUST carry a Composite Member section; partition and group members
+    /// MUST NOT.
+    #[error(
+        "composite member HAS_COMPOSITE_MEMBER presence ({has_flag}) disagrees with composition rule 0x{rule:02X}"
+    )]
+    CompositeMemberFlagMismatch {
+        /// The wire `composition_rule` byte of the enclosing head.
+        rule: u8,
+        /// Whether the member actually carried a Composite Member section.
+        has_flag: bool,
+    },
+
+    /// The number of members actually supplied does not match the head's declared `member_count`.
+    #[error(
+        "composite member_count mismatch: head declared {declared}, but {actual} member(s) were supplied"
+    )]
+    CompositeMemberCountMismatch {
+        /// The `member_count` declared by the head.
+        declared: u32,
+        /// The number of members actually pushed to the validator.
+        actual: usize,
+    },
+
+    /// A partition or overlay member did not carry a shard section (`HAS_SHARD`).
+    #[error(
+        "composite member {index} is missing a shard section (partition/overlay members MUST carry HAS_SHARD)"
+    )]
+    CompositeMemberMissingShard {
+        /// The 0-based index of the offending member.
+        index: usize,
+    },
+
+    /// A member's shard `parent_shape` does not equal the composite head's `shape`.
+    #[error("composite member {index}: shard parent_shape does not equal the head's shape")]
+    CompositeMemberParentShapeMismatch {
+        /// The 0-based index of the offending member.
+        index: usize,
+    },
+
+    /// A member's decoded value type does not equal the composite head's `type_tag`.
+    #[error(
+        "composite member {index}: decoded type 0x{member:02X} does not equal head type_tag 0x{head:02X}"
+    )]
+    CompositeMemberTypeMismatch {
+        /// The 0-based index of the offending member.
+        index: usize,
+        /// The member's own `type_tag` byte.
+        member: u8,
+        /// The head's `type_tag` byte.
+        head: u8,
+    },
+
+    /// An overlay composite's first member is not the base, or a base member appeared at a
+    /// position other than first.
+    #[error(
+        "overlay composite: the base member (member_role = 0x01) MUST be first, and only the first member may be the base"
+    )]
+    CompositeOverlayBaseNotFirst,
+
+    /// An overlay composite's base member does not span the whole index space.
+    #[error(
+        "overlay composite: the base member MUST span the whole index space (zero shard_offset, shape == head shape)"
+    )]
+    CompositeOverlayBaseNotSpanning,
+
+    /// An overlay composite head declared `member_count = 0` (no base member available).
+    #[error(
+        "overlay composite MUST have at least one member (the base); member_count = 0 is rejected"
+    )]
+    CompositeOverlayEmpty,
+
+    /// A partition composite's members leave a gap in the head's index space.
+    #[error(
+        "partition composite: member boxes do not exactly cover the head's index space (gap detected)"
+    )]
+    CompositePartitionGap,
+
+    /// Two partition members' boxes overlap.
+    #[error("partition composite: member {a} and member {b} boxes overlap")]
+    CompositePartitionOverlap {
+        /// The 0-based index of the first overlapping member.
+        a: usize,
+        /// The 0-based index of the second overlapping member.
+        b: usize,
+    },
+
+    /// A layout is virtual (owns no data buffer) and does not support element addressing.
+    ///
+    /// Currently only the composite head (`layout_tag = 0x0B`) is virtual; addressing a
+    /// composite requires resolving to a member first (see `hurray_core::composite`).
+    #[error("layout tag 0x{layout_tag:02X} is virtual (owns no data) and does not support element addressing")]
+    LayoutIsVirtual {
+        /// The virtual layout's wire tag.
+        layout_tag: u8,
     },
 }
 

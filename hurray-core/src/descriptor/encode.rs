@@ -3,14 +3,14 @@
 //! Implements the wire format defined in `docs/spec/metadata.md`. Section order:
 //! ```text
 //! [Fixed Header 20 bytes] [shape] [byte_offset] [Layout-specific]
-//! [Buffer Table] [Quantization?] [Shard?] [Statistics?] [ExtensionType?]
+//! [Buffer Table] [Quantization?] [Shard?] [Statistics?] [ExtensionType?] [CompositeMember?]
 //! ```
 //! All multi-byte fields are little-endian.
 
 use crate::descriptor::cursor::ByteWriter;
 use crate::descriptor::layout_codec::encode_layout_payload;
 use crate::descriptor::mod_types::TensorDescriptor;
-use crate::{Error, Result};
+use crate::{Error, LayoutDescriptor, Result};
 
 /// Encodes a [`TensorDescriptor`] to its wire representation.
 ///
@@ -92,6 +92,21 @@ pub(crate) fn encode(d: &TensorDescriptor) -> Result<Vec<u8>> {
     // Extension type (flag bit 2)
     if let Some(ext) = &d.extension_type {
         ext.encode_into(&mut w);
+    }
+
+    // Composite Member (flag bit 4) — appears after Extension Type per spec order.
+    if let Some(cm) = &d.composite_member {
+        // Spec (layouts/composite.md § Head Descriptor): the head MUST NOT set
+        // HAS_COMPOSITE_MEMBER. `with_composite_member` is infallible (its
+        // documented signature), so this invariant is enforced here instead —
+        // the seam where every descriptor must pass before it round-trips.
+        if matches!(d.layout, LayoutDescriptor::Composite(_)) {
+            return Err(Error::InvalidLayout(
+                "composite head MUST NOT carry a Composite Member section (HAS_COMPOSITE_MEMBER)"
+                    .to_string(),
+            ));
+        }
+        cm.encode_into(&mut w);
     }
 
     // ── Back-patch descriptor_length ──────────────────────────────────────────
