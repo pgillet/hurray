@@ -12,17 +12,19 @@
 //! - `0x08` (CSC): `nnz u64`, `_reserved u8[8]`
 //! - `0x09` (CSF): `nnz u64`, `mode_order u32[rank]`, `_reserved u8[8]`
 //! - `0x0A` (BlockPaged): see § BlockPaged field table below
+//! - `0x0B` (Composite): `composition_rule u8`, `combine_op u8`, `_reserved u8[2]`,
+//!   `member_count u32`
 //! - `0x40` (Hilbert): `hilbert_order u32`, `hilbert_rank u32`
 //! - `0xF0`–`0xFE` (PrivateExtension): `extension_layout_id u64`, `extension_data_length u32`,
 //!   `extension_data bytes[len]`
 
 use crate::descriptor::cursor::{ByteCursor, ByteWriter};
 use crate::layout::{
-    BlockPagedLayout, BlockTableIndexType, CooLayout, CscLayout, CsfLayout, CsrLayout,
-    HilbertLayout, InnerStrides, KvRole, LayoutDescriptor, MortonLayout, OuterStrides,
-    PrivateExtensionLayout, StridedLayout, TiledLayout, MAX_TILED_DEPTH, TAG_BLOCK_PAGED,
-    TAG_COL_MAJOR, TAG_COO, TAG_CSC, TAG_CSF, TAG_CSR, TAG_HILBERT, TAG_MORTON, TAG_ROW_MAJOR,
-    TAG_STRIDED, TAG_TILED,
+    BlockPagedLayout, BlockTableIndexType, CompositeLayout, CompositionRule, CooLayout, CscLayout,
+    CsfLayout, CsrLayout, HilbertLayout, InnerStrides, KvRole, LayoutDescriptor, MortonLayout,
+    OuterStrides, PrivateExtensionLayout, StridedLayout, TiledLayout, MAX_TILED_DEPTH,
+    TAG_BLOCK_PAGED, TAG_COL_MAJOR, TAG_COMPOSITE, TAG_COO, TAG_CSC, TAG_CSF, TAG_CSR, TAG_HILBERT,
+    TAG_MORTON, TAG_ROW_MAJOR, TAG_STRIDED, TAG_TILED,
 };
 use crate::{Error, Result};
 
@@ -64,6 +66,7 @@ fn encode_layout_payload_at_depth(
         LayoutDescriptor::Csc(c) => encode_csc(c, w),
         LayoutDescriptor::Csf(c) => encode_csf(c, rank, w),
         LayoutDescriptor::BlockPaged(bp) => encode_block_paged(bp, w),
+        LayoutDescriptor::Composite(c) => encode_composite(c, w),
         LayoutDescriptor::Hilbert(h) => encode_hilbert(h, w),
         LayoutDescriptor::PrivateExtension(p) => encode_private_extension(p, w),
         LayoutDescriptor::Unknown(_) => {
@@ -99,6 +102,7 @@ pub(crate) fn decode_layout_payload(
         TAG_CSC => decode_csc(cursor),
         TAG_CSF => decode_csf(cursor, rank),
         TAG_BLOCK_PAGED => decode_block_paged(cursor),
+        TAG_COMPOSITE => decode_composite(cursor),
         TAG_HILBERT => decode_hilbert(cursor),
         0xF0..=0xFE => decode_private_extension(tag, cursor),
         0x00 | 0xFF => Err(Error::InvalidLayoutTag(tag)),
@@ -466,6 +470,45 @@ fn decode_block_paged(cursor: &mut ByteCursor<'_>) -> crate::Result<LayoutDescri
     )))
 }
 
+// ── Composite ─────────────────────────────────────────────────────────────────
+
+/// Field order for the composite head (spec `docs/spec/layouts/composite.md`
+/// § Head Layout-Specific Fields, all little-endian):
+///
+/// | Field              | Wire type | Bytes |
+/// |---------------------|-----------|-------|
+/// | `composition_rule`  | uint8     | 1     |
+/// | `combine_op`        | uint8     | 1     |
+/// | `_reserved`         | uint8[2]  | 2     |
+/// | `member_count`      | uint32    | 4     |
+///                                     Total 8 bytes
+fn encode_composite(layout: &CompositeLayout, w: &mut ByteWriter) -> Result<()> {
+    w.write_u8(layout.rule.rule_byte());
+    w.write_u8(layout.rule.combine_op_byte());
+    w.write_zeros(2); // _reserved — MUST be 0x00
+    w.write_u32_le(layout.member_count);
+    Ok(())
+}
+
+fn decode_composite(cursor: &mut ByteCursor<'_>) -> Result<LayoutDescriptor> {
+    let rule_byte = cursor.read_u8()?;
+    let combine_op_byte = cursor.read_u8()?;
+
+    // Spec: readers MUST reject a descriptor with any non-zero reserved byte.
+    let reserved = cursor.read_bytes(2)?;
+    if reserved.iter().any(|&b| b != 0) {
+        return Err(Error::ReservedBytesNonZero {
+            field: "composite._reserved",
+        });
+    }
+
+    let member_count = cursor.read_u32_le()?;
+
+    let rule = CompositionRule::from_wire(rule_byte, combine_op_byte)?;
+    let layout = CompositeLayout::new(rule, member_count)?;
+    Ok(LayoutDescriptor::Composite(layout))
+}
+
 // ── Hilbert ───────────────────────────────────────────────────────────────────
 
 fn encode_hilbert(layout: &HilbertLayout, w: &mut ByteWriter) -> Result<()> {
@@ -591,6 +634,72 @@ mod tests {
             TiledLayout::new(vec![4, 4], 0x01, 0x04, None, None, Some(Box::new(inner))).unwrap();
         let layout = LayoutDescriptor::Tiled(Box::new(outer));
         assert_eq!(round_trip(&layout, 2), layout);
+    }
+
+    // ── Composite ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn composite_partition_round_trip() {
+        let layout = LayoutDescriptor::Composite(
+            CompositeLayout::new(CompositionRule::Partition, 3).unwrap(),
+        );
+        assert_eq!(round_trip(&layout, 0), layout);
+    }
+
+    #[test]
+    fn composite_group_round_trip() {
+        let layout =
+            LayoutDescriptor::Composite(CompositeLayout::new(CompositionRule::Group, 0).unwrap());
+        assert_eq!(round_trip(&layout, 0), layout);
+    }
+
+    #[test]
+    fn composite_overlay_replace_round_trip() {
+        use crate::layout::CombineOp;
+        let layout = LayoutDescriptor::Composite(
+            CompositeLayout::new(CompositionRule::Overlay(CombineOp::Replace), 2).unwrap(),
+        );
+        assert_eq!(round_trip(&layout, 0), layout);
+    }
+
+    #[test]
+    fn composite_overlay_add_round_trip() {
+        use crate::layout::CombineOp;
+        let layout = LayoutDescriptor::Composite(
+            CompositeLayout::new(CompositionRule::Overlay(CombineOp::Add), 5).unwrap(),
+        );
+        assert_eq!(round_trip(&layout, 0), layout);
+    }
+
+    /// Non-zero `_reserved` bytes in the composite head payload are rejected.
+    #[test]
+    fn composite_reserved_bytes_rejected() {
+        let mut w = ByteWriter::new();
+        w.write_u8(0x01); // composition_rule = partition
+        w.write_u8(0x00); // combine_op
+        w.write_u8(0xFF); // _reserved[0] non-zero
+        w.write_u8(0x00);
+        w.write_u32_le(0); // member_count
+        let bytes = w.into_vec();
+        let mut c = ByteCursor::new(&bytes, bytes.len());
+        let err = decode_layout_payload(TAG_COMPOSITE, 0, &mut c, 0).unwrap_err();
+        assert!(matches!(err, Error::ReservedBytesNonZero { .. }));
+    }
+
+    /// The `member_count = 0xFFFFFFFF` open-composite sentinel is rejected at
+    /// the codec layer too, not only by `CompositeLayout::new` — confirming a
+    /// decoder that reads raw wire bytes cannot bypass the constructor guard.
+    #[test]
+    fn composite_open_sentinel_rejected_at_codec_layer() {
+        let mut w = ByteWriter::new();
+        w.write_u8(0x01); // composition_rule = partition
+        w.write_u8(0x00); // combine_op
+        w.write_zeros(2); // _reserved
+        w.write_u32_le(0xFFFF_FFFF); // member_count = open-composite sentinel
+        let bytes = w.into_vec();
+        let mut c = ByteCursor::new(&bytes, bytes.len());
+        let err = decode_layout_payload(TAG_COMPOSITE, 0, &mut c, 0).unwrap_err();
+        assert!(matches!(err, Error::OpenCompositeReserved));
     }
 
     #[test]

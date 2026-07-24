@@ -13,6 +13,7 @@
 //! | `serde` | Derives `serde::Serialize` / `serde::Deserialize` for all public types |
 
 pub mod buffer;
+pub mod composite;
 pub mod descriptor;
 pub mod element_type;
 pub mod error;
@@ -24,15 +25,17 @@ pub use buffer::{
     validate_colocation, BufferHandle, DeviceTag, MemoryClass, PrivateMemoryClass, PrivateTag,
     SyncMode, MIN_BUFFER_ALIGNMENT, PAGE_ALIGNMENT,
 };
+pub use composite::{CompositeTensor, CompositeValidator};
 pub use descriptor::{
-    DescriptorFlags, ExtensionTypeDescriptor, ShardDescriptor, Statistics, StatisticsMask,
-    TensorDescriptor, DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR, MAGIC,
+    CompositeMemberDescriptor, DescriptorFlags, ExtensionTypeDescriptor, MemberRole,
+    ShardDescriptor, Statistics, StatisticsMask, TensorDescriptor, DESCRIPTOR_VERSION_MAJOR,
+    DESCRIPTOR_VERSION_MINOR, MAGIC,
 };
 pub use element_type::ElementType;
 pub use error::{Error, Result};
 pub use layout::{
-    byte_address_from_element_offset, BlockPagedLayout, BlockTableIndexType, CsfLayout,
-    ElementAddress, KvRole, LayoutDescriptor,
+    byte_address_from_element_offset, BlockPagedLayout, BlockTableIndexType, CombineOp,
+    CompositeLayout, CompositionRule, CsfLayout, ElementAddress, KvRole, LayoutDescriptor,
 };
 pub use quantization::{
     validate_axis, validate_buffer_placement, Mxfp, Nf4, PerBlockAffine, PerChannelAffine,

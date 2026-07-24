@@ -3,6 +3,7 @@
 //! Implements the wire format defined in `docs/spec/metadata.md`. Steps follow
 //! the spec's Overall Descriptor Structure order exactly.
 
+use crate::descriptor::composite_member::CompositeMemberDescriptor;
 use crate::descriptor::cursor::ByteCursor;
 use crate::descriptor::ext_type::ExtensionTypeDescriptor;
 use crate::descriptor::layout_codec::decode_layout_payload;
@@ -10,7 +11,10 @@ use crate::descriptor::mod_types::{DescriptorFlags, TensorDescriptor, RESERVED_F
 use crate::descriptor::shard::ShardDescriptor;
 use crate::descriptor::statistics::Statistics;
 use crate::descriptor::{DESCRIPTOR_VERSION_MAJOR, MIN_DESCRIPTOR_LEN};
-use crate::{BufferHandle, DeviceTag, ElementType, Error, MemoryClass, Result, Shape, SyncMode};
+use crate::{
+    BufferHandle, DeviceTag, ElementType, Error, LayoutDescriptor, MemoryClass, Result, Shape,
+    SyncMode,
+};
 
 /// Decodes a [`TensorDescriptor`] from its wire representation.
 ///
@@ -122,8 +126,13 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<TensorDescriptor> {
     }
 
     // ── Step 14: buffer table ─────────────────────────────────────────────────
+    // ADR-027 D-1: buffer_count == 0 is allowed only for the composite head
+    // (layout_tag 0x0B); every other layout still requires >= 1 buffer. The
+    // composite-head-specific checks (byte_offset == 0, no HAS_QUANTIZATION) are
+    // enforced by TensorDescriptor::new below, which all decode paths flow through.
     let buffer_count = cursor.read_u8()?;
-    if buffer_count == 0 {
+    let is_composite_head = matches!(layout, LayoutDescriptor::Composite(_));
+    if buffer_count == 0 && !is_composite_head {
         return Err(Error::EmptyBufferTable);
     }
     let mut buffers = Vec::with_capacity(buffer_count as usize);
@@ -185,6 +194,13 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<TensorDescriptor> {
         None
     };
 
+    // ── Step 18b: composite member section ────────────────────────────────────
+    let composite_member = if flags.has_composite_member() {
+        Some(CompositeMemberDescriptor::decode_from(&mut cursor)?)
+    } else {
+        None
+    };
+
     // ── Step 19: length consistency check ─────────────────────────────────────
     // For known minor versions, the consumed byte count must exactly match
     // descriptor_length. For future minor versions, silently accept trailing bytes.
@@ -202,7 +218,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<TensorDescriptor> {
     }
 
     // ── Step 20: construct TensorDescriptor ───────────────────────────────────
-    TensorDescriptor::new(
+    let is_composite_head = matches!(layout, LayoutDescriptor::Composite(_));
+    let descriptor = TensorDescriptor::new(
         version_major,
         version_minor,
         element_type,
@@ -214,5 +231,18 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<TensorDescriptor> {
         shard,
         statistics,
         extension_type,
-    )
+    )?;
+
+    // Spec (layouts/composite.md § Head Descriptor): the head MUST NOT set
+    // HAS_COMPOSITE_MEMBER; that flag applies to overlay members only. `new()`
+    // has no `composite_member` parameter (see ADR-027 D2), so this cross-field
+    // check runs here, symmetric with the encode-side check in encode.rs.
+    match composite_member {
+        Some(_) if is_composite_head => Err(Error::InvalidLayout(
+            "composite head MUST NOT carry a Composite Member section (HAS_COMPOSITE_MEMBER)"
+                .to_string(),
+        )),
+        Some(cm) => Ok(descriptor.with_composite_member(cm)),
+        None => Ok(descriptor),
+    }
 }

@@ -42,6 +42,7 @@
 
 // ── Sub-modules ───────────────────────────────────────────────────────────────
 
+pub mod composite_member;
 pub(crate) mod cursor;
 mod decode;
 mod encode;
@@ -58,6 +59,7 @@ pub(crate) mod mod_types {
 
 // ── Public re-exports ─────────────────────────────────────────────────────────
 
+pub use composite_member::{CompositeMemberDescriptor, MemberRole};
 pub use ext_type::ExtensionTypeDescriptor;
 pub use shard::ShardDescriptor;
 pub use statistics::{Statistics, StatisticsMask};
@@ -81,9 +83,9 @@ pub const DESCRIPTOR_VERSION_MINOR: u8 = 0;
 /// Minimum valid value for the `descriptor_length` field (= fixed header size).
 pub(crate) const MIN_DESCRIPTOR_LEN: u32 = 20;
 
-/// Bitmask of all reserved flag bits (bits 4–31). Readers MUST reject descriptors
+/// Bitmask of all reserved flag bits (bits 5–31). Readers MUST reject descriptors
 /// with any reserved bit set.
-pub(crate) const RESERVED_FLAGS_MASK: u32 = !0x0F;
+pub(crate) const RESERVED_FLAGS_MASK: u32 = !0x1F;
 
 // ── DescriptorFlags ───────────────────────────────────────────────────────────
 
@@ -102,6 +104,7 @@ pub(crate) const RESERVED_FLAGS_MASK: u32 = !0x0F;
 /// assert!(f.has_shard());
 /// assert!(!f.has_statistics());
 /// assert!(!f.has_extension_type());
+/// assert!(!f.has_composite_member());
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DescriptorFlags(pub u32);
@@ -115,6 +118,9 @@ impl DescriptorFlags {
     pub const HAS_EXTENSION_TYPE: u32 = 1 << 2;
     /// Bit 3: statistics section is present.
     pub const HAS_STATISTICS: u32 = 1 << 3;
+    /// Bit 4: Composite Member section is present. Set on the members of an
+    /// overlay composite; see `docs/spec/layouts/composite.md`.
+    pub const HAS_COMPOSITE_MEMBER: u32 = 1 << 4;
 
     /// Returns `true` if the `HAS_QUANTIZATION` bit is set.
     #[inline]
@@ -139,10 +145,17 @@ impl DescriptorFlags {
     pub fn has_statistics(self) -> bool {
         self.0 & Self::HAS_STATISTICS != 0
     }
+
+    /// Returns `true` if the `HAS_COMPOSITE_MEMBER` bit is set.
+    #[inline]
+    pub fn has_composite_member(self) -> bool {
+        self.0 & Self::HAS_COMPOSITE_MEMBER != 0
+    }
 }
 
 // ── TensorDescriptor ──────────────────────────────────────────────────────────
 
+use crate::descriptor::composite_member::CompositeMemberDescriptor as CompositeMemberDesc;
 use crate::descriptor::ext_type::ExtensionTypeDescriptor as ExtDesc;
 use crate::descriptor::shard::ShardDescriptor as ShardDesc;
 use crate::descriptor::statistics::Statistics as Stats;
@@ -211,6 +224,13 @@ pub struct TensorDescriptor {
     pub statistics: Option<Stats>,
     /// Extension type descriptor (present iff `type_tag` is in `0xF0`–`0xFE`).
     pub extension_type: Option<ExtDesc>,
+    /// Composite Member section (this tensor's role within an enclosing overlay
+    /// composite). `None` by default; set via [`TensorDescriptor::with_composite_member`].
+    ///
+    /// Not a [`TensorDescriptor::new`] parameter — a composite head declares
+    /// `member_count` before its members exist, so member-role assignment is
+    /// necessarily a post-construction, opt-in step (see ADR-027).
+    pub composite_member: Option<CompositeMemberDesc>,
 }
 
 impl TensorDescriptor {
@@ -218,7 +238,15 @@ impl TensorDescriptor {
     ///
     /// # Errors
     ///
-    /// - [`Error::EmptyBufferTable`] — `buffers` is empty.
+    /// - [`Error::EmptyBufferTable`] — `buffers` is empty (and `layout` is not the
+    ///   composite head, `layout_tag = 0x0B`, for which an empty buffer table is
+    ///   the *only* valid table — see [`Error::CompositeHeadHasBuffers`]).
+    /// - [`Error::CompositeHeadHasBuffers`] — `layout` is the composite head but
+    ///   `buffers` is non-empty.
+    /// - [`Error::CompositeHeadHasByteOffset`] — `layout` is the composite head but
+    ///   `byte_offset != 0`.
+    /// - [`Error::CompositeHeadHasQuantization`] — `layout` is the composite head but
+    ///   `quantization` is `Some`.
     /// - [`Error::ExtensionTypeFlagMismatch`] — `extension_type` is `Some` but
     ///   `element_type.tag()` is not in `0xF0`–`0xFE`, or vice-versa.
     /// - [`Error::InvalidShape`] — `shard.parent_shape.len() != shape.rank()`.
@@ -255,8 +283,24 @@ impl TensorDescriptor {
         statistics: Option<Stats>,
         extension_type: Option<ExtDesc>,
     ) -> Result<Self> {
-        // Invariant: at least one buffer.
-        if buffers.is_empty() {
+        // Invariant (ADR-027 D-1): buffer_count == 0 is allowed only for the composite
+        // head (layout_tag 0x0B), which owns no data. A composite head additionally MUST
+        // have byte_offset == 0 and MUST NOT carry a quantization section — checked here,
+        // the seam where layout, buffers, byte_offset, and quantization are all in hand.
+        let is_composite_head = matches!(&layout, LayoutDescriptor::Composite(_));
+        if is_composite_head {
+            if !buffers.is_empty() {
+                return Err(Error::CompositeHeadHasBuffers {
+                    count: buffers.len().min(u8::MAX as usize) as u8,
+                });
+            }
+            if byte_offset != 0 {
+                return Err(Error::CompositeHeadHasByteOffset { byte_offset });
+            }
+            if quantization.is_some() {
+                return Err(Error::CompositeHeadHasQuantization);
+            }
+        } else if buffers.is_empty() {
             return Err(Error::EmptyBufferTable);
         }
 
@@ -324,7 +368,50 @@ impl TensorDescriptor {
             shard,
             statistics,
             extension_type,
+            composite_member: None,
         })
+    }
+
+    /// Attaches a [`CompositeMemberDesc`] (this tensor's role within an enclosing
+    /// overlay composite), returning `self` for chaining.
+    ///
+    /// Opt-in and separate from [`TensorDescriptor::new`] because a composite head
+    /// declares `member_count` before its members exist (see ADR-027 § D2); member
+    /// role assignment is necessarily a step applied after a member descriptor is
+    /// otherwise fully built.
+    ///
+    /// The one local cross-field invariant that applies regardless of composition
+    /// context — a composite head (`layout_tag = 0x0B`) MUST NOT itself carry a
+    /// Composite Member section — cannot be rejected here without breaking the
+    /// infallible `Self` return type this builder is specified to have; it is
+    /// re-validated at [`TensorDescriptor::encode`] / [`TensorDescriptor::decode`]
+    /// time instead, so the invariant still holds for every descriptor that
+    /// round-trips through the wire format.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::{
+    ///     BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
+    ///     descriptor::{CompositeMemberDescriptor, MemberRole, TensorDescriptor},
+    ///     layout::LayoutDescriptor,
+    /// };
+    ///
+    /// let shape  = Shape::new(vec![4u64]).unwrap();
+    /// let buffer = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
+    /// let member = TensorDescriptor::new(
+    ///     1, 0, ElementType::Float32, shape, 0,
+    ///     LayoutDescriptor::RowMajor, vec![buffer],
+    ///     None, None, None, None,
+    /// )
+    /// .unwrap()
+    /// .with_composite_member(CompositeMemberDescriptor::new(MemberRole::Base));
+    ///
+    /// assert!(member.flags().has_composite_member());
+    /// ```
+    pub fn with_composite_member(mut self, cm: CompositeMemberDesc) -> Self {
+        self.composite_member = Some(cm);
+        self
     }
 
     /// Derives the [`DescriptorFlags`] bitmask from which optional sections are present.
@@ -360,6 +447,9 @@ impl TensorDescriptor {
         }
         if self.statistics.is_some() {
             flags |= DescriptorFlags::HAS_STATISTICS;
+        }
+        if self.composite_member.is_some() {
+            flags |= DescriptorFlags::HAS_COMPOSITE_MEMBER;
         }
         DescriptorFlags(flags)
     }
@@ -572,8 +662,9 @@ mod tests {
     #[test]
     fn decode_reserved_flag_bit_set() {
         let mut bytes = WORKED_EXAMPLE_BYTES;
-        // Set bit 4 (first reserved flag bit) at offset 10.
-        bytes[10] = 0x10;
+        // Bit 4 is now HAS_COMPOSITE_MEMBER (ADR-027) and no longer reserved; set
+        // bit 5 (the first genuinely-still-reserved flag bit) at offset 10.
+        bytes[10] = 0x20;
         let err = TensorDescriptor::decode(&bytes).unwrap_err();
         assert!(matches!(err, Error::ReservedDescriptorFlagBitsSet { .. }));
     }
@@ -1112,6 +1203,172 @@ mod tests {
         assert!(
             matches!(err, Error::SubpavingNestingTooDeep),
             "expected SubpavingNestingTooDeep, got {err:?}"
+        );
+    }
+
+    // ── ADR-027 D-1: composite head buffer-table carve-out ───────────────────
+
+    fn composite_head(member_count: u32) -> TensorDescriptor {
+        use crate::layout::{CompositeLayout, CompositionRule};
+        let layout = LayoutDescriptor::Composite(
+            CompositeLayout::new(CompositionRule::Group, member_count).unwrap(),
+        );
+        TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            Shape::new(vec![4u64]).unwrap(),
+            0,
+            layout,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    /// A composite head (`layout_tag = 0x0B`) with an empty buffer table is the
+    /// *only* valid buffer table for that layout, and round-trips cleanly.
+    #[test]
+    fn composite_head_empty_buffers_round_trips() {
+        let desc = composite_head(0);
+        let decoded = TensorDescriptor::decode(&desc.encode().unwrap()).unwrap();
+        assert_eq!(decoded, desc);
+        assert!(decoded.buffers.is_empty());
+    }
+
+    /// A non-empty buffer table on a composite head is rejected.
+    #[test]
+    fn composite_head_nonzero_buffer_count_rejected() {
+        use crate::layout::{CompositeLayout, CompositionRule};
+        let buf = BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
+        let layout =
+            LayoutDescriptor::Composite(CompositeLayout::new(CompositionRule::Group, 0).unwrap());
+        let err = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            Shape::new(vec![4u64]).unwrap(),
+            0,
+            layout,
+            vec![buf],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::CompositeHeadHasBuffers { count: 1 }));
+    }
+
+    /// A non-zero `byte_offset` on a composite head is rejected.
+    #[test]
+    fn composite_head_nonzero_byte_offset_rejected() {
+        use crate::layout::{CompositeLayout, CompositionRule};
+        let layout =
+            LayoutDescriptor::Composite(CompositeLayout::new(CompositionRule::Group, 0).unwrap());
+        let err = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            Shape::new(vec![4u64]).unwrap(),
+            8, // non-zero byte_offset
+            layout,
+            vec![],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            Error::CompositeHeadHasByteOffset { byte_offset: 8 }
+        ));
+    }
+
+    /// A composite head MUST NOT set `HAS_QUANTIZATION` (it owns no stored data).
+    #[test]
+    fn composite_head_with_quantization_rejected() {
+        use crate::layout::{CompositeLayout, CompositionRule};
+        let layout =
+            LayoutDescriptor::Composite(CompositeLayout::new(CompositionRule::Group, 0).unwrap());
+        let err = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            Shape::new(vec![4u64]).unwrap(),
+            0,
+            layout,
+            vec![],
+            Some(vec![0x01, 0x00, 0x00, 0x00]),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::CompositeHeadHasQuantization));
+    }
+
+    /// A composite head carrying a Composite Member section itself (not a
+    /// member of a further-enclosing composite) is rejected at encode time.
+    #[test]
+    fn composite_head_with_composite_member_rejected_at_encode() {
+        use crate::descriptor::composite_member::CompositeMemberDescriptor;
+        let desc = composite_head(0).with_composite_member(CompositeMemberDescriptor::new(
+            crate::descriptor::MemberRole::Base,
+        ));
+        let err = desc.encode().unwrap_err();
+        assert!(matches!(err, Error::InvalidLayout(_)));
+    }
+
+    /// The same invariant, enforced symmetrically on the decode path: a
+    /// hand-crafted composite head with `HAS_COMPOSITE_MEMBER` set and a valid
+    /// 16-byte Composite Member section appended is rejected.
+    #[test]
+    fn composite_head_with_composite_member_rejected_at_decode() {
+        let desc = composite_head(0);
+        let mut encoded = desc.encode().unwrap();
+
+        // Set HAS_COMPOSITE_MEMBER (bit 4 = 0x10) in the flags field at offset 10.
+        encoded[10] |= DescriptorFlags::HAS_COMPOSITE_MEMBER as u8;
+
+        // Append a valid 16-byte Composite Member section (member_role=0x00, 15
+        // zero reserved bytes) — this is the last section per spec wire order.
+        let mut cm_bytes = vec![0x00u8]; // member_role = Correction
+        cm_bytes.extend(std::iter::repeat_n(0u8, 15)); // _reserved
+        encoded.extend_from_slice(&cm_bytes);
+
+        // Back-patch descriptor_length.
+        let new_len = encoded.len() as u32;
+        encoded[6..10].copy_from_slice(&new_len.to_le_bytes());
+
+        let err = TensorDescriptor::decode(&encoded).unwrap_err();
+        assert!(matches!(err, Error::InvalidLayout(_)));
+    }
+
+    /// A non-composite descriptor with `with_composite_member` set round-trips
+    /// through full encode/decode.
+    #[test]
+    fn with_composite_member_round_trips() {
+        use crate::descriptor::composite_member::CompositeMemberDescriptor;
+        let desc = worked_example().with_composite_member(CompositeMemberDescriptor::new(
+            crate::descriptor::MemberRole::Base,
+        ));
+        assert!(desc.flags().has_composite_member());
+        let decoded = TensorDescriptor::decode(&desc.encode().unwrap()).unwrap();
+        assert_eq!(decoded, desc);
+        assert_eq!(
+            decoded.composite_member.unwrap().member_role,
+            crate::descriptor::MemberRole::Base
         );
     }
 }
