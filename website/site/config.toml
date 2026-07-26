@@ -1,0 +1,20 @@
+# Base URL is a placeholder for local builds; CI overrides it with `zola build --base-url …`
+# so the same sources deploy to GitHub Pages today and a custom domain later (ADR-028).
+base_url = "https://pgillet.github.io/hurray"
+title = "Hurray"
+description = "A zero-copy, streamable, language-agnostic tensor interchange format for AI/ML inference."
+default_language = "en"
+
+compile_sass = false
+build_search_index = false
+generate_feeds = true
+feed_filenames = ["atom.xml"]
+
+[markdown]
+highlight_code = true
+
+[extra]
+# Path to the versioned technical documentation (built by mdBook, deployed alongside this
+# shell). "stable" resolves to the latest release, falling back to dev before the first tag.
+docs_url = "/docs/stable/"
+github_url = "https://github.com/pgillet/hurray"
