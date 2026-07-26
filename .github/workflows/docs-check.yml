@@ -1,0 +1,47 @@
+name: Documentation build check
+
+# Fast preview build for pull requests: builds the Zola shell and the `dev` book (skipping
+# release-tag rebuilds via DEV_ONLY) so broken links, a bad SUMMARY entry, or a template
+# error are caught in review. Does not deploy. See ADR-028.
+
+on:
+  pull_request:
+    paths:
+      - 'website/**'
+      - 'docs/**'
+      - '.github/workflows/docs*.yml'
+
+concurrency:
+  group: docs-check-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MDBOOK_VERSION: "0.4.40"
+  ZOLA_VERSION: "0.19.2"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install mdBook
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install Zola
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL "https://github.com/getzola/zola/releases/download/v${ZOLA_VERSION}/zola-v${ZOLA_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build (dev only, no deploy)
+        run: bash website/build-site.sh
+        env:
+          DEV_ONLY: "1"
