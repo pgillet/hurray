@@ -45,6 +45,16 @@ pub enum Error {
     )]
     InvalidCrossMachineSyncMode { index: usize, actual: u8 },
 
+    /// A composite head's members were truncated: the stream ended before the head's
+    /// declared `member_count` members had been read.
+    #[error("torn composite: head declares {declared} member(s), stream ended after {actual}")]
+    TornComposite { declared: u32, actual: u32 },
+
+    /// Composite nesting exceeded the configured maximum depth. Guards against stack
+    /// exhaustion from a maliciously deep composite on an untrusted stream.
+    #[error("composite nesting too deep: exceeded limit of {limit}")]
+    CompositeNestingTooDeep { limit: usize },
+
     // ── File format ───────────────────────────────────────────────────────────
     /// The file header magic is not `HRRYFILE`.
     #[error("invalid file magic: expected HRRYFILE")]

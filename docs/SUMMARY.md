@@ -47,6 +47,7 @@
 - [Layer 7: C FFI](cookbook/layer-7-c-ffi.md)
 - [Block-Paged KV Cache](cookbook/block-paged-kv-cache.md)
 - [Composite Tensors](cookbook/composite-tensors.md)
+- [Streaming Composite Tensors](cookbook/composite-streaming.md)
 - [hurray-inspect CLI](cookbook/hurray-inspect-cli.md)
 - [Python: Dtype, Device, and Tensor](cookbook/hurray-python-tensor-basics.md)
 - [Python: Array API Namespace](cookbook/hurray-python-array-api.md)

@@ -21,5 +21,9 @@ tokio = ["dep:tokio"]
 name = "stream_roundtrip"
 required-features = ["tokio"]
 
+[[example]]
+name = "composite_stream"
+required-features = ["tokio"]
+
 [dev-dependencies]
 tokio = { workspace = true }
