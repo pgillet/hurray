@@ -1,0 +1,19 @@
+/* Shared design tokens to keep the mdBook book visually consistent with the Zola shell
+   (ADR-028 § visual coherence). Intentionally minimal — full branding is deferred (OQ-3).
+   Only the accent color and font stack are aligned; mdBook's layout is left untouched. */
+
+:root {
+  --hurray-font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* Match the shell's sans-serif body font. */
+html { font-family: var(--hurray-font); }
+.content { font-family: var(--hurray-font); }
+
+/* Accent color for links, matching the shell (light: #2f6feb, dark: #6ea1ff).
+   Overridden per mdBook theme class so specificity beats the built-in theme variables. */
+.light  { --links: #2f6feb; }
+.rust   { --links: #2f6feb; }
+.coal   { --links: #6ea1ff; }
+.navy   { --links: #6ea1ff; }
+.ayu    { --links: #6ea1ff; }
