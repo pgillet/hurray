@@ -17,3 +17,35 @@ html { font-family: var(--hurray-font); }
 .coal   { --links: #6ea1ff; }
 .navy   { --links: #6ea1ff; }
 .ayu    { --links: #6ea1ff; }
+
+/* Version selector injected into the menu bar by version-selector.js. */
+.hurray-version-wrap { display: flex; align-items: center; margin: 0 .4rem; }
+.hurray-version-select {
+  font: inherit;
+  font-size: .85rem;
+  padding: .1rem .3rem;
+  border-radius: 6px;
+  border: 1px solid var(--icons, #ccc);
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+/* Unreleased-docs banner shown on the dev build. */
+.hurray-dev-banner {
+  background: #fff3cd;
+  color: #664d03;
+  border: 1px solid #ffe69c;
+  border-radius: 6px;
+  padding: .5rem .75rem;
+  margin: 0 0 1.25rem;
+  font-size: .9rem;
+}
+.hurray-dev-banner a { font-weight: 600; }
+.navy .hurray-dev-banner,
+.coal .hurray-dev-banner,
+.ayu .hurray-dev-banner {
+  background: #33320a;
+  color: #f0e6a6;
+  border-color: #5c5410;
+}

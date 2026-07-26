@@ -19,6 +19,7 @@ preferred-dark-theme = "navy"
 git-repository-url = "https://github.com/pgillet/hurray"
 edit-url-template = "https://github.com/pgillet/hurray/edit/main/docs/{path}"
 additional-css = ["theme/hurray.css"]
+additional-js = ["theme/version-selector.js"]
 
 [output.html.search]
 enable = true
