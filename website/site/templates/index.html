@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+  <h1>{{ section.title | default(value="Hurray") }}</h1>
+  <p class="tagline">{{ config.description }}</p>
+  <div class="cta">
+    <a class="btn btn-primary" href="{{ get_url(path=config.extra.docs_url) | safe }}">Read the docs</a>
+    <a class="btn" href="{{ config.extra.github_url | safe }}">View on GitHub</a>
+  </div>
+</section>
+
+<article class="prose">
+  {{ section.content | safe }}
+</article>
+{% endblock content %}

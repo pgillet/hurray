@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="{{ lang | default(value="en") }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}{{ config.title }}{% endblock title %}</title>
+  <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
+  <link rel="stylesheet" href="{{ get_url(path='css/style.css') | safe }}">
+  {% if config.generate_feeds %}
+  <link rel="alternate" type="application/atom+xml" title="{{ config.title }} blog" href="{{ get_url(path='blog/atom.xml') | safe }}">
+  {% endif %}
+</head>
+<body>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="{{ get_url(path='@/_index.md') | safe }}">Hurray</a>
+      <nav class="site-nav">
+        <a href="{{ get_url(path=config.extra.docs_url) | safe }}">Docs</a>
+        <a href="{{ get_url(path='@/faq/_index.md') | safe }}">FAQ</a>
+        <a href="{{ get_url(path='@/blog/_index.md') | safe }}">Blog</a>
+        <a href="{{ get_url(path='@/community/_index.md') | safe }}">Community</a>
+        <a href="{{ config.extra.github_url | safe }}">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap content">
+    {% block content %}{% endblock content %}
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap">
+      <p>Hurray — a tensor interchange format. Licensed under the project’s terms; see
+        <a href="{{ config.extra.github_url | safe }}">GitHub</a>.</p>
+    </div>
+  </footer>
+</body>
+</html>
