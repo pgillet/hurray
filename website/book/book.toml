@@ -1,0 +1,23 @@
+[book]
+title = "Hurray Format Documentation"
+authors = ["The Hurray Authors"]
+description = "The Hurray tensor interchange format — specification, implementation requirements, cookbook, and tutorials."
+# The book is a view over the in-repo Markdown under docs/ (ADR-028): src points there and
+# docs/SUMMARY.md is the single table-of-contents / reorganization surface.
+src = "../../docs"
+language = "en"
+
+[build]
+build-dir = "book"
+# Fail the build on a SUMMARY entry with no file rather than silently creating a blank page,
+# so a broken/renamed link is caught in CI instead of shipping an empty chapter.
+create-missing = false
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/pgillet/hurray"
+edit-url-template = "https://github.com/pgillet/hurray/edit/main/docs/{path}"
+
+[output.html.search]
+enable = true
