@@ -1,5 +1,5 @@
 use bytes::{Bytes, BytesMut};
-use hurray_core::{SyncMode, TensorDescriptor};
+use hurray_core::{CompositeValidator, LayoutDescriptor, SyncMode, TensorDescriptor};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::stream::frame;
@@ -9,6 +9,13 @@ use crate::{Error, Result};
 ///
 /// Limits memory allocation when reading untrusted streams.
 pub const DEFAULT_MAX_DESCRIPTOR_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Default maximum composite nesting depth.
+///
+/// A composite member may itself be a composite (ADR-027 § Binding). This bounds the
+/// recursion so a maliciously deep composite on an untrusted stream cannot exhaust the
+/// stack. Matches the format's rank cap of 64 in spirit.
+pub const DEFAULT_MAX_COMPOSITE_DEPTH: usize = 64;
 
 /// Options for [`StreamReader`].
 pub struct StreamReaderOptions {
@@ -20,6 +27,9 @@ pub struct StreamReaderOptions {
     ///
     /// Enable when the stream crosses machine boundaries.
     pub enforce_cross_machine_sync: bool,
+    /// Maximum composite nesting depth for [`next_item`][StreamReader::next_item].
+    /// Default: [`DEFAULT_MAX_COMPOSITE_DEPTH`].
+    pub max_composite_depth: usize,
 }
 
 impl Default for StreamReaderOptions {
@@ -28,6 +38,7 @@ impl Default for StreamReaderOptions {
             max_descriptor_bytes: DEFAULT_MAX_DESCRIPTOR_BYTES,
             max_buffer_bytes: u64::MAX,
             enforce_cross_machine_sync: false,
+            max_composite_depth: DEFAULT_MAX_COMPOSITE_DEPTH,
         }
     }
 }
@@ -42,6 +53,43 @@ pub struct StreamTensor {
     pub descriptor: TensorDescriptor,
     /// Raw buffer bytes, one [`Bytes`] per buffer handle.
     pub buffers: Vec<Bytes>,
+}
+
+/// One decoded item from the stream: either a plain tensor or a composite.
+///
+/// Returned by [`next_item`][StreamReader::next_item]. A composite's members are
+/// themselves [`StreamItem`]s, so nested composites (ADR-027 § Binding) are represented
+/// as a tree.
+#[derive(Debug)]
+pub enum StreamItem {
+    /// A single (non-composite) tensor.
+    Tensor(StreamTensor),
+    /// A composite: a data-less head plus its ordered members.
+    Composite(StreamComposite),
+}
+
+impl StreamItem {
+    /// The item's governing descriptor: the tensor's descriptor, or the composite head.
+    pub fn descriptor(&self) -> &TensorDescriptor {
+        match self {
+            StreamItem::Tensor(t) => &t.descriptor,
+            StreamItem::Composite(c) => &c.head,
+        }
+    }
+}
+
+/// A decoded composite tensor: its data-less head plus its ordered members.
+///
+/// Membership and ordering are exactly as they appeared on the wire (head precedes its
+/// members; ADR-027 § Binding). The head, `member_count`, and per-rule constraints
+/// (partition coverage, overlay ordering) have already been validated via
+/// [`CompositeValidator`].
+#[derive(Debug)]
+pub struct StreamComposite {
+    /// The composite head descriptor (owns no data buffers).
+    pub head: TensorDescriptor,
+    /// The members, in wire order. Each may itself be a composite (nesting).
+    pub members: Vec<StreamItem>,
 }
 
 /// Reads tensors from an async source in the Hurray streaming wire format.
@@ -120,6 +168,59 @@ impl<R: AsyncRead + Unpin> StreamReader<R> {
             None => return Ok(None),
         };
 
+        let buffers = self.read_buffers(&desc).await?;
+
+        Ok(Some(StreamTensor {
+            descriptor: desc,
+            buffers,
+        }))
+    }
+
+    /// Reads the next item, assembling composites (head + members) into a
+    /// [`StreamItem::Composite`] and validating them.
+    ///
+    /// When the next descriptor on the wire is a composite head (`layout_tag = 0x0B`), this
+    /// reads its declared `member_count` members — each of which may itself be a composite
+    /// (recursion) — validates the group with [`CompositeValidator`] (member count, plus
+    /// partition coverage / overlay ordering), and returns them together. Otherwise it
+    /// behaves like [`next_tensor`][StreamReader::next_tensor], returning a
+    /// [`StreamItem::Tensor`]. Returns `Ok(None)` on a clean EOF.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use hurray_io::stream::{StreamItem, StreamReader};
+    ///
+    /// let wire: &[u8] = &[]; // replace with actual data
+    /// let mut reader = StreamReader::new(wire);
+    /// while let Some(item) = reader.next_item().await? {
+    ///     match item {
+    ///         StreamItem::Tensor(t) => println!("tensor, {} buffer(s)", t.buffers.len()),
+    ///         StreamItem::Composite(c) => println!("composite, {} member(s)", c.members.len()),
+    ///     }
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// In addition to the errors of [`next_tensor`][StreamReader::next_tensor]:
+    ///
+    /// - [`Error::TornComposite`] — the stream ended before the head's `member_count`
+    ///   members were read
+    /// - [`Error::CompositeNestingTooDeep`] — nesting exceeded `max_composite_depth`
+    /// - [`Error::Core`] — composite validation failed (e.g. partition does not cover the
+    ///   index space, overlay ordering, member-count mismatch)
+    pub async fn next_item(&mut self) -> Result<Option<StreamItem>> {
+        self.read_item(0).await
+    }
+
+    /// Reads and freezes every buffer declared by `desc`, enforcing the buffer-size limit
+    /// and (in cross-machine mode) the sync-mode requirement.
+    async fn read_buffers(&mut self, desc: &TensorDescriptor) -> Result<Vec<Bytes>> {
         let mut buffers = Vec::with_capacity(desc.buffers.len());
 
         for (i, handle) in desc.buffers.iter().enumerate() {
@@ -152,10 +253,60 @@ impl<R: AsyncRead + Unpin> StreamReader<R> {
             buffers.push(buf.freeze());
         }
 
-        Ok(Some(StreamTensor {
-            descriptor: desc,
-            buffers,
-        }))
+        Ok(buffers)
+    }
+
+    /// Reads one item at composite-nesting `depth`, recursing into members.
+    async fn read_item(&mut self, depth: usize) -> Result<Option<StreamItem>> {
+        let desc = match frame::read_descriptor(&mut self.inner, self.options.max_descriptor_bytes)
+            .await?
+        {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let member_count = match &desc.layout {
+            LayoutDescriptor::Composite(c) => c.member_count,
+            // Not a composite head: read its buffers and return a plain tensor.
+            _ => {
+                let buffers = self.read_buffers(&desc).await?;
+                return Ok(Some(StreamItem::Tensor(StreamTensor {
+                    descriptor: desc,
+                    buffers,
+                })));
+            }
+        };
+
+        if depth >= self.options.max_composite_depth {
+            return Err(Error::CompositeNestingTooDeep {
+                limit: self.options.max_composite_depth,
+            });
+        }
+
+        // Validate the group as its members arrive, reusing the core validator: member
+        // count, and per-rule constraints (partition coverage, overlay base-first ordering).
+        let mut validator = CompositeValidator::new(&desc)?;
+        let mut members = Vec::with_capacity(member_count as usize);
+        for i in 0..member_count {
+            // Box the recursive call: an async fn cannot name its own future inline.
+            let item = match Box::pin(self.read_item(depth + 1)).await? {
+                Some(item) => item,
+                None => {
+                    return Err(Error::TornComposite {
+                        declared: member_count,
+                        actual: i,
+                    })
+                }
+            };
+            validator.push_member(item.descriptor())?;
+            members.push(item);
+        }
+        validator.finish()?;
+
+        Ok(Some(StreamItem::Composite(StreamComposite {
+            head: desc,
+            members,
+        })))
     }
 
     /// Returns the underlying reader.
