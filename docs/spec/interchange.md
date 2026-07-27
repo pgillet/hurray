@@ -354,9 +354,15 @@ For every tensor transferred, the server MUST send messages in the following ord
 
 ```
 TENSOR_DESCRIPTOR
-TENSOR_DATA  (one or more frames)
+TENSOR_DATA  (zero or more frames)
 TENSOR_DATA_END
 ```
+
+A tensor whose `total_data_bytes` is greater than `0` MUST send one or more `TENSOR_DATA`
+frames. A tensor whose `total_data_bytes` is `0` — an empty tensor (ADR-007) or a composite
+head, which owns no data — MUST send **zero** `TENSOR_DATA` frames: the server sends
+`TENSOR_DESCRIPTOR` immediately followed by `TENSOR_DATA_END`. A receiver MUST accept this
+frame-free sequence when `total_data_bytes = 0`.
 
 A receiver MUST NOT attempt to interpret data frames before receiving the
 `TENSOR_DESCRIPTOR`. This invariant holds for each shard in a parallel transfer.
@@ -408,11 +414,11 @@ self-delimiting tensors** on the stream, in order, as its members:
 TENSOR_DESCRIPTOR        (head, layout_tag = 0x0B, member_count = N)
 TENSOR_DATA_END          (head has no data buffers)
   TENSOR_DESCRIPTOR      (member 0)
-  TENSOR_DATA  (one or more frames)
+  TENSOR_DATA  (zero or more frames)
   TENSOR_DATA_END
   ...
   TENSOR_DESCRIPTOR      (member N-1)
-  TENSOR_DATA  (one or more frames)
+  TENSOR_DATA  (zero or more frames)
   TENSOR_DATA_END        (composite "close": the Nth member's TENSOR_DATA_END)
 ```
 
@@ -436,16 +442,10 @@ composite as complete (`layouts/composite.md` § Validation).
 > Binding is purely positional (member count + stream order); no tensor names or member
 > identifiers are introduced.
 
-> **[OQ-6]:** The § Ordering Invariant states every transferred tensor sends
-> `TENSOR_DATA` "(one or more frames)". A composite head has `buffer_count = 0` and
-> `total_data_bytes = 0`, so it sends **zero** `TENSOR_DATA` frames (as does any tensor
-> with zero total data bytes). ADR-027 does not settle whether the head is an explicit
-> exception to the "one or more frames" wording, or whether that wording should be relaxed
-> generally to "zero or more frames" for any tensor whose `total_data_bytes` is `0`. The
-> two statements are in tension; the intended reconciliation is deferred to
-> `format-spec-writer` / `architect`. Until resolved, a receiver SHOULD accept a
-> `TENSOR_DESCRIPTOR` → `TENSOR_DATA_END` sequence with no intervening `TENSOR_DATA`
-> frames when `total_data_bytes = 0`.
+> **Note (non-normative):** A composite head therefore sends zero `TENSOR_DATA` frames —
+> `TENSOR_DESCRIPTOR` immediately followed by `TENSOR_DATA_END` — as does any tensor whose
+> `total_data_bytes` is `0`. This is governed by the general rule in § Ordering Invariant
+> ("zero or more frames"); the head is not a special case.
 
 ---
 

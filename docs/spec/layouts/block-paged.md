@@ -215,12 +215,13 @@ A shard descriptor (see `memory-layout.md` § Splittability and Sharding) MUST N
 applied to a block-paged tensor in this version of the specification. A reader MUST reject
 a block-paged descriptor that also carries a shard descriptor.
 
-> **[OQ-1]:** Tensor-parallel / multi-GPU sharding of a block-paged KV cache (for example,
-> splitting along the `num_heads` axis) is deferred to a future revision and is under
-> consideration. Before sharding can be permitted, the interaction between a shard
-> descriptor's `shard_offset` and the absolute `seq_ptr` offsets into the `block_table`
-> must be resolved, since `seq_ptr` indexes the whole-batch block table rather than a
-> shard-local slice.
+> **Note (non-normative):** Tensor-parallel / multi-GPU sharding of a block-paged KV cache
+> (for example, splitting along the `num_heads` axis) is deferred to a future revision.
+> Before sharding can be permitted, the interaction between a shard descriptor's
+> `shard_offset` and the absolute `seq_ptr` offsets into the `block_table` must be resolved,
+> since `seq_ptr` indexes the whole-batch block table rather than a shard-local slice. The
+> normative rule for this version is stated above: a reader MUST reject a block-paged
+> descriptor that also carries a shard descriptor.
 
 ## Alignment
 
