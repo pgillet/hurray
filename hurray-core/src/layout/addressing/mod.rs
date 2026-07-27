@@ -48,29 +48,12 @@ pub trait ElementAddress {
     fn element_offset(&self, index: &[u64], shape: &Shape) -> Result<u64>;
 }
 
-/// Implemented by sparse layout descriptors; requires borrow of index buffers.
-///
-/// Kept `pub(crate)` until the first consumer (Layer 4) validates the API shape.
-/// See OQ-014.1 for promotion criteria.
-// Dead-code allowed: defined now for the stub impls; first used in Layer 4.
-#[allow(dead_code)]
-pub(crate) trait SparseElementAddress {
-    /// Returns the storage offset of the given logical index,
-    /// or `None` if the element is structurally absent (structural zero).
-    fn sparse_element_offset(
-        &self,
-        index: &[u64],
-        buffers: &SparseBuffers<'_>,
-    ) -> Result<Option<u64>>;
-}
-
-/// Borrowed component buffers for sparse layout address lookup.
-// Dead-code allowed: first constructed in Layer 4 when sparse addressing is wired up.
-#[allow(dead_code)]
-pub(crate) struct SparseBuffers<'a> {
-    /// Raw bytes of each component buffer, in the order defined by the layout spec.
-    pub buffers: &'a [&'a [u8]],
-}
+// Sparse layouts do not implement the dense `ElementAddress` trait: their lookup needs the
+// tensor's index buffers, not just the shape. Each sparse layout instead exposes a
+// standalone `element_offset` function in its addressing submodule
+// (`coo`, `csr`, `csc`, `csf`), taking typed index-buffer slices and returning the storage
+// offset or `None` for a structural zero. (This is the shape ADR-014 OQ-014.1 deferred
+// pending a first consumer; CSF validated it and the others now follow it.)
 
 /// Converts a linear element offset to an absolute byte address within a buffer.
 ///
