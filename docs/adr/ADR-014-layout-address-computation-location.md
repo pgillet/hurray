@@ -109,7 +109,13 @@ consumer that needs addressing would write its own copy, multiplying drift risk.
 
 ## Open Questions
 
-- **OQ-014.1:** Promote `SparseElementAddress` to `pub` after Layer 4 validation? (Defer.)
+- **OQ-014.1:** ~~Promote `SparseElementAddress` to `pub` after Layer 4 validation?~~
+  **Resolved.** The `SparseElementAddress` trait / `SparseBuffers` shape was **not** promoted;
+  it was removed. CSF (ADR-025) validated a simpler shape — a standalone public
+  `element_offset` function per sparse layout, taking typed index-buffer slices and
+  returning `Ok(Some(offset))` or `Ok(None)` for a structural zero. COO, CSR, and CSC now
+  follow that same shape (`addressing::{coo,csr,csc}::element_offset`), so sparse element
+  lookup is uniform and public across all sparse layouts.
 - **OQ-014.2:** Should `byte_address_from_element_offset` return a single struct with
   `bit_offset: 0` for whole-byte types, or a sum type? (Defer to first FFI consumer.)
 - **OQ-014.3:** ~~Subpaving region lookup — are regions pre-sorted?~~ **Resolved.**
