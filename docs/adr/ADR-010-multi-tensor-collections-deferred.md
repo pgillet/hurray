@@ -4,6 +4,23 @@
 
 Accepted
 
+> **Amended 2026-07-27 (deferral resolved):** The multi-tensor use cases this ADR deferred
+> have since been addressed by later decisions — informed by the very implementation
+> experience this ADR said to wait for:
+>
+> - **Grouping** (multi-output inference; independent tensors under one logical identity)
+>   ships as the composite **Group** rule (ADR-027), bound by stream/file adjacency rather
+>   than a name namespace. ADR-027 records that it "amends the deferral scope of ADR-010."
+> - **Named / indexed storage** (the SafeTensors/GGUF-style use case, including key-value
+>   metadata) ships as the **HRRYFILE** container (ADR-011): names + footer index + typed
+>   KV. ADR-011 revisited and accepted, for the at-rest *file* format, the naming and KV
+>   metadata this ADR rejected for the *runtime wire* format — the two remain distinct.
+> - **Batch streaming** is the Option A sequential stream decided below, unchanged.
+>
+> What remains out of scope is only a *standalone `hurray-archive` sibling specification*
+> distinct from HRRYFILE; it is optional and not a v1.0 blocker. The Option A decision below
+> still stands as the canonical multi-tensor **streaming** encoding.
+
 ## Context
 
 The Hurray spec defines one tensor per descriptor. The question arose whether
