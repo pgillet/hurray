@@ -1,5 +1,5 @@
 use bytes::{Bytes, BytesMut};
-use hurray_core::TensorDescriptor;
+use hurray_core::{CompositeValidator, LayoutDescriptor, TensorDescriptor};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, SeekFrom};
 
 use crate::file::types::{IndexEntry, KvValue};
@@ -8,6 +8,9 @@ use crate::file::{
     TRAILER_SIZE,
 };
 use crate::{Error, Result};
+
+/// Default maximum composite nesting depth for [`FileReader::read_composite`].
+pub const DEFAULT_MAX_COMPOSITE_DEPTH: usize = 64;
 
 /// A tensor read from a Hurray file: descriptor plus zero-copy buffer views.
 #[derive(Debug)]
@@ -18,6 +21,40 @@ pub struct FileTensor {
     pub descriptor: TensorDescriptor,
     /// Raw buffer bytes, one [`Bytes`] per buffer handle.
     pub buffers: Vec<Bytes>,
+}
+
+/// One member of a composite read from a file: a plain tensor or a nested composite.
+#[derive(Debug)]
+pub enum FileItem {
+    /// A single (non-composite) tensor.
+    Tensor(FileTensor),
+    /// A nested composite.
+    Composite(FileComposite),
+}
+
+impl FileItem {
+    /// The item's governing descriptor: the tensor's descriptor, or the composite head.
+    pub fn descriptor(&self) -> &TensorDescriptor {
+        match self {
+            FileItem::Tensor(t) => &t.descriptor,
+            FileItem::Composite(c) => &c.head,
+        }
+    }
+}
+
+/// A composite tensor read from a file: its head plus its ordered members.
+///
+/// Membership was recovered from the head's `member_count` and file-offset adjacency, then
+/// validated with [`CompositeValidator`] (member count, partition coverage, overlay
+/// ordering). Members are ordered as written; each may itself be a composite (nesting).
+#[derive(Debug)]
+pub struct FileComposite {
+    /// The head's name, as recorded in the file index.
+    pub name: String,
+    /// The composite head descriptor (owns no data buffers).
+    pub head: TensorDescriptor,
+    /// The members, in write order. Each may itself be a composite.
+    pub members: Vec<FileItem>,
 }
 
 /// Reads tensors from a seekable Hurray file.
@@ -45,6 +82,7 @@ pub struct FileTensor {
 pub struct FileReader<R> {
     inner: R,
     data_buffer_alignment: u64,
+    max_composite_depth: usize,
     /// Footer index: one entry per tensor, in file-write order (or sorted if
     /// `SORTED_INDEX` was set by the writer).
     pub index: Vec<IndexEntry>,
@@ -166,9 +204,18 @@ impl<R: AsyncRead + AsyncSeek + Unpin> FileReader<R> {
         Ok(Self {
             inner,
             data_buffer_alignment,
+            max_composite_depth: DEFAULT_MAX_COMPOSITE_DEPTH,
             index,
             kv,
         })
+    }
+
+    /// Sets the maximum composite nesting depth accepted by
+    /// [`read_composite`][FileReader::read_composite]. Default:
+    /// [`DEFAULT_MAX_COMPOSITE_DEPTH`].
+    pub fn with_max_composite_depth(mut self, max_composite_depth: usize) -> Self {
+        self.max_composite_depth = max_composite_depth;
+        self
     }
 
     /// Returns the names of all tensors in the file, in index order.
@@ -248,6 +295,109 @@ impl<R: AsyncRead + AsyncSeek + Unpin> FileReader<R> {
             descriptor: desc,
             buffers,
         })
+    }
+
+    /// Reads a composite tensor by its head name, reassembling the head with its members.
+    ///
+    /// Members are recovered by **file-offset adjacency**: the head's declared
+    /// `member_count` tensors written immediately after it, recursively for nested
+    /// composites. Recovery keys on the descriptor offset, not index position, so it is
+    /// correct even when the file used the `SORTED_INDEX` option (which reorders the index
+    /// array but not the file layout). The reassembled group is validated with
+    /// [`CompositeValidator`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use hurray_io::file::FileReader;
+    ///
+    /// let file = tokio::fs::File::open("model.hrry").await?;
+    /// let mut reader = FileReader::open(file).await?;
+    /// let composite = reader.read_composite("weight").await?;
+    /// println!("{} member(s)", composite.members.len());
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::TensorNotFound`] — no tensor named `head_name`
+    /// - [`Error::NotAComposite`] — `head_name` exists but is not a composite head
+    /// - [`Error::TornComposite`] — fewer members follow the head than it declares
+    /// - [`Error::CompositeNestingTooDeep`] — nesting exceeded `max_composite_depth`
+    /// - [`Error::Core`] — composite validation failed
+    pub async fn read_composite(&mut self, head_name: &str) -> Result<FileComposite> {
+        // Offset-ordered snapshot of names: membership is recovered by write order (file
+        // offset), independent of the index array's order (which SORTED_INDEX permutes).
+        let mut ordered: Vec<(u64, String)> = self
+            .index
+            .iter()
+            .map(|e| (e.descriptor_offset, e.name.clone()))
+            .collect();
+        ordered.sort_unstable_by_key(|(offset, _)| *offset);
+
+        let start = ordered
+            .iter()
+            .position(|(_, name)| name == head_name)
+            .ok_or_else(|| Error::TensorNotFound(head_name.to_string()))?;
+
+        let names: Vec<String> = ordered.into_iter().map(|(_, name)| name).collect();
+        let mut cursor = start;
+        match self.consume_item(&names, &mut cursor, 0).await? {
+            FileItem::Composite(c) => Ok(c),
+            FileItem::Tensor(t) => Err(Error::NotAComposite(t.name)),
+        }
+    }
+
+    /// Consumes one item at `names[*cursor]` (advancing the cursor), recursing into members
+    /// when it is a composite head.
+    async fn consume_item(
+        &mut self,
+        names: &[String],
+        cursor: &mut usize,
+        depth: usize,
+    ) -> Result<FileItem> {
+        let name = names[*cursor].clone();
+        *cursor += 1;
+
+        let desc = self.read_descriptor(&name).await?;
+        let member_count = match &desc.layout {
+            LayoutDescriptor::Composite(c) => c.member_count,
+            _ => {
+                let tensor = self.read_tensor(&name).await?;
+                return Ok(FileItem::Tensor(tensor));
+            }
+        };
+
+        if depth >= self.max_composite_depth {
+            return Err(Error::CompositeNestingTooDeep {
+                limit: self.max_composite_depth,
+            });
+        }
+
+        let mut validator = CompositeValidator::new(&desc)?;
+        let mut members = Vec::with_capacity(member_count as usize);
+        for i in 0..member_count {
+            if *cursor >= names.len() {
+                return Err(Error::TornComposite {
+                    declared: member_count,
+                    actual: i,
+                });
+            }
+            // Box the recursive call: an async fn cannot name its own future.
+            let item = Box::pin(self.consume_item(names, cursor, depth + 1)).await?;
+            validator.push_member(item.descriptor())?;
+            members.push(item);
+        }
+        validator.finish()?;
+
+        Ok(FileItem::Composite(FileComposite {
+            name,
+            head: desc,
+            members,
+        }))
     }
 
     /// Returns the underlying reader.

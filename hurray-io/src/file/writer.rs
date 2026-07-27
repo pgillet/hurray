@@ -1,11 +1,71 @@
 use std::collections::HashSet;
 
-use hurray_core::TensorDescriptor;
+use hurray_core::{CompositeValidator, TensorDescriptor};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 use crate::file::types::{FileWriterOptions, KvValue};
 use crate::file::{file_flags, FILE_HEADER_SIZE, FILE_MAGIC, TRAILER_MAGIC};
 use crate::{Error, Result};
+
+/// A named node to write as part of a composite via [`FileWriter::write_composite`]:
+/// either a plain tensor or a nested composite. Every node carries a name because every
+/// tensor — head and members alike — gets its own footer-index entry (ADR-027 § Binding).
+pub enum FileCompositeNode<'a> {
+    /// A single (non-composite) tensor member.
+    Tensor {
+        /// Unique tensor name for this member's index entry.
+        name: &'a str,
+        /// The member's tensor descriptor.
+        descriptor: &'a TensorDescriptor,
+        /// One byte-slice per buffer handle in `descriptor.buffers`.
+        buffers: &'a [&'a [u8]],
+    },
+    /// A nested composite member: its head plus its own members.
+    Composite {
+        /// Unique tensor name for the nested head's index entry.
+        name: &'a str,
+        /// The nested composite's head descriptor.
+        head: &'a TensorDescriptor,
+        /// The nested composite's members, in order.
+        members: &'a [FileCompositeNode<'a>],
+    },
+}
+
+impl FileCompositeNode<'_> {
+    /// The node's governing descriptor: the tensor's descriptor, or the nested head.
+    fn descriptor(&self) -> &TensorDescriptor {
+        match self {
+            FileCompositeNode::Tensor { descriptor, .. } => descriptor,
+            FileCompositeNode::Composite { head, .. } => head,
+        }
+    }
+}
+
+/// Recursively validates a composite node tree, writing nothing. Reuses
+/// [`CompositeValidator`] at every level so [`FileWriter::write_composite`] can reject a
+/// torn/invalid composite before emitting any tensor.
+fn validate_composite_node(
+    head: &TensorDescriptor,
+    members: &[FileCompositeNode<'_>],
+) -> Result<()> {
+    let mut validator = CompositeValidator::new(head)?;
+    for member in members {
+        validator.push_member(member.descriptor())?;
+    }
+    validator.finish()?;
+
+    for member in members {
+        if let FileCompositeNode::Composite {
+            head: nested_head,
+            members: nested_members,
+            ..
+        } = member
+        {
+            validate_composite_node(nested_head, nested_members)?;
+        }
+    }
+    Ok(())
+}
 
 struct InternalEntry {
     name: String,
@@ -226,6 +286,89 @@ impl<W: AsyncWrite + Unpin> FileWriter<W> {
             data_length,
         });
 
+        Ok(())
+    }
+
+    /// Writes a composite tensor: its head, then every member's descriptor and data,
+    /// contiguously and in order (ADR-027 § Binding).
+    ///
+    /// Every tensor — the head and each member — gets its own footer-index entry, so all
+    /// are individually addressable by name via [`read_tensor`][crate::file::FileReader::read_tensor].
+    /// Membership is recoverable by [`read_composite`][crate::file::FileReader::read_composite]
+    /// from the head's `member_count` plus file-offset adjacency (the members are the tensors
+    /// written immediately after the head). Nested composites are written recursively.
+    ///
+    /// The whole group is validated up front — reusing [`CompositeValidator`] for member
+    /// count and per-rule constraints (partition exact-cover, overlay ordering) — before any
+    /// tensor is written.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::Core`] — the head is not a valid composite head, or validation failed
+    /// - the name/buffer errors of [`write_tensor`][FileWriter::write_tensor] for the head
+    ///   or any member
+    /// - [`Error::Io`] — underlying write error
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// use hurray_core::{
+    ///     layout::{CompositeLayout, CompositionRule, LayoutDescriptor},
+    ///     ElementType, Shape, TensorDescriptor,
+    /// };
+    /// use hurray_io::file::{FileCompositeNode, FileWriter};
+    ///
+    /// let head = TensorDescriptor::new(
+    ///     1, 0, ElementType::Float32, Shape::new(vec![8u64, 8]).unwrap(), 0,
+    ///     LayoutDescriptor::Composite(CompositeLayout::new(CompositionRule::Partition, 2).unwrap()),
+    ///     vec![], None, None, None, None,
+    /// )?;
+    /// # let members: Vec<FileCompositeNode> = vec![];
+    /// let file = tokio::fs::File::create("model.hrry").await?;
+    /// let mut writer = FileWriter::new(file).await?;
+    /// writer.write_composite("weight", &head, &members).await?;
+    /// writer.finish(vec![]).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn write_composite(
+        &mut self,
+        head_name: &str,
+        head: &TensorDescriptor,
+        members: &[FileCompositeNode<'_>],
+    ) -> Result<()> {
+        // Validate the whole tree before writing any tensor.
+        validate_composite_node(head, members)?;
+
+        // Head first (no data buffers), then each member in order.
+        self.write_tensor(head_name, head, &[]).await?;
+        self.write_composite_members(members).await
+    }
+
+    /// Writes each member (recursively for nested composites) after the head.
+    async fn write_composite_members(&mut self, members: &[FileCompositeNode<'_>]) -> Result<()> {
+        for member in members {
+            match member {
+                FileCompositeNode::Tensor {
+                    name,
+                    descriptor,
+                    buffers,
+                } => {
+                    self.write_tensor(name, descriptor, buffers).await?;
+                }
+                FileCompositeNode::Composite {
+                    name,
+                    head,
+                    members,
+                } => {
+                    self.write_tensor(name, head, &[]).await?;
+                    // Box the recursive call: an async fn cannot name its own future.
+                    Box::pin(self.write_composite_members(members)).await?;
+                }
+            }
+        }
         Ok(())
     }
 

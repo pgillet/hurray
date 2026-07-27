@@ -25,5 +25,9 @@ required-features = ["tokio"]
 name = "composite_stream"
 required-features = ["tokio"]
 
+[[example]]
+name = "composite_file"
+required-features = ["tokio"]
+
 [dev-dependencies]
 tokio = { workspace = true }

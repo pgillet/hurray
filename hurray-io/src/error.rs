@@ -55,6 +55,10 @@ pub enum Error {
     #[error("composite nesting too deep: exceeded limit of {limit}")]
     CompositeNestingTooDeep { limit: usize },
 
+    /// A composite read was requested for a tensor whose head is not a composite.
+    #[error("tensor {0:?} is not a composite head")]
+    NotAComposite(String),
+
     // ── File format ───────────────────────────────────────────────────────────
     /// The file header magic is not `HRRYFILE`.
     #[error("invalid file magic: expected HRRYFILE")]

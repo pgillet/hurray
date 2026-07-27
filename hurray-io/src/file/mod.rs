@@ -17,6 +17,6 @@ pub mod reader;
 pub mod types;
 pub mod writer;
 
-pub use reader::{FileReader, FileTensor};
+pub use reader::{FileComposite, FileItem, FileReader, FileTensor, DEFAULT_MAX_COMPOSITE_DEPTH};
 pub use types::{FileWriterOptions, IndexEntry, KvValue};
-pub use writer::FileWriter;
+pub use writer::{FileCompositeNode, FileWriter};
