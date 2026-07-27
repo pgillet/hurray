@@ -233,9 +233,20 @@ be accompanied by a major version increment.
 
 ## Open Questions
 
-> **[OQ-1]:** Should this file define a normative encoding for double quantization (quantizing the scale buffer itself, as in bitsandbytes QLoRA "nested" quantization)? **Deferred.** Rationale: the base quantization encoding must be validated through implementation before a recursive or two-level descriptor can be specified safely. Double quantization is primarily a weight-storage optimization rather than a runtime interchange primitive. Scheme tags `0x60`–`0x7F` are reserved for future nested/composite schemes. A conforming implementation MAY express double quantization today by representing the scale tensor as a separate quantized tensor using existing scheme tags, with the relationship conveyed by application-layer convention.
->
-> **Note (non-normative):** The intended future occupant of the `0x60`–`0x7F` range is a nested-scale scheme compatible with bitsandbytes-style double quantization (NF4 data with quantized `float8` scales and a `float32` super-scale). This will be specified in a future revision once implementation experience is available.
+**Double / nested quantization (deferred).** This version does not define a normative
+encoding for double quantization (quantizing the scale buffer itself, as in bitsandbytes
+QLoRA "nested" quantization). The scheme-tag range `0x60`–`0x7F` is reserved for a future
+nested/composite scheme (see § Scheme Tag Space). A conforming implementation MAY express
+double quantization today by representing the scale tensor as a separate quantized tensor
+using existing scheme tags, with the relationship conveyed by application-layer convention.
+
+> **Note (non-normative):** A recursive or two-level scale descriptor is deferred until the
+> base quantization encoding has been validated through implementation; double quantization
+> is primarily a weight-storage optimization rather than a runtime interchange primitive.
+> The intended future occupant of `0x60`–`0x7F` is a nested-scale scheme compatible with
+> bitsandbytes-style double quantization (NF4 data with quantized `float8` scales and a
+> `float32` super-scale), to be specified in a future revision once implementation
+> experience is available.
 
 > **[OQ-2]:** ~~Should MXFP `block_size` be fixed at 32 or parameterised?~~ **Resolved:** `block_size` is parameterised. The field already exists in the binary encoding; the constraint is: MUST be a power of two in `[16, 2048]`. The lower bound of 16 excludes values with no hardware Tensor Core support. The OCP MX v1.0 canonical value of `32` is documented as the default. Rationale: avoids scheme tag proliferation for what is effectively one scheme with a size variation; future OCP revisions and hardware variants can use different block sizes under the same scheme tag.
 

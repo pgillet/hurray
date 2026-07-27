@@ -160,10 +160,12 @@ the packing formula above.
 > per group of 4 elements); individual element extraction within a group is defined
 > by the bit layout in `element-types.md` § Encoding but is not generalised here.
 
-> **[OQ-1]:** Should a normative group-based addressing formula for 6-bit types be
-> defined in this section, or is the `element-types.md` encoding sufficient for
-> implementors? Until resolved, conforming implementations MAY treat 6-bit types
-> as requiring group-level buffer access rather than single-element byte addressing.
+Accordingly, 6-bit types (`float6_e2m3`, `float6_e3m2`) MUST be accessed at the group
+level — one group is 4 elements packed into 3 bytes — and an implementation MUST NOT apply
+the single-element byte/bit-addressing model of § Sub-Byte Types to them. Single-element
+extraction within a group is defined normatively by `element-types.md` § Encoding and is
+intentionally not generalised into a layout addressing formula here; that encoding is
+sufficient for implementors.
 
 ---
 
