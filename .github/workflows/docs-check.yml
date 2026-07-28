@@ -27,6 +27,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
+      # Validate internal Markdown cross-links resolve on both GitHub and the site.
+      - name: Check doc cross-links
+        run: python3 website/check-doc-links.py
+
       - name: Install mdBook
         run: |
           mkdir -p "$HOME/.local/bin"

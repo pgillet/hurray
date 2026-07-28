@@ -7,6 +7,11 @@
 - [Data Model](spec/data-model.md)
 - [Element Types](spec/element-types.md)
 - [Quantization](spec/quantization.md)
+    - [Per-Tensor Affine](spec/quantization/per-tensor-affine.md)
+    - [Per-Channel Affine](spec/quantization/per-channel-affine.md)
+    - [Per-Block Affine](spec/quantization/per-block-affine.md)
+    - [NF4 (NormalFloat4)](spec/quantization/nf4.md)
+    - [MXFP (OCP Microscaling)](spec/quantization/mxfp.md)
 - [Memory Layout](spec/memory-layout.md)
     - [Row-Major (C Order)](spec/layouts/row-major.md)
     - [Column-Major (Fortran Order)](spec/layouts/column-major.md)
@@ -67,6 +72,7 @@
 # Appendix
 
 - [Prior Art](prior-art.md)
+- [Documentation Website Spec](website/README.md)
 - [Architecture Decision Records]()
     - [ADR-001: Private Extension Type Descriptors](adr/ADR-001-private-extension-type-descriptors.md)
     - [ADR-002: Multi-Buffer Descriptor for Sparse Layouts](adr/ADR-002-multi-buffer-descriptor-for-sparse-layouts.md)

@@ -261,7 +261,7 @@ which compatibility a reader can rely on when it encounters data from a differen
 minor version, and which spec-amendment moves are admissible at each step.
 
 It is the normative counterpart to the "Format Evolvability" property listed in
-[`README.md`](README.md) § Core Properties. The guarantee period begins at
+[`README.md`](https://github.com/pgillet/hurray/blob/main/README.md) § Core Properties. The guarantee period begins at
 descriptor and container version `1.0`; pre-`1.0` drafts are explicitly
 excluded (see [§ Out of Scope](#out-of-scope) below).
 
