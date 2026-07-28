@@ -34,6 +34,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: cargo check --workspace --all-features
+      # Compile-check benchmarks so they don't bit-rot (they are not run in CI).
+      - run: cargo check -p hurray-core -p hurray-io --benches
 
   clippy:
     name: Clippy
