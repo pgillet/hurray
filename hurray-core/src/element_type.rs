@@ -520,6 +520,58 @@ impl ElementType {
     }
 }
 
+impl fmt::Display for ElementType {
+    /// Formats the type as its canonical lowercase spec name.
+    ///
+    /// The returned string matches the type name column in `element-types.md`
+    /// exactly: lowercase, underscore-separated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::ElementType;
+    ///
+    /// assert_eq!(ElementType::Float32.to_string(), "float32");
+    /// assert_eq!(ElementType::BFloat16.to_string(), "bfloat16");
+    /// assert_eq!(ElementType::Float8E4M3.to_string(), "float8_e4m3");
+    /// assert_eq!(ElementType::Float6E2M3.to_string(), "float6_e2m3");
+    /// assert_eq!(ElementType::Int4.to_string(), "int4");
+    /// assert_eq!(ElementType::Bool.to_string(), "bool");
+    /// assert_eq!(ElementType::Complex64.to_string(), "complex64");
+    /// ```
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Float16 => f.write_str("float16"),
+            Self::BFloat16 => f.write_str("bfloat16"),
+            Self::Float32 => f.write_str("float32"),
+            Self::Float64 => f.write_str("float64"),
+            Self::Int8 => f.write_str("int8"),
+            Self::Uint8 => f.write_str("uint8"),
+            Self::Int16 => f.write_str("int16"),
+            Self::Uint16 => f.write_str("uint16"),
+            Self::Int32 => f.write_str("int32"),
+            Self::Uint32 => f.write_str("uint32"),
+            Self::Int64 => f.write_str("int64"),
+            Self::Uint64 => f.write_str("uint64"),
+            Self::Bool => f.write_str("bool"),
+            Self::Float8E4M3 => f.write_str("float8_e4m3"),
+            Self::Float8E5M2 => f.write_str("float8_e5m2"),
+            Self::Float8E8M0 => f.write_str("float8_e8m0"),
+            Self::Float4E2M1 => f.write_str("float4_e2m1"),
+            Self::Float6E2M3 => f.write_str("float6_e2m3"),
+            Self::Float6E3M2 => f.write_str("float6_e3m2"),
+            Self::Float128 => f.write_str("float128"),
+            Self::Int4 => f.write_str("int4"),
+            Self::Uint4 => f.write_str("uint4"),
+            Self::Int2 => f.write_str("int2"),
+            Self::Uint2 => f.write_str("uint2"),
+            Self::Complex64 => f.write_str("complex64"),
+            Self::Complex128 => f.write_str("complex128"),
+            Self::Extension(t) => write!(f, "extension(0x{t:02x})"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1082,7 +1134,7 @@ mod tests {
                 ty.to_string(),
                 expected,
                 "{ty:?} display name mismatch: got '{}', expected '{expected}'",
-                ty.to_string()
+                ty
             );
         }
     }
@@ -1121,58 +1173,6 @@ mod tests {
         for ty in all {
             let s = ty.to_string();
             assert_eq!(s, s.to_lowercase(), "{ty:?} display has uppercase: '{s}'");
-        }
-    }
-}
-
-impl fmt::Display for ElementType {
-    /// Formats the type as its canonical lowercase spec name.
-    ///
-    /// The returned string matches the type name column in `element-types.md`
-    /// exactly: lowercase, underscore-separated.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hurray_core::ElementType;
-    ///
-    /// assert_eq!(ElementType::Float32.to_string(), "float32");
-    /// assert_eq!(ElementType::BFloat16.to_string(), "bfloat16");
-    /// assert_eq!(ElementType::Float8E4M3.to_string(), "float8_e4m3");
-    /// assert_eq!(ElementType::Float6E2M3.to_string(), "float6_e2m3");
-    /// assert_eq!(ElementType::Int4.to_string(), "int4");
-    /// assert_eq!(ElementType::Bool.to_string(), "bool");
-    /// assert_eq!(ElementType::Complex64.to_string(), "complex64");
-    /// ```
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Float16 => f.write_str("float16"),
-            Self::BFloat16 => f.write_str("bfloat16"),
-            Self::Float32 => f.write_str("float32"),
-            Self::Float64 => f.write_str("float64"),
-            Self::Int8 => f.write_str("int8"),
-            Self::Uint8 => f.write_str("uint8"),
-            Self::Int16 => f.write_str("int16"),
-            Self::Uint16 => f.write_str("uint16"),
-            Self::Int32 => f.write_str("int32"),
-            Self::Uint32 => f.write_str("uint32"),
-            Self::Int64 => f.write_str("int64"),
-            Self::Uint64 => f.write_str("uint64"),
-            Self::Bool => f.write_str("bool"),
-            Self::Float8E4M3 => f.write_str("float8_e4m3"),
-            Self::Float8E5M2 => f.write_str("float8_e5m2"),
-            Self::Float8E8M0 => f.write_str("float8_e8m0"),
-            Self::Float4E2M1 => f.write_str("float4_e2m1"),
-            Self::Float6E2M3 => f.write_str("float6_e2m3"),
-            Self::Float6E3M2 => f.write_str("float6_e3m2"),
-            Self::Float128 => f.write_str("float128"),
-            Self::Int4 => f.write_str("int4"),
-            Self::Uint4 => f.write_str("uint4"),
-            Self::Int2 => f.write_str("int2"),
-            Self::Uint2 => f.write_str("uint2"),
-            Self::Complex64 => f.write_str("complex64"),
-            Self::Complex128 => f.write_str("complex128"),
-            Self::Extension(t) => write!(f, "extension(0x{t:02x})"),
         }
     }
 }

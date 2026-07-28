@@ -920,7 +920,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let tensor = Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None)
+            let tensor = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None)
                 .expect("construction should succeed");
 
             assert_eq!(tensor.ndim(), 2);
@@ -953,7 +953,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let tensor = Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![8], None)
+            let tensor = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![8], None)
                 .expect("int4 construction should succeed");
             assert_eq!(tensor.size(), Some(8));
             assert!(tensor.dtype(py).borrow(py).is_sub_byte());
@@ -974,7 +974,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let result = Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None);
+            let result = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None);
             assert!(result.is_err());
             assert!(result.unwrap_err().is_instance_of::<BufferError>(py));
         });
@@ -994,7 +994,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let result = Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![-1, 3], None);
+            let result = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![-1, 3], None);
             assert!(result.is_err());
             assert!(result
                 .unwrap_err()
@@ -1018,7 +1018,7 @@ mod tests {
             .unwrap();
             let tensor = Py::new(
                 py,
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap(),
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap(),
             )
             .unwrap();
             // Tier 1 tensor must expose __array_namespace__ and return the hurray module.
@@ -1054,7 +1054,7 @@ mod tests {
             .unwrap();
             let tensor = Py::new(
                 py,
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![8], None).unwrap(),
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![8], None).unwrap(),
             )
             .unwrap();
             // Tier 2 tensor: calling __array_namespace__() must raise AttributeError.
@@ -1085,7 +1085,7 @@ mod tests {
             .unwrap();
             let tensor = Py::new(
                 py,
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap(),
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap(),
             )
             .unwrap();
             let kwargs = pyo3::types::PyDict::new_bound(py);
@@ -1119,7 +1119,7 @@ mod tests {
             .unwrap();
             let tensor = Py::new(
                 py,
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap(),
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap(),
             )
             .unwrap();
             assert!(
@@ -1154,7 +1154,7 @@ mod tests {
             )
             .unwrap();
             let tensor =
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
             assert!(tensor.t().is_err());
             assert!(tensor
                 .t()
@@ -1181,7 +1181,7 @@ mod tests {
             )
             .unwrap();
             let tensor =
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
             let r = tensor.__repr__(py).unwrap();
             assert!(
                 r.starts_with("hurray.Tensor("),
@@ -1208,7 +1208,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let tensor = Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2], None).unwrap();
+            let tensor = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2], None).unwrap();
             let r = tensor.__repr__(py).unwrap();
             assert!(r.contains("shape="), "fallback repr should include shape=");
             assert!(r.contains("int4"), "fallback repr should include dtype");
@@ -1234,7 +1234,7 @@ mod tests {
             )
             .unwrap();
             let tensor =
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
             let s = tensor.__str__(py).unwrap();
             assert!(!s.is_empty(), "__str__ must not be empty");
             assert!(
@@ -1259,7 +1259,7 @@ mod tests {
             )
             .unwrap();
             let tensor =
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
             assert_eq!(tensor.device_py.borrow(py).kind(), "cpu");
         });
     }
@@ -1290,7 +1290,7 @@ mod tests {
             let tensor = Tensor::new(
                 py,
                 py_buf.as_any(),
-                &dtype.bind(py),
+                dtype.bind(py),
                 vec![2, 3],
                 Some(cuda_device),
             )
@@ -1364,7 +1364,7 @@ mod tests {
             )
             .unwrap();
             let tensor =
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
             let err = tensor.__hash__().unwrap_err();
             assert!(err.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
         });
@@ -1385,7 +1385,7 @@ mod tests {
             )
             .unwrap();
             let tensor =
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
             let tup = tensor.__dlpack_device__(py).unwrap();
             let tup_bound = tup.bind(py);
             let device_type: c_int = tup_bound.get_item(0).unwrap().extract().unwrap();
@@ -1411,7 +1411,7 @@ mod tests {
             .unwrap();
             let tensor_py = Py::new(
                 py,
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap(),
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap(),
             )
             .unwrap();
             let bound = tensor_py.bind(py);
@@ -1439,7 +1439,7 @@ mod tests {
             .unwrap();
             let tensor_py = Py::new(
                 py,
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![8], None).unwrap(),
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![8], None).unwrap(),
             )
             .unwrap();
             let bound = tensor_py.bind(py);
@@ -1468,7 +1468,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let _ = Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None);
+            let _ = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None);
         });
     }
 
@@ -1487,7 +1487,7 @@ mod tests {
             )
             .unwrap();
             let tensor =
-                Tensor::new(py, py_buf.as_any(), &dtype.bind(py), vec![2, 3], None).unwrap();
+                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
             assert!(matches!(tensor.buffer, BufferStore::Owned(_)));
             assert_eq!(tensor.buffer.len(), 24); // 6 × f32 = 24 bytes
         });

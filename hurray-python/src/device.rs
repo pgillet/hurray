@@ -393,27 +393,23 @@ mod tests {
         let e = Device::new("cuda", Some(0), Some("unified")).unwrap();
 
         // Same triple — equal.
-        assert_eq!(
+        assert!(
             a.__richcmp__(&b, CompareOp::Eq).unwrap(),
-            true,
             "same triple should be equal"
         );
         // Different device_id.
-        assert_eq!(
-            a.__richcmp__(&c, CompareOp::Eq).unwrap(),
-            false,
+        assert!(
+            !a.__richcmp__(&c, CompareOp::Eq).unwrap(),
             "different device_id should be unequal"
         );
         // Different kind.
-        assert_eq!(
-            a.__richcmp__(&d_dev, CompareOp::Eq).unwrap(),
-            false,
+        assert!(
+            !a.__richcmp__(&d_dev, CompareOp::Eq).unwrap(),
             "different kind should be unequal"
         );
         // Different memory_class.
-        assert_eq!(
-            a.__richcmp__(&e, CompareOp::Eq).unwrap(),
-            false,
+        assert!(
+            !a.__richcmp__(&e, CompareOp::Eq).unwrap(),
             "different memory_class should be unequal"
         );
     }

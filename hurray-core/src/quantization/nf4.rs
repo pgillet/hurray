@@ -412,6 +412,9 @@ mod tests {
     }
 
     #[test]
+    // Deliberately asserting properties of the const NF4_LUT; the values are known at
+    // compile time, which is exactly what this test pins down.
+    #[allow(clippy::assertions_on_constants)]
     fn nf4_lut_straddles_zero_at_index_7_8() {
         // Per QLoRA paper: index 7 is 0.0 (the zero-crossing boundary),
         // index 8 is the first strictly positive value.

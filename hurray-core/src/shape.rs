@@ -231,6 +231,36 @@ impl Shape {
     }
 }
 
+impl fmt::Display for Shape {
+    /// Formats the shape as a bracket-enclosed, comma-separated list of sizes.
+    ///
+    /// Dynamic dimensions are shown as `?`. An empty (scalar) shape is `[]`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::{Shape, DYNAMIC};
+    ///
+    /// assert_eq!(Shape::scalar().to_string(), "[]");
+    /// assert_eq!(Shape::new(vec![3, 4, 5]).unwrap().to_string(), "[3, 4, 5]");
+    /// assert_eq!(Shape::new(vec![1, DYNAMIC, 768]).unwrap().to_string(), "[1, ?, 768]");
+    /// ```
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[")?;
+        for (i, &dim) in self.0.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            if dim == DYNAMIC {
+                f.write_str("?")?;
+            } else {
+                write!(f, "{dim}")?;
+            }
+        }
+        f.write_str("]")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -478,35 +508,5 @@ mod tests {
     #[test]
     fn max_rank_constant_is_64() {
         assert_eq!(MAX_RANK, 64);
-    }
-}
-
-impl fmt::Display for Shape {
-    /// Formats the shape as a bracket-enclosed, comma-separated list of sizes.
-    ///
-    /// Dynamic dimensions are shown as `?`. An empty (scalar) shape is `[]`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hurray_core::{Shape, DYNAMIC};
-    ///
-    /// assert_eq!(Shape::scalar().to_string(), "[]");
-    /// assert_eq!(Shape::new(vec![3, 4, 5]).unwrap().to_string(), "[3, 4, 5]");
-    /// assert_eq!(Shape::new(vec![1, DYNAMIC, 768]).unwrap().to_string(), "[1, ?, 768]");
-    /// ```
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("[")?;
-        for (i, &dim) in self.0.iter().enumerate() {
-            if i > 0 {
-                f.write_str(", ")?;
-            }
-            if dim == DYNAMIC {
-                f.write_str("?")?;
-            } else {
-                write!(f, "{dim}")?;
-            }
-        }
-        f.write_str("]")
     }
 }

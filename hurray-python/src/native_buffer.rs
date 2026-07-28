@@ -412,7 +412,7 @@ mod tests {
             // A capsule with the wrong name should raise BufferError.
             let capsule = unsafe {
                 pyo3::ffi::PyCapsule_New(
-                    1usize as *mut std::ffi::c_void,
+                    std::ptr::dangling_mut::<std::ffi::c_void>(),
                     c"not_hurray_buffer".as_ptr(),
                     None,
                 )

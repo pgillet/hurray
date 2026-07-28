@@ -256,11 +256,11 @@ async fn writer_rejects_duplicate_name() {
     let desc = make_desc(64, ElementType::Float32, vec![4, 4]);
     let mut writer = FileWriter::new(Vec::<u8>::new()).await.unwrap();
     writer
-        .write_tensor("w", &desc, &[&vec![0u8; 64]])
+        .write_tensor("w", &desc, &[&[0u8; 64]])
         .await
         .unwrap();
     let err = writer
-        .write_tensor("w", &desc, &[&vec![0u8; 64]])
+        .write_tensor("w", &desc, &[&[0u8; 64]])
         .await
         .unwrap_err();
     assert!(matches!(err, hurray_io::Error::DuplicateTensorName(_)));
