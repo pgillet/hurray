@@ -30,4 +30,10 @@ name = "composite_file"
 required-features = ["tokio"]
 
 [dev-dependencies]
+criterion = { version = "0.8.2", features = ["async_tokio"] }
 tokio = { workspace = true }
+
+[[bench]]
+name = "io"
+harness = false
+required-features = ["tokio"]
