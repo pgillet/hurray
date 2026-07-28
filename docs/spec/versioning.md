@@ -271,17 +271,17 @@ per-section files. This section does not restate those rules; it cross-
 references them:
 
 - Element type tag space and extension range: see
-  [`element-types`](element-types.md) § Type Tag Space.
+  [Element Types](element-types.md) § Type Tag Space.
 - Layout tag space, extension range, and per-layout reserved bytes: see
-  [`memory-layout`](memory-layout.md) § Layout Tag Space and the per-layout
-  files under [`layouts/`](layouts/).
+  [Memory Layout](memory-layout.md) § Layout Tag Space and the per-layout
+  files under `docs/spec/layouts/`.
 - Device tag space and extension range: see
-  [`buffer-protocol`](buffer-protocol.md) § Device Tag Space.
+  [Buffer Protocol](buffer-protocol.md) § Device Tag Space.
 - Quantization scheme tag space, scheme reserved ranges, and permissive-mode
-  parsing: see [`quantization`](quantization.md) § Scheme Tag Space and
+  parsing: see [Quantization](quantization.md) § Scheme Tag Space and
   § Descriptor Header.
 - KV value tag space and file flag bits: see
-  [`file-format`](file-format.md) § KV Value Types and § File Flags.
+  [File Format](file-format.md) § KV Value Types and § File Flags.
 
 ### Stability Commitments
 
@@ -328,8 +328,8 @@ rely on every one of them.
    change that requires interpreting a layout tag or a quantization scheme
    tag in order to recover the shape, rank, element type, or buffer table.
    The exact behaviour of permissive mode for each tag space is defined in
-   its per-section file (see [`quantization`](quantization.md) §
-   Descriptor Header and [`memory-layout`](memory-layout.md) § Layout
+   its per-section file (see [Quantization](quantization.md) §
+   Descriptor Header and [Memory Layout](memory-layout.md) § Layout
    Tag Space).
 6. **The three version axes evolve independently.** The descriptor,
    container, and per-quantization-scheme versions MUST evolve independently.
@@ -396,13 +396,13 @@ readers, writers, and tools MUST NOT rely on them:
    a runtime registration call, a sidecar manifest, or any implementation-
    private mechanism.
 5. **User-defined non-numeric element types are out of scope.** The element
-   type extension range defined in [`element-types`](element-types.md)
+   type extension range defined in [Element Types](element-types.md)
    exists only for new numeric encodings (integer, floating-point, and
    numerically-equivalent storage types). It MUST NOT be used to encode
    strings, structured records, opaque blobs, references to other tensors,
    or any other non-numeric content. Carrying non-numeric data over Hurray
    is the responsibility of the KV metadata section in
-   [`file-format`](file-format.md), not of the element type system.
+   [File Format](file-format.md), not of the element type system.
 6. **Back-compatibility of pre-`1.0` drafts is out of scope.** The
    Evolvability Contract begins at descriptor and container version `1.0`.
    Pre-`1.0` draft versions of this specification MAY have used different
@@ -433,8 +433,8 @@ readers, writers, and tools MUST NOT rely on them:
   reader MUST reject the data if it encounters any flag bit or public tag
   value not defined at minor `M`, except within the permissive-mode
   exceptions for layout tags and quantization scheme tags defined in
-  [`memory-layout`](memory-layout.md) § Layout Tag Space and
-  [`quantization`](quantization.md) § Descriptor Header.
+  [Memory Layout](memory-layout.md) § Layout Tag Space and
+  [Quantization](quantization.md) § Descriptor Header.
 
   > **Note (non-normative):** The asymmetry between rejecting new
   > flag-gated sections and skipping additive trailing bytes is
@@ -566,7 +566,7 @@ of any spec amendment that adds a trailing field.
 
 Suppose a future descriptor version `1.1` appends an optional
 `bias_correction` field (`float32`, 4 bytes) to the MXFP quantization
-scheme payload (see [`quantization/mxfp`](quantization/mxfp.md) §
+scheme payload (see [MXFP (OCP Microscaling)](quantization/mxfp.md) §
 Binary Encoding) immediately after the existing `scale_buffer_index`
 field, extending the MXFP descriptor from 16 bytes to 20 bytes. The
 following steps illustrate the contract:

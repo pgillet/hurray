@@ -46,20 +46,20 @@ MAY accept the descriptor but MUST NOT dereference or interpret the tensor data 
 
 ### Named Layout Tags
 
-| Layout | Tag | Tier | Type | Spec |
-|--------|-----|------|------|------|
-| Row-major (C order) | `0x01` | 1 | Dense | [layouts/row-major](layouts/row-major.md) |
-| Column-major (Fortran order) | `0x02` | 1 | Dense | [layouts/column-major](layouts/column-major.md) |
-| Strided | `0x03` | 1 | Dense | [layouts/strided](layouts/strided.md) |
-| Tiled / Blocked | `0x04` | 1 | Dense | [layouts/tiled](layouts/tiled.md) |
-| Morton (Z-order) | `0x05` | 1 | Dense | [layouts/morton](layouts/morton.md) |
-| COO (Coordinate) | `0x06` | 1 | Sparse | [layouts/coo](layouts/coo.md) |
-| CSR (Compressed Sparse Row) | `0x07` | 1 | Sparse | [layouts/csr](layouts/csr.md) |
-| CSC (Compressed Sparse Column) | `0x08` | 1 | Sparse | [layouts/csc](layouts/csc.md) |
-| CSF (Compressed Sparse Fiber) | `0x09` | 1 | Sparse | [layouts/csf](layouts/csf.md) |
-| Block-paged | `0x0A` | 1 | Indirect | [layouts/block-paged](layouts/block-paged.md) |
-| Composite / Virtual | `0x0B` | 1 | Virtual | [layouts/composite](layouts/composite.md) |
-| Hilbert curve | `0x40` | 2 | Dense | [layouts/hilbert](layouts/hilbert.md) |
+| Layout | Tag | Tier | Type |
+|--------|-----|------|------|
+| [Row-Major (C Order)](layouts/row-major.md) | `0x01` | 1 | Dense |
+| [Column-Major (Fortran Order)](layouts/column-major.md) | `0x02` | 1 | Dense |
+| [Strided](layouts/strided.md) | `0x03` | 1 | Dense |
+| [Tiled / Blocked](layouts/tiled.md) | `0x04` | 1 | Dense |
+| [Morton (Z-Order Curve)](layouts/morton.md) | `0x05` | 1 | Dense |
+| [COO (Coordinate)](layouts/coo.md) | `0x06` | 1 | Sparse |
+| [CSR (Compressed Sparse Row)](layouts/csr.md) | `0x07` | 1 | Sparse |
+| [CSC (Compressed Sparse Column)](layouts/csc.md) | `0x08` | 1 | Sparse |
+| [CSF (Compressed Sparse Fiber)](layouts/csf.md) | `0x09` | 1 | Sparse |
+| [Block-Paged](layouts/block-paged.md) | `0x0A` | 1 | Indirect |
+| [Composite / Virtual Tensor](layouts/composite.md) | `0x0B` | 1 | Virtual |
+| [Hilbert Curve](layouts/hilbert.md) | `0x40` | 2 | Dense |
 
 The **Type** column classifies each layout's addressing model:
 

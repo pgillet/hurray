@@ -59,7 +59,7 @@ tree and nothing depends on Pages-specific features, the same artifact deploys t
 static host later.
 
 Concrete URL scheme, directory layout, CI pipeline stages, the `versions.json` schema, and
-the content model are specified in [`docs/website/README`](../website/).
+the content model are specified in [Documentation Website Spec](../website/).
 
 ## Alternatives Considered
 

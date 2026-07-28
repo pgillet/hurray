@@ -11,7 +11,7 @@ outlier quantization), and grouping independent tensors under one logical identi
 The head presents one logical view — one `shape` and one `type_tag` — while the members
 supply the actual data. Every member is an ordinary `TensorDescriptor` with its own
 layout, buffers, quantization, and device placement. See
-[`docs/spec/layouts/composite`](../spec/layouts/composite.md) for the full normative
+[Composite / Virtual Tensor](../spec/layouts/composite.md) for the full normative
 specification (ADR-027).
 
 ## Quick reference

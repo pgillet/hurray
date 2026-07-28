@@ -613,7 +613,7 @@ across engines, versions, parallelism strategies, and storage tiers.
 - **Block-paged layout descriptor (specified, Draft).** The PagedAttention KV cache is
   the motivating case for the Hurray `block-paged` layout tag (`0x0B`), now specified in
   [ADR-024](adr/ADR-024-block-paged-indirect-layout.md) and
-  [`docs/spec/layouts/block-paged`](spec/layouts/block-paged.md) (Draft). It encodes
+  [Block-Paged](spec/layouts/block-paged.md) (Draft). It encodes
   fixed page size, the block table (logical sequence position → physical page ID),
   per-sequence page lists (addressed CSR-style by a `seq_ptr` offset array), and
   prefix sharing across sequences (expressed as aliased page IDs in the block table).
