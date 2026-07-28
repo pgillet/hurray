@@ -20,9 +20,9 @@ distinction in this version of the specification. Dense-outer rank-2 cases are c
 by CSR/CSC.
 
 > **Note (non-normative):** CSF is defined only for **rank ≥ 3 tensors** in this
-> version. Rank-2 sparse matrices are served by CSR ([csr.md](csr.md)) and CSC
-> ([csc.md](csc.md)), whose dense outer pointer array is more compact and more
-> interop-canonical. COO ([coo.md](coo.md)) (which supports any rank) and CSR/CSC are
+> version. Rank-2 sparse matrices are served by CSR ([csr](csr.md)) and CSC
+> ([csc](csc.md)), whose dense outer pointer array is more compact and more
+> interop-canonical. COO ([coo](coo.md)) (which supports any rank) and CSR/CSC are
 > preferable for rank ≤ 2. A future revision could admit dense levels via a
 > `mode_format` field; a reader of this version rejecting such a descriptor is intended
 > versioning behaviour.
@@ -166,9 +166,9 @@ visit(0, 0)
 ## Relationship to CSR / CSC / COO
 
 CSF generalises CSR/CSC to arbitrary rank but does **not** replace them. For rank-2
-tensors, writers SHOULD prefer CSR ([csr.md](csr.md)) or CSC ([csc.md](csc.md)), whose
+tensors, writers SHOULD prefer CSR ([csr](csr.md)) or CSC ([csc](csc.md)), whose
 dense outer pointer array is more compact and more interop-canonical; for rank-1 and
-rank-2 coordinate lists, writers SHOULD prefer COO ([coo.md](coo.md)). CSF MUST NOT be
+rank-2 coordinate lists, writers SHOULD prefer COO ([coo](coo.md)). CSF MUST NOT be
 used below rank 3.
 
 A rank-2 CSF tree with `mode_order = [0, 1]` is structurally analogous to CSR (`pos_0`

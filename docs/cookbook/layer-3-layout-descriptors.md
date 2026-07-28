@@ -16,8 +16,8 @@ A layout descriptor tells a reader how the elements of a tensor are arranged in 
 | `Coo` | `0x06` | 2 | `nnz`, `is_sorted`; values + index buffers |
 | `Csr` | `0x07` | 3 | `nnz`; values + col_indices + row_ptr; rank-2 only |
 | `Csc` | `0x08` | 3 | `nnz`; values + row_indices + col_ptr; rank-2 only |
-| `Csf` | `0x09` | `2·rank+1` | `nnz`, `mode_order` permutation; values + per-level pos/crd; rank-3+ generalization of CSR/CSC. See [csf.md](../spec/layouts/csf.md) |
-| `BlockPaged` | `0x0A` | 3 | PagedAttention KV cache; page_pool + block_table + seq_ptr; rank-3 only. See [block-paged-kv-cache.md](block-paged-kv-cache.md) |
+| `Csf` | `0x09` | `2·rank+1` | `nnz`, `mode_order` permutation; values + per-level pos/crd; rank-3+ generalization of CSR/CSC. See [csf](../spec/layouts/csf.md) |
+| `BlockPaged` | `0x0A` | 3 | PagedAttention KV cache; page_pool + block_table + seq_ptr; rank-3 only. See [block-paged-kv-cache](block-paged-kv-cache.md) |
 | `Hilbert` | `0x40` | 1 | `hilbert_order`, `hilbert_rank`; dims must be `2^order` |
 | `PrivateExtension` | `0xF0`–`0xFE` | `None` | Opaque; requires out-of-band agreement |
 | `Unknown` | any unrecognised | `None` | Permissive mode only; never dereference data |
@@ -159,7 +159,7 @@ assert!(csf
     .is_err());
 ```
 
-See [csf.md](../spec/layouts/csf.md) for the full per-level buffer layout and lookup.
+See [csf](../spec/layouts/csf.md) for the full per-level buffer layout and lookup.
 
 ## Space-filling curve layouts
 
