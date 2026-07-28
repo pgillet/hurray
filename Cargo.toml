@@ -5,6 +5,7 @@ members = [
     "hurray-ffi",
     "hurray-python",
     "hurray-inspect",
+    "conformance",
 ]
 resolver = "2"
 

@@ -1,0 +1,276 @@
+{
+  "format_version": "1.0",
+  "descriptors": [
+    {
+      "file": "descriptors/row_major_f32_3x4.bin",
+      "description": "Row-major float32 [3, 4]",
+      "expect": {
+        "version_major": 1,
+        "version_minor": 0,
+        "element_type_tag": 3,
+        "element_type": "float32",
+        "shape": [
+          3,
+          4
+        ],
+        "byte_offset": 0,
+        "layout_tag": 1,
+        "buffer_byte_sizes": [
+          48
+        ],
+        "has_quantization": false,
+        "has_shard": false
+      }
+    },
+    {
+      "file": "descriptors/row_major_int8_5.bin",
+      "description": "Row-major int8 [5]",
+      "expect": {
+        "version_major": 1,
+        "version_minor": 0,
+        "element_type_tag": 16,
+        "element_type": "int8",
+        "shape": [
+          5
+        ],
+        "byte_offset": 0,
+        "layout_tag": 1,
+        "buffer_byte_sizes": [
+          5
+        ],
+        "has_quantization": false,
+        "has_shard": false
+      }
+    },
+    {
+      "file": "descriptors/row_major_f16_2x2.bin",
+      "description": "Row-major float16 [2, 2]",
+      "expect": {
+        "version_major": 1,
+        "version_minor": 0,
+        "element_type_tag": 1,
+        "element_type": "float16",
+        "shape": [
+          2,
+          2
+        ],
+        "byte_offset": 0,
+        "layout_tag": 1,
+        "buffer_byte_sizes": [
+          8
+        ],
+        "has_quantization": false,
+        "has_shard": false
+      }
+    },
+    {
+      "file": "descriptors/bool_packed_10.bin",
+      "description": "Row-major bool [10] (packed 8 per byte → 2 bytes)",
+      "expect": {
+        "version_major": 1,
+        "version_minor": 0,
+        "element_type_tag": 32,
+        "element_type": "bool",
+        "shape": [
+          10
+        ],
+        "byte_offset": 0,
+        "layout_tag": 1,
+        "buffer_byte_sizes": [
+          2
+        ],
+        "has_quantization": false,
+        "has_shard": false
+      }
+    },
+    {
+      "file": "descriptors/strided_f32_3x4.bin",
+      "description": "Strided float32 [3, 4] with row-major strides [4, 1]",
+      "expect": {
+        "version_major": 1,
+        "version_minor": 0,
+        "element_type_tag": 3,
+        "element_type": "float32",
+        "shape": [
+          3,
+          4
+        ],
+        "byte_offset": 0,
+        "layout_tag": 3,
+        "buffer_byte_sizes": [
+          48
+        ],
+        "has_quantization": false,
+        "has_shard": false
+      }
+    },
+    {
+      "file": "descriptors/morton_f32_4x4.bin",
+      "description": "Morton (Z-order) float32 [4, 4], morton_bits [2, 2]",
+      "expect": {
+        "version_major": 1,
+        "version_minor": 0,
+        "element_type_tag": 3,
+        "element_type": "float32",
+        "shape": [
+          4,
+          4
+        ],
+        "byte_offset": 0,
+        "layout_tag": 5,
+        "buffer_byte_sizes": [
+          64
+        ],
+        "has_quantization": false,
+        "has_shard": false
+      }
+    },
+    {
+      "file": "descriptors/empty_f32_0x4.bin",
+      "description": "Empty row-major float32 [0, 4] (zero elements)",
+      "expect": {
+        "version_major": 1,
+        "version_minor": 0,
+        "element_type_tag": 3,
+        "element_type": "float32",
+        "shape": [
+          0,
+          4
+        ],
+        "byte_offset": 0,
+        "layout_tag": 1,
+        "buffer_byte_sizes": [
+          0
+        ],
+        "has_quantization": false,
+        "has_shard": false
+      }
+    },
+    {
+      "file": "descriptors/sharded_f32_8x4.bin",
+      "description": "Row-major float32 [8, 4] shard at column offset 4 of an [8, 8] parent",
+      "expect": {
+        "version_major": 1,
+        "version_minor": 0,
+        "element_type_tag": 3,
+        "element_type": "float32",
+        "shape": [
+          8,
+          4
+        ],
+        "byte_offset": 0,
+        "layout_tag": 1,
+        "buffer_byte_sizes": [
+          128
+        ],
+        "has_quantization": false,
+        "has_shard": true
+      }
+    },
+    {
+      "file": "descriptors/csr_f32_3x3.bin",
+      "description": "CSR float32 [3, 3], nnz = 2",
+      "expect": {
+        "version_major": 1,
+        "version_minor": 0,
+        "element_type_tag": 3,
+        "element_type": "float32",
+        "shape": [
+          3,
+          3
+        ],
+        "byte_offset": 0,
+        "layout_tag": 7,
+        "buffer_byte_sizes": [
+          8,
+          16,
+          32
+        ],
+        "has_quantization": false,
+        "has_shard": false
+      }
+    },
+    {
+      "file": "descriptors/composite_head_partition.bin",
+      "description": "Composite partition head [8, 8], member_count = 2 (owns no data)",
+      "expect": {
+        "version_major": 1,
+        "version_minor": 0,
+        "element_type_tag": 3,
+        "element_type": "float32",
+        "shape": [
+          8,
+          8
+        ],
+        "byte_offset": 0,
+        "layout_tag": 11,
+        "buffer_byte_sizes": [],
+        "has_quantization": false,
+        "has_shard": false
+      }
+    },
+    {
+      "file": "descriptors/quant_per_block_int4_128x128.bin",
+      "description": "int4 [128, 128] per-block-affine (float16 scales)",
+      "expect": {
+        "version_major": 1,
+        "version_minor": 0,
+        "element_type_tag": 72,
+        "element_type": "int4",
+        "shape": [
+          128,
+          128
+        ],
+        "byte_offset": 0,
+        "layout_tag": 1,
+        "buffer_byte_sizes": [
+          8192,
+          256
+        ],
+        "has_quantization": true,
+        "has_shard": false
+      }
+    }
+  ],
+  "files": [
+    {
+      "file": "files/basic.hrry",
+      "description": "Two dense tensors (float32 [2,2], int8 [3]) with string + int64 KV",
+      "tensors": [
+        {
+          "name": "weights",
+          "element_type": "float32",
+          "element_type_tag": 3,
+          "shape": [
+            2,
+            2
+          ],
+          "data_bytes": 16
+        },
+        {
+          "name": "bias",
+          "element_type": "int8",
+          "element_type_tag": 16,
+          "shape": [
+            3
+          ],
+          "data_bytes": 3
+        }
+      ],
+      "kv": [
+        {
+          "key": "producer",
+          "kind": "string",
+          "value_string": "hurray-conformance",
+          "value_int": null
+        },
+        {
+          "key": "tensor_count",
+          "kind": "int64",
+          "value_string": null,
+          "value_int": 2
+        }
+      ]
+    }
+  ]
+}
