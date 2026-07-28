@@ -266,6 +266,31 @@ impl PerTensorAffine {
     }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Returns the `(min, max)` representable value range (as `i64`) for integer
+/// storage types used as quantization storage.
+///
+/// Floating-point types and types not used for zero-point quantization return
+/// a symmetric `(0, 0)` sentinel; callers validate storage type separately.
+pub(crate) fn integer_range_for_type(ty: ElementType) -> (i64, i64) {
+    match ty {
+        ElementType::Int8 => (-128, 127),
+        ElementType::Uint8 => (0, 255),
+        ElementType::Int16 => (-32768, 32767),
+        ElementType::Uint16 => (0, 65535),
+        ElementType::Int32 => (i32::MIN as i64, i32::MAX as i64),
+        ElementType::Uint32 => (0, u32::MAX as i64),
+        ElementType::Int4 => (-8, 7),
+        ElementType::Uint4 => (0, 15),
+        ElementType::Int2 => (-2, 1),
+        ElementType::Uint2 => (0, 3),
+        // Non-integer types: zero-point is always 0, so any i32 is "in range";
+        // callers should not invoke this for float storage types.
+        _ => (i32::MIN as i64, i32::MAX as i64),
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -495,30 +520,5 @@ mod tests {
     fn validate_zero_point_neg8_valid_for_int4() {
         let q = PerTensorAffine::new(1.0, -8).unwrap();
         assert!(q.validate_zero_point_for(ElementType::Int4).is_ok());
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Returns the `(min, max)` representable value range (as `i64`) for integer
-/// storage types used as quantization storage.
-///
-/// Floating-point types and types not used for zero-point quantization return
-/// a symmetric `(0, 0)` sentinel; callers validate storage type separately.
-pub(crate) fn integer_range_for_type(ty: ElementType) -> (i64, i64) {
-    match ty {
-        ElementType::Int8 => (-128, 127),
-        ElementType::Uint8 => (0, 255),
-        ElementType::Int16 => (-32768, 32767),
-        ElementType::Uint16 => (0, 65535),
-        ElementType::Int32 => (i32::MIN as i64, i32::MAX as i64),
-        ElementType::Uint32 => (0, u32::MAX as i64),
-        ElementType::Int4 => (-8, 7),
-        ElementType::Uint4 => (0, 15),
-        ElementType::Int2 => (-2, 1),
-        ElementType::Uint2 => (0, 3),
-        // Non-integer types: zero-point is always 0, so any i32 is "in range";
-        // callers should not invoke this for float storage types.
-        _ => (i32::MIN as i64, i32::MAX as i64),
     }
 }

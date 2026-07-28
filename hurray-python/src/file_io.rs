@@ -359,9 +359,9 @@ mod tests {
     fn py_to_kv_value_float() {
         init_python();
         Python::with_gil(|py| {
-            let val = pyo3::types::PyFloat::new_bound(py, 3.14);
+            let val = pyo3::types::PyFloat::new_bound(py, 2.5);
             let kv = py_to_kv_value(val.as_any()).unwrap();
-            assert!(matches!(kv, KvValue::Float64(v) if (v - 3.14).abs() < 1e-10));
+            assert!(matches!(kv, KvValue::Float64(v) if (v - 2.5).abs() < 1e-10));
         });
     }
 
