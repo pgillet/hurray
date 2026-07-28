@@ -68,3 +68,26 @@ jobs:
       # Run hurray-python tests separately with default features (no extension-module).
       - run: cargo test --workspace --all-features --exclude hurray-python
       - run: cargo test -p hurray-python
+
+  python-conformance:
+    name: Python conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Build the hurray extension into a venv and validate the Python binding against
+      # the shared golden corpus (conformance/vectors/). maturin develop needs a virtualenv.
+      - name: Create venv + install tooling
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip maturin numpy pytest
+      - name: Build hurray extension (editable)
+        run: .venv/bin/maturin develop -m hurray-python/Cargo.toml
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/.venv
+      - name: Run Python conformance tests
+        run: .venv/bin/python -m pytest hurray-python/tests/test_conformance.py -v
