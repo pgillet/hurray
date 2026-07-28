@@ -9,7 +9,7 @@ Agents MUST read from project files directly rather than relying on memory for p
 | What | Where |
 |------|-------|
 | Project overview and format contract | `README.md` |
-| Pending ideas and tasks | `TODO.md` |
+| Pending ideas and tasks | [GitHub issues](https://github.com/pgillet/hurray/issues) |
 | Open questions | `grep -rn "OQ-" docs/spec/` |
 | Architectural decisions | `docs/adr/` |
 | Prior art survey | `docs/prior-art.md` |
@@ -34,7 +34,6 @@ The project is in the **implementation phase**. The spec (still in Draft status)
 ```
 hurray/
 ├── CLAUDE.md                   # This file
-├── TODO.md                     # Running list of ideas and future tasks (reviewed periodically)
 ├── Cargo.toml                  # Workspace root
 ├── docs/
 │   ├── prior-art.md            # Research snapshot: formats, protocols, libraries

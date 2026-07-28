@@ -84,7 +84,7 @@ These invariants apply to both formats unless noted:
 
 - **Open questions** are marked inline in spec files as `> **[OQ-N]:**`. To find all open questions: `grep -rn "OQ-" docs/spec/`
 - **Architectural decisions** are recorded in `docs/adr/`. Each ADR has a status (Draft / Accepted / Superseded).
-- **Pending ideas and tasks** are in `TODO.md`.
+- **Pending ideas and tasks** are tracked as [GitHub issues](https://github.com/pgillet/hurray/issues).
 - **Prior art** is surveyed in `docs/prior-art.md`.
 
 ---
