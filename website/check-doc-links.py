@@ -25,8 +25,8 @@ from pathlib import Path
 DOCS = Path("docs").resolve()
 SUMMARY = DOCS / "SUMMARY.md"
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?)\s*\)")
-# Full inline link, capturing the visible text — used to reject `.md` in link labels.
-TEXT_RE = re.compile(r"\[([^\]]*)\]\(")
+# Full inline link, capturing visible text + URL — used to lint internal link labels.
+TEXT_RE = re.compile(r"\[([^\]]*)\]\(\s*([^)\s]+)\s*\)")
 
 
 def rendered_targets() -> set:
@@ -51,12 +51,22 @@ def main() -> int:
         rel_src = md.relative_to(DOCS)
         content = md.read_text(encoding="utf-8")
 
-        # Link labels should not display a raw ".md" filename extension — it reads as a
-        # file artifact on the rendered site. Keep the extension in the URL, not the text.
+        # Link labels should read as titles, not file artifacts: no ".md" extension, and
+        # no bare repo path (a "/" with no surrounding spaces, e.g. `layouts/row-major`) —
+        # the repo tree doesn't match the site's chapter structure. Real titles with a
+        # slash keep spaces around it ("Tiled / Blocked"), so they are allowed.
         for tm in TEXT_RE.finditer(content):
-            if ".md" in tm.group(1):
+            label, url = tm.group(1), tm.group(2)
+            # Only lint labels of INTERNAL links; external links may show a URL as text.
+            if url.startswith(("http://", "https://", "mailto:")):
+                continue
+            if ".md" in label:
                 problems.append(
-                    (rel_src, tm.group(1), "link text shows a .md extension (drop it; keep .md only in the URL)")
+                    (rel_src, label, "link text shows a .md extension (drop it; keep .md only in the URL)")
+                )
+            elif "/" in label and not any(c.isspace() for c in label):
+                problems.append(
+                    (rel_src, label, "link text is a repo path; use the chapter title instead")
                 )
 
         for m in LINK_RE.finditer(content):
