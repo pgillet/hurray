@@ -88,7 +88,8 @@ implementation is not required to perform arithmetic on every supported type.
 
 ## Mandatory Layout Support
 
-All conforming implementations MUST support **Tier 1** layouts for reading descriptors:
+All conforming implementations MUST support **Tier 1** layouts (`0x01`–`0x0B`, the full
+core named-layout range) for reading descriptors:
 
 | Layout | Tag |
 |--------|-----|
@@ -101,6 +102,8 @@ All conforming implementations MUST support **Tier 1** layouts for reading descr
 | CSR | `0x07` |
 | CSC | `0x08` |
 | CSF | `0x09` |
+| Block-paged | `0x0A` |
+| Composite / Virtual | `0x0B` |
 
 ## Test Requirements
 
