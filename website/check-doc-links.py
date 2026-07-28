@@ -25,6 +25,8 @@ from pathlib import Path
 DOCS = Path("docs").resolve()
 SUMMARY = DOCS / "SUMMARY.md"
 LINK_RE = re.compile(r"\]\(\s*([^)\s]+?)\s*\)")
+# Full inline link, capturing the visible text — used to reject `.md` in link labels.
+TEXT_RE = re.compile(r"\[([^\]]*)\]\(")
 
 
 def rendered_targets() -> set:
@@ -47,7 +49,17 @@ def main() -> int:
         if md.name == "SUMMARY.md":
             continue
         rel_src = md.relative_to(DOCS)
-        for m in LINK_RE.finditer(md.read_text(encoding="utf-8")):
+        content = md.read_text(encoding="utf-8")
+
+        # Link labels should not display a raw ".md" filename extension — it reads as a
+        # file artifact on the rendered site. Keep the extension in the URL, not the text.
+        for tm in TEXT_RE.finditer(content):
+            if ".md" in tm.group(1):
+                problems.append(
+                    (rel_src, tm.group(1), "link text shows a .md extension (drop it; keep .md only in the URL)")
+                )
+
+        for m in LINK_RE.finditer(content):
             raw = m.group(1)
             if raw.startswith(("http://", "https://", "mailto:", "#")):
                 continue

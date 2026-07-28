@@ -25,7 +25,7 @@ that the reference implementation and language bindings must satisfy.
 
 | Document | Description |
 |---|---|
-| [compliance.md](compliance.md) | Conformance levels, mandatory vs optional feature support, test surface |
-| [rust-reference.md](rust-reference.md) | Requirements for `hurray-core` and `hurray-io` |
-| [c-ffi.md](c-ffi.md) | C ABI layer requirements: opaque handles, function table, panic safety |
-| [python-bindings.md](python-bindings.md) | Python Array API compliance, DLPack interop, NumPy/PyTorch zero-copy |
+| [compliance](compliance.md) | Conformance levels, mandatory vs optional feature support, test surface |
+| [rust-reference](rust-reference.md) | Requirements for `hurray-core` and `hurray-io` |
+| [c-ffi](c-ffi.md) | C ABI layer requirements: opaque handles, function table, panic safety |
+| [python-bindings](python-bindings.md) | Python Array API compliance, DLPack interop, NumPy/PyTorch zero-copy |

@@ -126,11 +126,11 @@ out of band.
 
 | Scheme | Tag | Tier | File |
 |--------|-----|------|------|
-| Per-tensor affine | `0x01` | 1 | [`quantization/per-tensor-affine.md`](quantization/per-tensor-affine.md) |
-| Per-channel affine | `0x02` | 1 | [`quantization/per-channel-affine.md`](quantization/per-channel-affine.md) |
-| Per-block affine | `0x03` | 1 | [`quantization/per-block-affine.md`](quantization/per-block-affine.md) |
-| NF4 (NormalFloat4) | `0x04` | 2 | [`quantization/nf4.md`](quantization/nf4.md) |
-| MXFP (OCP Microscaling) | `0x05` | 2 | [`quantization/mxfp.md`](quantization/mxfp.md) |
+| Per-tensor affine | `0x01` | 1 | [`quantization/per-tensor-affine`](quantization/per-tensor-affine.md) |
+| Per-channel affine | `0x02` | 1 | [`quantization/per-channel-affine`](quantization/per-channel-affine.md) |
+| Per-block affine | `0x03` | 1 | [`quantization/per-block-affine`](quantization/per-block-affine.md) |
+| NF4 (NormalFloat4) | `0x04` | 2 | [`quantization/nf4`](quantization/nf4.md) |
+| MXFP (OCP Microscaling) | `0x05` | 2 | [`quantization/mxfp`](quantization/mxfp.md) |
 
 ---
 
