@@ -5,7 +5,6 @@ hurray/
 ├── README.md                   # Project overview and format contract
 ├── PROJECT_STRUCTURE.md        # This file
 ├── CLAUDE.md                   # AI agent configuration and conventions
-├── TODO.md                     # Running list of ideas and future tasks
 ├── Cargo.toml                  # Workspace root
 ├── docs/
 │   ├── prior-art.md            # Research snapshot: formats, protocols, libraries
