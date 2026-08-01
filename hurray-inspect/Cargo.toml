@@ -3,8 +3,14 @@ name = "hurray-inspect"
 description = "CLI tool to inspect Hurray binary tensor descriptor files as a human-readable hex table."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage = "https://www.pascalgillet.net/hurray/"
+documentation = "https://www.pascalgillet.net/hurray/"
+readme = "README.md"
+keywords = ["tensor", "hexdump", "cli", "inspect", "debugging"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "hurray-inspect"

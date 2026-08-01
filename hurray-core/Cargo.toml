@@ -3,8 +3,14 @@ name = "hurray-core"
 description = "Core types, tensor descriptor, buffer handle, and quantization descriptors for the hurray format. No I/O, no async."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage = "https://www.pascalgillet.net/hurray/"
+documentation = "https://docs.rs/hurray-core"
+readme = "README.md"
+keywords = ["tensor", "inference", "quantization", "zero-copy", "ml"]
+categories = ["encoding", "data-structures", "science"]
 
 [dependencies]
 thiserror = { workspace = true }

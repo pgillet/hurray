@@ -3,8 +3,14 @@ name = "hurray-ffi"
 description = "C ABI layer for hurray language bindings — opaque handles, function table, buffer release callbacks."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage = "https://www.pascalgillet.net/hurray/"
+documentation = "https://docs.rs/hurray-ffi"
+readme = "README.md"
+keywords = ["tensor", "ffi", "c-api", "bindings", "abi"]
+categories = ["external-ffi-bindings", "encoding"]
 
 [dependencies]
 hurray-core = { workspace = true }
