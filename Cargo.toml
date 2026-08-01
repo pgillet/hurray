@@ -18,9 +18,11 @@ repository = "https://github.com/pgillet/hurray"
 authors = ["Hurray Contributors"]
 
 [workspace.dependencies]
-hurray-core = { path = "hurray-core" }
-hurray-io = { path = "hurray-io" }
-hurray-ffi = { path = "hurray-ffi" }
+# path + version: path is used for local workspace builds; version is what published
+# crates depend on (required by crates.io). Kept in lockstep with workspace.package.version.
+hurray-core = { path = "hurray-core", version = "0.1.0" }
+hurray-io = { path = "hurray-io", version = "0.1.0" }
+hurray-ffi = { path = "hurray-ffi", version = "0.1.0" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 half = "2"

@@ -3,8 +3,14 @@ name = "hurray-io"
 description = "Async streaming and file format read/write for the hurray tensor interchange format."
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage = "https://www.pascalgillet.net/hurray/"
+documentation = "https://docs.rs/hurray-io"
+readme = "README.md"
+keywords = ["tensor", "serialization", "streaming", "mmap", "async"]
+categories = ["encoding", "asynchronous", "filesystem"]
 
 [dependencies]
 hurray-core = { workspace = true }
