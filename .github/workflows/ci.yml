@@ -96,3 +96,30 @@ jobs:
           VIRTUAL_ENV: ${{ github.workspace }}/.venv
       - name: Run Python conformance tests
         run: .venv/bin/python -m pytest hurray-python/tests/test_conformance.py -v
+
+  semver:
+    name: SemVer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # need tags to detect whether a released baseline exists
+      - uses: dtolnay/rust-toolchain@stable
+      # cargo-semver-checks compares the public API against the last published release.
+      # It is meaningful only once the crates have a release on crates.io, so this job is
+      # dormant until the first MAJOR.MINOR.PATCH tag exists, then it gates API changes
+      # (in 0.x, a breaking change requires a minor bump; post-1.0 it must not break).
+      - id: baseline
+        run: |
+          if git tag | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "have=yes" >> "$GITHUB_OUTPUT"
+          else
+            echo "have=no" >> "$GITHUB_OUTPUT"
+            echo "No release tag yet — cargo-semver-checks needs a published baseline; skipping."
+          fi
+      - if: steps.baseline.outputs.have == 'yes'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - if: steps.baseline.outputs.have == 'yes'
+        run: cargo semver-checks check-release -p hurray-core -p hurray-io -p hurray-ffi
