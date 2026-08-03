@@ -31,7 +31,7 @@ use hurray_core::{
     layout::{
         BlockTableIndexType, CombineOp, CompositionRule, KvRole, LayoutDescriptor, TiledLayout,
     },
-    DYNAMIC,
+    QuantizationDescriptor, DYNAMIC,
 };
 
 // ── Error type ─────────────────────────────────────────────────────────────────
@@ -179,10 +179,91 @@ macro_rules! read_le {
     }};
 }
 
+/// Extracts a power-of-two sub-byte code (`bits` ∈ {1, 2, 4}) at element `idx`, LSB-first.
+fn read_pow2_code(data: &[u8], idx: u64, bits: u8) -> Option<u32> {
+    let per_byte = 8 / bits as u64;
+    let byte_i = (idx / per_byte) as usize;
+    let shift = ((idx % per_byte) * bits as u64) as u32;
+    let mask = (1u32 << bits) - 1;
+    data.get(byte_i).map(|&b| (b as u32 >> shift) & mask)
+}
+
+/// Extracts a 6-bit code at element `idx` from the 4-elements-per-3-bytes LSB-first packing
+/// (`element-types.md` § 6-bit packing).
+fn read_f6_code(data: &[u8], idx: u64) -> Option<u32> {
+    let g = (idx / 4) as usize * 3;
+    let (b0, b1, b2) = (
+        *data.get(g)? as u32,
+        *data.get(g + 1).unwrap_or(&0) as u32,
+        *data.get(g + 2).unwrap_or(&0) as u32,
+    );
+    Some(match idx % 4 {
+        0 => b0 & 0x3F,
+        1 => (b0 >> 6) | ((b1 & 0x0F) << 2),
+        2 => (b1 >> 4) | ((b2 & 0x03) << 4),
+        _ => b2 >> 2,
+    })
+}
+
+/// Sign-extends a `bits`-wide two's-complement `code` to `i64`.
+fn sign_extend(code: u32, bits: u32) -> i64 {
+    let shift = 64 - bits;
+    ((code as i64) << shift) >> shift
+}
+
+/// Decodes an OCP micro-float `code` (sign|exponent|mantissa, LSB→MSB) to `f64`.
+///
+/// `has_inf`: all-ones exponent is infinity (mantissa 0) or NaN (e5m2). `nan_at_max`:
+/// all-ones exponent AND mantissa is NaN but other max-exponent patterns are normal (e4m3).
+/// When neither is set (e2m1, float6) the max exponent is an ordinary normal value.
+fn micro_float(
+    code: u32,
+    exp_bits: u32,
+    man_bits: u32,
+    bias: i32,
+    has_inf: bool,
+    nan_at_max: bool,
+) -> f64 {
+    let sign = if (code >> (exp_bits + man_bits)) & 1 == 1 {
+        -1.0
+    } else {
+        1.0
+    };
+    let exp = (code >> man_bits) & ((1 << exp_bits) - 1);
+    let man_mask = (1u32 << man_bits) - 1;
+    let man = code & man_mask;
+    let max_exp = (1u32 << exp_bits) - 1;
+    let man_div = (1u64 << man_bits) as f64;
+    if exp == max_exp && has_inf {
+        return if man == 0 {
+            sign * f64::INFINITY
+        } else {
+            f64::NAN
+        };
+    }
+    if exp == max_exp && nan_at_max && man == man_mask {
+        return f64::NAN;
+    }
+    if exp == 0 {
+        sign * (man as f64 / man_div) * 2f64.powi(1 - bias) // subnormal / zero
+    } else {
+        sign * (1.0 + man as f64 / man_div) * 2f64.powi(exp as i32 - bias) // normal
+    }
+}
+
+/// Decodes a `float8_e8m0` byte (power-of-two scale; `0x00`/`0xFF` reserved → NaN).
+fn e8m0(byte: u8) -> f64 {
+    if byte == 0x00 || byte == 0xFF {
+        f64::NAN
+    } else {
+        2f64.powi(byte as i32 - 127)
+    }
+}
+
 /// Decode and format the element at logical index `idx` from `data`.
 ///
-/// For Tier 2 sub-byte types the raw byte(s) are shown as hex.  Complex types
-/// are formatted as `(real+imagj)`.
+/// Complex types are formatted as `(real+imagj)`; `float128` (no stable Rust type) and any
+/// unknown/private type are shown as raw hex.
 fn format_scalar(et: hurray_core::ElementType, data: &[u8], idx: u64) -> String {
     use hurray_core::ElementType::*;
 
@@ -276,7 +357,33 @@ fn format_scalar(et: hurray_core::ElementType, data: &[u8], idx: u64) -> String 
                 "?".into()
             }
         }
-        // Tier 2: show raw hex bytes.
+        // Sub-byte integers (LSB-first packing).
+        Int4 => read_pow2_code(data, idx, 4).map_or("?".into(), |c| sign_extend(c, 4).to_string()),
+        Uint4 => read_pow2_code(data, idx, 4).map_or("?".into(), |c| c.to_string()),
+        Int2 => read_pow2_code(data, idx, 2).map_or("?".into(), |c| sign_extend(c, 2).to_string()),
+        Uint2 => read_pow2_code(data, idx, 2).map_or("?".into(), |c| c.to_string()),
+
+        // Tier 2 micro-floats (OCP OFP8 / MX).
+        Float8E4M3 => data.get(idx as usize).map_or("?".into(), |&b| {
+            format_float(micro_float(b as u32, 4, 3, 7, false, true))
+        }),
+        Float8E5M2 => data.get(idx as usize).map_or("?".into(), |&b| {
+            format_float(micro_float(b as u32, 5, 2, 15, true, false))
+        }),
+        Float8E8M0 => data
+            .get(idx as usize)
+            .map_or("?".into(), |&b| format_float(e8m0(b))),
+        Float4E2M1 => read_pow2_code(data, idx, 4).map_or("?".into(), |c| {
+            format_float(micro_float(c, 2, 1, 1, false, false))
+        }),
+        Float6E2M3 => read_f6_code(data, idx).map_or("?".into(), |c| {
+            format_float(micro_float(c, 2, 3, 1, false, false))
+        }),
+        Float6E3M2 => read_f6_code(data, idx).map_or("?".into(), |c| {
+            format_float(micro_float(c, 3, 2, 3, false, false))
+        }),
+
+        // float128 (no stable Rust type) and any unknown/private type: raw hex bytes.
         _ => {
             let bw = et.bit_width();
             if bw == 0 || bw >= 8 {
@@ -486,6 +593,94 @@ fn layout_tag_name(tag: u8) -> &'static str {
         0xF0..=0xFE => "private-extension",
         _ => "unknown",
     }
+}
+
+// ── Quantization descriptor rows ─────────────────────────────────────────────────
+
+fn quant_scheme_name(tag: u8) -> &'static str {
+    match tag {
+        0x01 => "per-tensor-affine",
+        0x02 => "per-channel-affine",
+        0x03 => "per-block-affine",
+        0x04 => "NF4",
+        0x05 => "MXFP",
+        _ => "unknown",
+    }
+}
+
+/// Renders the decoded quantization descriptor: the 4-byte header plus the per-scheme fields
+/// (byte-accurate to `quantization/*.md`).
+fn quant_rows(reader: &mut Reader<'_>, qd: &QuantizationDescriptor) -> Vec<Row> {
+    let tag = qd.scheme_tag().tag();
+    let mut rows = vec![
+        reader.take_row(
+            1,
+            format!("scheme_tag = 0x{tag:02X} ({})", quant_scheme_name(tag)),
+        ),
+        reader.take_row(1, "scheme_version".to_string()),
+        reader.take_row(2, "quant.flags".to_string()),
+    ];
+    let zp = |z: Option<u32>| match z {
+        Some(x) => x.to_string(),
+        None => "none (symmetric)".to_string(),
+    };
+    match qd {
+        QuantizationDescriptor::PerTensorAffine(x) => {
+            rows.push(reader.take_row(4, format!("scale = {}", x.scale())));
+            rows.push(reader.take_row(4, format!("zero_point = {}", x.zero_point())));
+            rows.push(reader.take_row(4, "quant._reserved".to_string()));
+        }
+        QuantizationDescriptor::PerChannelAffine(x) => {
+            rows.push(reader.take_row(4, format!("axis = {}", x.axis())));
+            rows.push(reader.take_row(
+                4,
+                format!("scale_buffer_index = {}", x.scale_buffer_index()),
+            ));
+            rows.push(reader.take_row(
+                4,
+                format!(
+                    "zero_point_buffer_index = {}",
+                    zp(x.zero_point_buffer_index())
+                ),
+            ));
+            rows.push(reader.take_row(1, format!("scale_type = {}", x.scale_type())));
+            rows.push(reader.take_row(3, "quant._reserved".to_string()));
+        }
+        QuantizationDescriptor::PerBlockAffine(x) => {
+            rows.push(reader.take_row(4, format!("axis = {}", x.axis())));
+            rows.push(reader.take_row(4, format!("block_size = {}", x.block_size())));
+            rows.push(reader.take_row(
+                4,
+                format!("scale_buffer_index = {}", x.scale_buffer_index()),
+            ));
+            rows.push(reader.take_row(
+                4,
+                format!(
+                    "zero_point_buffer_index = {}",
+                    zp(x.zero_point_buffer_index())
+                ),
+            ));
+            rows.push(reader.take_row(1, "scale_type_tag".to_string()));
+            rows.push(reader.take_row(3, "quant._reserved".to_string()));
+        }
+        QuantizationDescriptor::Nf4(x) => {
+            rows.push(reader.take_row(4, format!("axis = {}", x.axis())));
+            rows.push(reader.take_row(4, format!("block_size = {}", x.block_size())));
+            rows.push(reader.take_row(
+                4,
+                format!("scale_buffer_index = {}", x.scale_buffer_index()),
+            ));
+        }
+        QuantizationDescriptor::Mxfp(x) => {
+            rows.push(reader.take_row(4, format!("axis = {}", x.axis())));
+            rows.push(reader.take_row(4, format!("block_size = {}", x.block_size())));
+            rows.push(reader.take_row(
+                4,
+                format!("scale_buffer_index = {}", x.scale_buffer_index()),
+            ));
+        }
+    }
+    rows
 }
 
 // ── Layout-specific rows ───────────────────────────────────────────────────────
@@ -745,8 +940,14 @@ fn rows_from_descriptor(data: &[u8], desc: &TensorDescriptor, base_offset: usize
     // Quantization (flag bit 0)
     if let Some(q) = &desc.quantization {
         rows.push(reader.take_row(4, format!("quantization_length = {}", q.len())));
-        if !q.is_empty() {
-            rows.push(reader.take_row(q.len(), "quantization_descriptor".to_string()));
+        match QuantizationDescriptor::decode(q) {
+            Ok((qd, _)) => rows.extend(quant_rows(&mut reader, &qd)),
+            Err(_) if !q.is_empty() => {
+                rows.push(
+                    reader.take_row(q.len(), "quantization_descriptor (undecodable)".to_string()),
+                );
+            }
+            Err(_) => {}
         }
     }
 
@@ -1547,6 +1748,104 @@ mod tests {
         let data = [0b0000_0001u8];
         assert_eq!(format_scalar(ElementType::Bool, &data, 0), "True");
         assert_eq!(format_scalar(ElementType::Bool, &data, 1), "False");
+    }
+
+    #[test]
+    fn format_scalar_uint4_int4_lsb_first() {
+        // 0x83: low nibble = 0x3, high nibble = 0x8 (LSB-first packing).
+        let data = [0x83u8];
+        assert_eq!(format_scalar(ElementType::Uint4, &data, 0), "3");
+        assert_eq!(format_scalar(ElementType::Uint4, &data, 1), "8");
+        // int4: 0x8 is the two's-complement value -8.
+        assert_eq!(format_scalar(ElementType::Int4, &data, 0), "3");
+        assert_eq!(format_scalar(ElementType::Int4, &data, 1), "-8");
+    }
+
+    #[test]
+    fn format_scalar_uint2_int2_lsb_first() {
+        // 0b11_10_01_00: elements (LSB-first) 0,1,2,3.
+        let data = [0b1110_0100u8];
+        for (idx, want) in [(0, "0"), (1, "1"), (2, "2"), (3, "3")] {
+            assert_eq!(format_scalar(ElementType::Uint2, &data, idx), want);
+        }
+        // int2: 0,1,-2,-1.
+        for (idx, want) in [(0, "0"), (1, "1"), (2, "-2"), (3, "-1")] {
+            assert_eq!(format_scalar(ElementType::Int2, &data, idx), want);
+        }
+    }
+
+    #[test]
+    fn format_scalar_float8_e4m3() {
+        // exp=0b0111 (bias 7 → 2^0), man=0 → 1.0. byte = 0b0_0111_000 = 0x38.
+        assert_eq!(format_scalar(ElementType::Float8E4M3, &[0x38], 0), "1.");
+        // exp=0b1000 (2^1), man=0 → 2.0. byte = 0x40.
+        assert_eq!(format_scalar(ElementType::Float8E4M3, &[0x40], 0), "2.");
+        // sign=1, exp=0b0111, man=0 → -1.0. byte = 0xB8.
+        assert_eq!(format_scalar(ElementType::Float8E4M3, &[0xB8], 0), "-1.");
+        // 0x7F = S0 exp1111 man111 → NaN (E4M3 has no inf; max exp + max mantissa is NaN).
+        assert_eq!(format_scalar(ElementType::Float8E4M3, &[0x7F], 0), "nan");
+        // 0x00 → +0.
+        assert_eq!(format_scalar(ElementType::Float8E4M3, &[0x00], 0), "0.");
+    }
+
+    #[test]
+    fn format_scalar_float8_e5m2() {
+        // exp=0b01111 (bias 15 → 2^0), man=0 → 1.0. byte = 0b0_01111_00 = 0x3C.
+        assert_eq!(format_scalar(ElementType::Float8E5M2, &[0x3C], 0), "1.");
+        // exp=0b11111, man=0 → inf (E5M2 has inf/nan like IEEE).
+        assert_eq!(format_scalar(ElementType::Float8E5M2, &[0x7C], 0), "inf");
+        // exp=0b11111, man!=0 → NaN.
+        assert_eq!(format_scalar(ElementType::Float8E5M2, &[0x7D], 0), "nan");
+    }
+
+    #[test]
+    fn format_scalar_float8_e8m0_scale() {
+        // E8M0 is an unsigned power-of-two scale: byte 127 → 2^0 = 1.0.
+        assert_eq!(format_scalar(ElementType::Float8E8M0, &[127], 0), "1.");
+        assert_eq!(format_scalar(ElementType::Float8E8M0, &[128], 0), "2.");
+        // 0x00 and 0xFF are the reserved NaN codes.
+        assert_eq!(format_scalar(ElementType::Float8E8M0, &[0x00], 0), "nan");
+        assert_eq!(format_scalar(ElementType::Float8E8M0, &[0xFF], 0), "nan");
+    }
+
+    #[test]
+    fn format_scalar_float4_e2m1() {
+        // e2m1, bias 1: exp=0b01, man=0 → 2^0 = 1.0. code = 0b010 = 2 (low nibble).
+        assert_eq!(format_scalar(ElementType::Float4E2M1, &[0x02], 0), "1.");
+        // exp=0b11, man=1 → (1.5)·2^(3-1) = 6.0. code = 0b111 = 7.
+        assert_eq!(format_scalar(ElementType::Float4E2M1, &[0x07], 0), "6.");
+        // high nibble is the element at idx 1.
+        assert_eq!(format_scalar(ElementType::Float4E2M1, &[0x20], 1), "1.");
+    }
+
+    #[test]
+    fn format_scalar_float6_packing() {
+        // e2m3, bias 1: exp=0b01, man=0 → 1.0. 6-bit code = 0b001_000 = 0x08.
+        assert_eq!(
+            format_scalar(ElementType::Float6E2M3, &[0x08, 0, 0], 0),
+            "1."
+        );
+        // e3m2, bias 3: exp=0b011, man=0 → 1.0. 6-bit code = 0b011_00 = 0x0C.
+        assert_eq!(
+            format_scalar(ElementType::Float6E3M2, &[0x0C, 0, 0], 0),
+            "1."
+        );
+    }
+
+    #[test]
+    fn quant_rows_span_matches_encoded_len() {
+        use hurray_core::quantization::PerTensorAffine;
+        // The rendered rows must consume exactly the encoded descriptor — no more, no
+        // less — or the cursor desyncs for the sections that follow quantization.
+        let desc = QuantizationDescriptor::PerTensorAffine(PerTensorAffine::new(0.5, 128).unwrap());
+        let bytes = desc.encode_to_vec();
+        let mut reader = Reader::with_base(&bytes, bytes.len(), 0);
+        let rows = quant_rows(&mut reader, &desc);
+        let span: usize = rows.iter().map(|r| r.bytes.len()).sum();
+        assert_eq!(span, bytes.len());
+        // Header row decodes the scheme tag; a value row surfaces the scale.
+        assert!(rows[0].field.contains("per-tensor-affine"));
+        assert!(rows.iter().any(|r| r.field.contains("scale = 0.5")));
     }
 
     #[test]
