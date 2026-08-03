@@ -27,8 +27,10 @@ use std::{
 use half::{bf16, f16};
 
 use hurray_core::{
-    descriptor::TensorDescriptor,
-    layout::{LayoutDescriptor, TiledLayout},
+    descriptor::{MemberRole, TensorDescriptor},
+    layout::{
+        BlockTableIndexType, CombineOp, CompositionRule, KvRole, LayoutDescriptor, TiledLayout,
+    },
     DYNAMIC,
 };
 
@@ -479,6 +481,7 @@ fn layout_tag_name(tag: u8) -> &'static str {
         0x08 => "CSC",
         0x09 => "CSF",
         0x0A => "block-paged",
+        0x0B => "composite",
         0x40 => "hilbert",
         0xF0..=0xFE => "private-extension",
         _ => "unknown",
@@ -543,6 +546,63 @@ fn layout_rows(reader: &mut Reader<'_>, layout: &LayoutDescriptor) -> Vec<Row> {
                 rows.push(reader.take_row(p.extension_data.len(), "extension_data".to_string()));
             }
             rows
+        }
+
+        LayoutDescriptor::Csf(c) => {
+            let mut rows = vec![reader.take_row(8, format!("nnz = {}", c.nnz))];
+            for (i, &d) in c.mode_order.iter().enumerate() {
+                rows.push(reader.take_row(4, format!("mode_order[{i}] = {d}")));
+            }
+            rows.push(reader.take_row(8, "CSF._reserved".to_string()));
+            rows
+        }
+
+        LayoutDescriptor::BlockPaged(bp) => {
+            let kv_n = match bp.kv_role {
+                KvRole::Key => "key",
+                KvRole::Value => "value",
+                KvRole::Fused => "fused",
+                _ => "unknown",
+            };
+            let bt_n = match bp.block_table_index_type {
+                BlockTableIndexType::U32 => "uint32",
+                BlockTableIndexType::U64 => "uint64",
+                _ => "unknown",
+            };
+            let layer = match bp.layer_index {
+                Some(x) => x.to_string(),
+                None => "none".to_string(),
+            };
+            vec![
+                reader.take_row(4, format!("page_size = {}", bp.page_size)),
+                reader.take_row(8, format!("num_pages = {}", bp.num_pages)),
+                reader.take_row(4, format!("paged_axis = {}", bp.paged_axis)),
+                reader.take_row(4, format!("num_seqs = {}", bp.num_seqs)),
+                reader.take_row(1, format!("kv_role = {kv_n}")),
+                reader.take_row(4, format!("layer_index = {layer}")),
+                reader.take_row(1, format!("block_table_index_type = {bt_n}")),
+                reader.take_row(6, "block-paged._reserved".to_string()),
+            ]
+        }
+
+        LayoutDescriptor::Composite(c) => {
+            let rule_n = match &c.rule {
+                CompositionRule::Partition => "partition",
+                CompositionRule::Overlay(_) => "overlay",
+                CompositionRule::Group => "group",
+                _ => "unknown",
+            };
+            let op_n = match &c.rule {
+                CompositionRule::Overlay(CombineOp::Replace) => "replace",
+                CompositionRule::Overlay(CombineOp::Add) => "add",
+                _ => "n/a",
+            };
+            vec![
+                reader.take_row(1, format!("composition_rule = {rule_n}")),
+                reader.take_row(1, format!("combine_op = {op_n}")),
+                reader.take_row(2, "composite._reserved".to_string()),
+                reader.take_row(4, format!("member_count = {}", c.member_count)),
+            ]
         }
 
         LayoutDescriptor::Unknown(u) => {
@@ -741,6 +801,18 @@ fn rows_from_descriptor(data: &[u8], desc: &TensorDescriptor, base_offset: usize
         rows.push(reader.take_row(1, format!("ext_type.has_nan = {}", u8::from(ext.has_nan))));
         rows.push(reader.take_row(1, format!("ext_type.has_inf = {}", u8::from(ext.has_inf))));
         rows.push(reader.take_row(2, "ext_type._reserved2".to_string()));
+    }
+
+    // Composite member (flag bit 4) — appears after the extension-type section. Marks this
+    // descriptor as a member of a composite (its head carries layout_tag 0x0B).
+    if let Some(cm) = &desc.composite_member {
+        let role_n = match cm.member_role {
+            MemberRole::Base => "base",
+            MemberRole::Correction => "correction",
+            _ => "unknown",
+        };
+        rows.push(reader.take_row(1, format!("member_role = {role_n}")));
+        rows.push(reader.take_row(15, "composite_member._reserved".to_string()));
     }
 
     // Consume any trailing bytes within the descriptor window (future minor-version additions).
