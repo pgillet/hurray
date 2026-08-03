@@ -17,6 +17,6 @@ name = "hurray-inspect"
 path = "src/main.rs"
 
 [dependencies]
-hurray-core = { path = "../hurray-core" }
+hurray-core = { workspace = true }
 thiserror = { workspace = true }
 half = { workspace = true }
