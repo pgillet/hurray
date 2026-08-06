@@ -1,7 +1,12 @@
 # ADR-022: hurray-python Runtime Compliance Modes
 
 ## Status
-Accepted
+Superseded by ADR-029
+
+> **Note:** The runtime compliance modes described here existed solely to gate
+> `__array_namespace__` visibility by dtype tier. ADR-029 drops the Array API
+> conformance claim and removes both `__array_namespace__` and these modes. This ADR
+> is retained for historical context.
 
 ## Context
 
