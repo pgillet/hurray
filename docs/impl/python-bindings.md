@@ -18,6 +18,52 @@ extensions (Tier 2 types, quantized types, device-specific behaviours) MUST NOT
 contradict the Array API standard; they operate in the space the standard explicitly
 leaves to implementations.
 
+## Rationale
+
+> **Note (non-normative):** This section explains *why* `hurray-python` exists and the
+> incentives that shape its surface. It is motivation, not a requirement.
+
+`hurray-python` is the **Python face of the Hurray format** — the library a Python
+program uses to *produce* Hurray tensors (serialize its data into the format),
+*consume* them (load Hurray data into usable Python objects), and *hand them off*
+to the surrounding array ecosystem without copying. It is a codec and an
+interchange bridge, in the same spirit as the Python packages for other data
+formats: not a numerical or compute library, and not a place where array math
+lives. Its reason to exist is simply that Python is where the machine-learning
+ecosystem lives, and a format with no ergonomic Python entry point would never be
+adopted there.
+
+Three incentives drive its design:
+
+- **Reach the ecosystem on day one.** The array ecosystem already shares tensors
+  through a widely implemented zero-copy handoff. By speaking that same handoff,
+  `hurray-python` interoperates with NumPy, PyTorch, JAX, and CuPy immediately, for
+  the common case (ordinary dense tensors of the standard element types), with no
+  per-library adapters to write. This is why Hurray tensors are made to feel like
+  ordinary arrays in that ecosystem rather than opaque blobs.
+
+- **Preserve full fidelity between Hurray-aware components.** The common ecosystem
+  handoff can only describe the ordinary dense case. Everything that makes Hurray
+  worth having — compressed and quantized data, sparse and other specialized
+  layouts, richer element types, and the metadata that travels with a tensor —
+  falls outside what that handoff can carry. So `hurray-python` also offers a
+  **native Hurray interchange path** that preserves the tensor in full, for sharing
+  between components that both understand Hurray.
+
+- **Bridge the gap while adoption grows.** In an ideal end state, producer and
+  consumer libraries would understand Hurray natively, the same way they understand
+  the common handoff today. Until then, `hurray-python` is the adapter that speaks
+  *both* sides: it ingests tensors from the existing ecosystem and emits Hurray, and
+  vice versa. This bridging role is deliberately temporary in ambition — it recedes
+  naturally as more of the ecosystem adopts Hurray directly.
+
+Finally, `hurray-python` offers a handful of **direct convenience methods** for the
+most common partners (NumPy, PyTorch) even though the generic zero-copy handoff
+already exists. This is a deliberate, adoption-minded choice: a new format is
+accepted or rejected on how much friction it adds, so a one-call, discoverable path
+matters. These methods also cover the cases the generic handoff cannot express, so
+that no data is silently left behind.
+
 ## Python Array API Compliance
 
 `hurray-python` MUST expose a `hurray.Tensor` class that implements the
