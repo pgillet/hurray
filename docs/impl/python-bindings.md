@@ -2,21 +2,26 @@
 
 ## Overview
 
-The `hurray-python` package exposes Hurray tensors to the Python ecosystem. It is
-built on PyO3 and targets two primary interoperability goals:
+The `hurray-python` package is the **Python face of the Hurray interchange format**:
+the library a Python program uses to *produce* Hurray tensors, *consume* them, and
+*hand them off* to the surrounding array ecosystem without copying. It is built on
+PyO3 and is a codec and zero-copy bridge — **not** a numerical or compute library, and
+not an implementation of the Python Array API Standard (see ADR-029). Its two goals
+are:
 
-1. **Python Array API compliance** — Hurray tensors with Tier 1 element types can be
-   used as drop-in inputs to any library that consumes the Python Array API Standard.
-2. **Zero-copy interop** — buffers are shared with NumPy, PyTorch, JAX, and CuPy
-   without copying, via DLPack and the buffer protocol.
+1. **Produce / consume Hurray tensors** — construct tensors and serialize them to the
+   Hurray format, and parse Hurray data into usable Python objects, including the types
+   the ecosystem cannot represent natively (Tier 2, quantized, sparse, composite).
+2. **Zero-copy interop** — share buffers with NumPy, PyTorch, JAX, and CuPy without
+   copying, via DLPack, the NumPy array protocols, and the native Hurray buffer
+   protocol.
 
-`hurray-python` MUST be a **strict reference implementation** of the
-[Python Array API Standard](https://data-apis.org/array-api/) for all Tier 1
-element types. Where the Array API standard specifies a behaviour (return value,
-exception type, error condition), `hurray-python` MUST follow it exactly. Hurray
-extensions (Tier 2 types, quantized types, device-specific behaviours) MUST NOT
-contradict the Array API standard; they operate in the space the standard explicitly
-leaves to implementations.
+These interop protocols are **standalone** — DLPack in particular is an independent
+specification, not part of the Array API (a consumer's `from_dlpack` works on any
+object exposing `__dlpack__`, with no Array API namespace involved). `hurray-python`
+therefore does not claim, and MUST NOT advertise, Array API conformance; it is
+Array-API-*interoperable* (a Tier 1 tensor handed to NumPy/PyTorch becomes a real
+array those ecosystems can compute on), not Array-API-*implementing*.
 
 ## Rationale
 
@@ -64,61 +69,63 @@ accepted or rejected on how much friction it adds, so a one-call, discoverable p
 matters. These methods also cover the cases the generic handoff cannot express, so
 that no data is silently left behind.
 
-## Python Array API Compliance
+## Tensor Surface
 
-`hurray-python` MUST expose a `hurray.Tensor` class that implements the
-[Python Array API Standard](https://data-apis.org/array-api/) for tensors with
-**Tier 1 element types** (see `docs/spec/element-types.md`).
+`hurray-python` MUST expose a `hurray.Tensor` class with an inspection and interop
+surface. This surface describes the tensor and hands it off zero-copy; it does **not**
+include array computation (elementwise math, reductions, linear algebra, indexing, or
+operators) — those belong to the framework the buffer is handed to. `hurray.Tensor`
+MUST NOT implement `__array_namespace__`, and the `hurray` module is not an Array API
+namespace (see ADR-029).
 
-### Required dunder methods
+### Inspection and interop methods
 
 | Method | Requirement |
 |---|---|
-| `__array_namespace__(api_version=None)` | MUST return a `hurray` namespace object that implements the Array API function set. |
 | `__dlpack__(stream=None)` | MUST return a DLPack capsule for zero-copy buffer sharing. See [DLPack Interoperability](#dlpack-interoperability) for stream semantics. |
 | `__dlpack_device__()` | MUST return a `(DLDeviceType, device_id)` tuple. `device_id` is passed as runtime metadata at `Tensor` construction time and defaults to `0`. See [DLPack Interoperability](#dlpack-interoperability). |
-| `dtype` | MUST return an Array API-compatible dtype object for Tier 1 types. |
+| `__hurray_buffer__(stream=None)` | MUST return a native Hurray buffer capsule (full-fidelity, all dtypes). See [Native Buffer Interchange Protocol](#native-buffer-interchange-protocol). |
+| `dtype` | MUST return the tensor's `hurray.dtype.*` object. |
 | `shape` | MUST return a `Tuple[Optional[int], ...]`. Each element is an `int` for a known dimension, or `None` for a dynamic (unknown) dimension. |
 | `ndim` | MUST return the number of dimensions. |
 | `size` | MUST return `Optional[int]`: the total number of elements, or `None` if one or more dimensions are dynamic (unknown). |
 | `device` | MUST return a device object consistent with `__dlpack_device__`. |
-| `T` | MUST return a transposed view without copying for rank-2 tensors. MUST raise `ValueError` if the array is not rank-2. |
+| `T` | MUST return a transposed view without copying for rank-2 tensors. MUST raise `ValueError` if the tensor is not rank-2. |
 
-### Tier 1 dtype mapping
+### Tier 1 dtype interop correspondence
 
-| Hurray type | Array API dtype |
+> **Note (non-normative):** Tier 1 element types use the standard numeric vocabulary,
+> so a Tier 1 `hurray.Tensor` maps to a NumPy dtype without translation when handed to
+> the ecosystem. This correspondence is an *interop* detail, not an Array API claim.
+
+| Hurray type | NumPy dtype (for interop) |
 |---|---|
-| `bool` | `xp.bool` |
-| `int8` | `xp.int8` |
-| `uint8` | `xp.uint8` |
-| `int16` | `xp.int16` |
-| `uint16` | `xp.uint16` |
-| `int32` | `xp.int32` |
-| `uint32` | `xp.uint32` |
-| `int64` | `xp.int64` |
-| `uint64` | `xp.uint64` |
-| `float16` | `xp.float16` |
-| `bfloat16` | `xp.bfloat16` (Array API 2023.12+, present in 2025.12) |
-| `float32` | `xp.float32` |
-| `float64` | `xp.float64` |
-| `complex64` | `xp.complex64` |
-| `complex128` | `xp.complex128` |
+| `bool` | `numpy.bool_` (via `__array__`; not representable over DLPack — see below) |
+| `int8` | `numpy.int8` |
+| `uint8` | `numpy.uint8` |
+| `int16` | `numpy.int16` |
+| `uint16` | `numpy.uint16` |
+| `int32` | `numpy.int32` |
+| `uint32` | `numpy.uint32` |
+| `int64` | `numpy.int64` |
+| `uint64` | `numpy.uint64` |
+| `float16` | `numpy.float16` |
+| `bfloat16` | no native NumPy dtype (e.g. `ml_dtypes.bfloat16`); crosses via DLPack to PyTorch/JAX |
+| `float32` | `numpy.float32` |
+| `float64` | `numpy.float64` |
+| `complex64` | `numpy.complex64` |
+| `complex128` | `numpy.complex128` |
 
 ### Tier 2 and quantized types
 
 For **Tier 2 element types** (sub-byte integers, float8 variants) and **quantized
 types**, `hurray-python` MUST expose a `hurray`-namespaced dtype object (e.g.,
-`hurray.dtype.int4`, `hurray.dtype.float8_e4m3`). These MUST NOT be mapped to a
-standard Array API dtype.
-
-In **strict mode** (the default), tensors with Tier 2 / quantized dtypes MUST NOT
-expose `__array_namespace__` — `hasattr(tensor, '__array_namespace__')` MUST return
-`False`. In **relaxed mode**, `__array_namespace__` is present on all tensors and
-returns the `hurray` namespace. See ADR-022 and [Runtime modes](#runtime-modes) below.
+`hurray.dtype.int4`, `hurray.dtype.float8_e4m3`). These have no standard NumPy dtype
+and cross between Hurray-aware components via the native buffer protocol or `save`/`load`.
 
 Tensors with Tier 2 / quantized dtypes MAY still implement `__dlpack__` where DLPack
 supports the element type. For element types outside the DLPack type enum, `__dlpack__`
-MUST raise the Python built-in `BufferError` (in both modes).
+MUST raise the Python built-in `BufferError`.
 
 ## DLPack Interoperability
 
@@ -130,8 +137,8 @@ MUST raise the Python built-in `BufferError` (in both modes).
   specification (v1.0 or later).
 - `__dlpack__()` MUST raise the Python built-in `BufferError` for any element type
   not in the DLPack type enum (e.g., `int4`, `float8` variants, quantized types).
-  This follows the Python Array API Standard, which specifies `BufferError` for
-  tensors that cannot be represented in DLPack.
+  `BufferError` is the conventional signal used across the ecosystem (NumPy, PyTorch)
+  for a tensor that cannot be represented in DLPack.
 - The DLPack capsule MUST reference the original buffer without copying. The buffer's
   reference count MUST be incremented when the capsule is created and decremented when
   the capsule is consumed or deleted.
@@ -242,8 +249,7 @@ combinations that DLPack v1.0 cannot represent (see ADR-023).
 
 - `hurray.Tensor.__hurray_buffer__(stream=None) -> PyCapsule` — MUST return a
   PyCapsule named `"hurray_buffer"` wrapping a `HurrayBuffer` pointer from
-  `hurray-ffi`. Available for **all** dtypes (Tier 1, Tier 2, quantized) in
-  **both** strict and relaxed modes.
+  `hurray-ffi`. Available for **all** dtypes (Tier 1, Tier 2, quantized).
 - `hurray.from_hurray_buffer(obj, /) -> hurray.Tensor` — MUST accept any object
   whose `__hurray_buffer__` returns a valid capsule and reconstruct a
   `hurray.Tensor` that owns the transferred buffer.
@@ -323,12 +329,9 @@ For CPU tensors with Tier 1 element types, `hurray-python` MUST support:
   [Buffer Lifetime and Ownership](#buffer-lifetime-and-ownership).
 
 For tensors with Tier 2 / quantized element types, `hurray.Tensor.__array__()` MUST
-raise `hurray.UnsupportedError` in **both** strict and relaxed modes. NumPy has no
-dtype for `int4`, `float8` variants, or quantized/scaled types; returning an `ndarray`
-is structurally impossible regardless of compliance mode. Relaxed mode makes
-`__array_namespace__` accessible on Tier 2 tensors but does not grant NumPy
-representability. Callers that need the raw bytes SHOULD use the buffer protocol or
-DLPack directly.
+raise `hurray.UnsupportedError`. NumPy has no dtype for `int4`, `float8` variants, or
+quantized/scaled types; returning an `ndarray` is structurally impossible. Callers that
+need the raw bytes SHOULD use the native buffer protocol or DLPack directly.
 
 ## PyTorch Interoperability
 
@@ -389,106 +392,29 @@ layer MUST catch panics and convert them to `hurray.InternalError` (subclass of
 - `hurray.UnsupportedError` if the `HURRAY_C_ABI_VERSION` embedded in the capsule
   does not match the consumer's linked version.
 
-## Runtime Modes
+## Conformance and Validation
 
-`hurray-python` supports two runtime compliance modes (see ADR-022 for the full
-rationale and architecture):
+`hurray-python` is validated against the shared **golden test-vector corpus**
+(`conformance/vectors/`), the same corpus the Rust implementation is checked against,
+plus the binding's own unit and integration tests.
 
-### Strict mode (default)
-
-Strict mode enforces full compliance with the Python Array API Standard for all
-operations involving Tier 1 element types. This is the default mode.
-
-- `hurray.Tensor` instances with Tier 2 / quantized dtypes MUST NOT expose
-  `__array_namespace__` — `hasattr(tensor, '__array_namespace__')` returns `False`.
-- Array-API-shaped construction APIs (`hurray.zeros`, `hurray.ones`, `hurray.asarray`,
-  etc.) MUST raise `hurray.UnsupportedError` for Tier 2 / quantized dtypes.
-- All other Array API invariants (`size`, `T`, `shape`, DLPack semantics) are
-  enforced in both modes.
-
-### Relaxed mode
-
-Relaxed mode allows the full Hurray feature set, including Tier 2 / quantized types,
-through the standard API surface. The user opts out of Array API conformance
-guarantees for the duration of the scope.
-
-- `hurray.Tensor` instances with Tier 2 / quantized dtypes expose `__array_namespace__`
-  and return the `hurray` namespace object.
-- Array-API-shaped construction APIs accept Tier 2 / quantized dtypes.
-- The `hurray` namespace object returned by `__array_namespace__` is the same module
-  in both modes; it is not extended or restricted based on mode.
-
-### Public API
-
-| Name | Signature | Description |
-|---|---|---|
-| `hurray.set_strict(strict)` | `(bool) -> None` | Set the process-wide default mode (ContextVar default). |
-| `hurray.is_strict()` | `() -> bool` | Query the current mode in the calling context. |
-| `hurray.strict()` | context manager | Enter strict mode for the duration of the `with` block. |
-| `hurray.relaxed()` | context manager | Enter relaxed mode for the duration of the `with` block. |
-
-The mode is stored in a `contextvars.ContextVar` (thread-safe and coroutine-safe).
-Each OS thread and each asyncio `Task` inherits a copy of the context on spawn;
-changes in one thread do not affect concurrent threads.
-
-> **Note (non-normative):** Threads created with the raw `threading.Thread` API
-> inherit the ContextVar *default value* (strict), not the spawning thread's current
-> mode. This is standard Python `contextvars` behaviour.
-
-### Layer 8a status
-
-Layer 8a (core types + DLPack) implements **strict mode only**. The relaxed path is
-reserved but not yet active:
-
-- `hurray.set_strict(True)` is a no-op.
-- `hurray.set_strict(False)`, `hurray.relaxed()`, and entering a relaxed scope MUST
-  raise `NotImplementedError` with a message indicating the feature is reserved for a
-  future release.
-- `hurray.is_strict()` always returns `True` in Layer 8a.
-- `__hurray_buffer__` is reserved but absent from `hurray.Tensor`;
-  `hasattr(tensor, '__hurray_buffer__')` MUST return `False`.
-- `hurray.from_hurray_buffer` is reserved but not present as a public name.
-
-Both native protocol names are implemented in Layer 8c (see ADR-023).
-
-## Array API Conformance Testing
-
-`hurray-python` MUST pass the
-[Python Array API Standard conformance test suite](https://github.com/data-apis/array-api-tests)
-for all Tier 1 element types in strict mode, targeting **Array API 2025.12**.
-
-- The conformance suite MUST be executed as part of the CI pipeline via GitHub
-  Actions on every pull request that touches `hurray-python/`.
-- The suite MUST be run against the Array API version(s) declared in the
-  [Compatibility Matrix](#compatibility-matrix). The current target is 2025.12.
-- All tests that are not explicitly skipped with documented justification MUST pass.
-  Skips MUST be declared in a `conftest.py` or equivalent file alongside the reason
-  (e.g., a feature deferred to a later layer, a known upstream test-suite bug with a
-  link to the upstream issue).
-- Conformance is tested in strict mode only. Relaxed mode makes no Array API
-  conformance claims and MUST NOT be used when running the conformance suite.
-
-> **Note (non-normative):** 2025.12 was chosen as the minimum target (rather than
-> 2023.12) to avoid retrofitting structural decisions — in particular, multi-return
-> functions such as `broadcast_arrays` and `meshgrid` MUST return `tuple` (not
-> `list`), and this is cheapest to get right from the start. 2025.12 is a strict
-> superset of 2023.12 and 2024.12; no existing 2023.12 behaviour is broken.
-
-> **Note (non-normative):** The array-api-tests suite is run via:
-> ```bash
-> pip install array-api-tests
-> pytest array_api_tests/ --array-module=hurray
-> ```
-> The `--array-module` flag points the suite at the `hurray` package as the
-> Array API namespace under test.
+- The Python binding MUST decode every descriptor and buffer in the golden corpus to
+  the same logical values as the Rust reference, and MUST re-encode round-trippable
+  vectors to byte-identical output. This is exercised in CI (see the
+  `python-conformance` job).
+- The `array-api-tests` suite is **not** used: it targets a whole conforming Array API
+  namespace and presupposes the compute core, which `hurray-python` deliberately does
+  not implement (see ADR-029). Cross-checking against the golden corpus maps directly
+  onto the parts of the Hurray specification the binding actually covers.
+- New behaviour MUST ship with tests that exercise the public interop surface (DLPack,
+  NumPy/PyTorch bridges, the native buffer protocol, `save`/`load`).
 
 ## Benchmark Suite
 
-`hurray-python` SHOULD maintain a benchmark suite that measures performance across
-the Array API surface and Hurray-specific interop paths. The long-term goal is to
-contribute this suite to the upstream
-[Python Array API Standard benchmark project](https://data-apis.org/array-api/latest/benchmark_suite.html),
-providing a reference implementation for other Array API consumers to compare against.
+`hurray-python` SHOULD maintain a benchmark suite that measures performance across the
+Hurray interchange and interop paths — the operations that define the binding's
+purpose: constructing tensors, moving buffers zero-copy, and serializing/parsing the
+Hurray format.
 
 ### Benchmark categories
 
@@ -499,8 +425,9 @@ The suite SHOULD cover the following categories:
 | **DLPack capsule** | `__dlpack__()` round-trip (create + consume); capsule destructor overhead; `from_dlpack()` from NumPy and PyTorch. |
 | **NumPy interop** | `from_numpy()` (zero-copy); `__array__()` (zero-copy); dtype coverage (all Tier 1 types). |
 | **PyTorch interop** | `from_torch()` and `to_torch()` round-trip on CPU and CUDA. |
-| **Array API construction** | `zeros`, `ones`, `full`, `arange`, `linspace` for representative shapes and dtypes. |
-| **Array API operations** | Elementwise ops (`add`, `multiply`, `exp`); reductions (`sum`, `max`) for representative shapes. |
+| **Native buffer** | `__hurray_buffer__()` / `from_hurray_buffer()` round-trip (full-fidelity, all dtypes). |
+| **Construction** | `zeros`, `ones`, `full`, `arange`, `linspace` for representative shapes and dtypes. |
+| **Serialization** | `save`/`load` and streaming read/write throughput (GiB/s) for representative tensors. |
 | **Memory lifecycle** | `Tensor` allocation + deallocation throughput; large-tensor zero-copy overhead (GiB-scale). |
 | **SparseTensor** | COO/CSR/CSC construction; SciPy round-trip. |
 
@@ -513,21 +440,7 @@ The suite SHOULD cover the following categories:
 - Regression tracking (detecting performance regressions across commits) SHOULD be
   automated in CI. Benchmarks that regress by more than 10% relative to the baseline
   SHOULD trigger a warning in the pull request.
-- The benchmark suite MUST be runnable independently from the conformance test suite.
-
-### Contribution to the Array API Standard
-
-When the upstream
-[Python Array API Standard benchmark suite](https://data-apis.org/array-api/latest/benchmark_suite.html)
-reaches a stable format, `hurray-python` benchmarks that cover the standard's function
-set SHOULD be submitted as contributions. Benchmark results from `hurray-python`
-SHOULD be published alongside results from NumPy, PyTorch, JAX, and CuPy to provide
-a cross-implementation performance reference.
-
-> **Note (non-normative):** The upstream benchmark suite is in early development as
-> of this writing. The `hurray-python` suite is designed to be structurally compatible
-> with it from the start (function naming, shape/dtype parametrisation), so that
-> upstreaming requires minimal adaptation.
+- The benchmark suite MUST be runnable independently from the validation tests.
 
 ## Compatibility Matrix
 
@@ -537,16 +450,12 @@ the spec — because it changes with every release.
 
 The compatibility matrix MUST record, for each `hurray-python` release series:
 
-- The supported [Python Array API Standard](https://data-apis.org/array-api/)
-  version(s) (e.g., 2022.12, 2023.12, 2025.12).
 - The [DLPack](https://dmlc.github.io/dlpack/latest/) specification version(s)
   supported as producer and as consumer.
 - The supported CPython version range.
+- The Hurray format/descriptor version(s) the binding produces and consumes.
 
-The matrix MUST be updated whenever a new `hurray-python` release adds or drops
-support for a standard version. The conformance test suite (see
-[Array API Conformance Testing](#array-api-conformance-testing)) MUST be run against
-every Array API version listed in the matrix.
+The matrix MUST be updated whenever a new `hurray-python` release changes any of these.
 
 ## Packaging
 
