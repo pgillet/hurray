@@ -2,15 +2,11 @@
 //!
 //! Python bindings for the Hurray tensor interchange format.
 //!
-//! Provides zero-copy interop with NumPy and PyTorch via the `__dlpack__` protocol,
-//! and implements the [Python Array API Standard](https://data-apis.org/array-api/)
-//! for Tier 1 element types. Built with [PyO3](https://pyo3.rs).
-//!
-//! ## Runtime modes
-//!
-//! This package defaults to **strict mode**, which enforces full Array API compliance.
-//! Use `set_strict(False)`, `relaxed()`, or `RelaxedCtx` to allow Tier 2 / quantized
-//! types through the Array API surface. See ADR-022.
+//! `hurray-python` is the Python codec and zero-copy bridge for the Hurray format —
+//! it produces and consumes Hurray tensors and hands their buffers to the array
+//! ecosystem without copying, via DLPack, the NumPy array protocols, and the native
+//! Hurray buffer protocol. It is not an Array API implementation (see ADR-029). Built
+//! with [PyO3](https://pyo3.rs).
 
 use pyo3::prelude::*;
 
@@ -22,7 +18,6 @@ mod dtype;
 pub mod errors;
 mod file_io;
 mod interop;
-mod modes;
 mod native_buffer;
 mod print_options;
 mod scipy_interop;
@@ -31,18 +26,14 @@ mod tensor;
 
 /// Python module entry point.
 ///
-/// Registers all public API items: version string, runtime mode functions,
-/// context managers, exception classes, dtype/device submodules, and the
-/// `Tensor` class.
+/// Registers all public API items: version string, exception classes,
+/// dtype/device submodules, and the `Tensor` class.
 ///
 /// ## Module layout
 ///
 /// | Name | Kind | Phase |
 /// |------|------|-------|
 /// | `hurray.__version__` | string | 8a.1 |
-/// | `hurray.set_strict` / `hurray.is_strict` | functions | 8a.1 |
-/// | `hurray.strict` / `hurray.relaxed` | factory functions | 8d |
-/// | `hurray.StrictCtx` / `hurray.RelaxedCtx` | context managers | 8a.1 |
 /// | `hurray.{Invalid,Buffer,Unsupported,Internal}Error` | exceptions | 8a.1 |
 /// | `hurray.Dtype` | class | 8a.2 |
 /// | `hurray.<tier1_type>` (e.g. `hurray.float32`) | `Dtype` constants | 8a.2 |
@@ -58,7 +49,6 @@ mod tensor;
 /// | `hurray.zeros_like` / `hurray.ones_like` / `hurray.full_like` / `hurray.empty_like` | functions | 8a.5 |
 /// | `hurray.arange` / `hurray.linspace` / `hurray.eye` | functions | 8a.5 |
 /// | `hurray.asarray` / `hurray.from_dlpack` | functions | 8a.5 |
-/// | `hurray.Tensor.__array_namespace__` | method | 8a.5 |
 /// | `hurray.load` / `hurray.save` | functions | 8b |
 /// | `hurray.FileError` / `hurray.StreamError` | exceptions | 8b |
 /// | `hurray.set_print_options` / `hurray.get_print_options` | functions | 8e |
@@ -67,12 +57,6 @@ mod tensor;
 #[pymodule]
 fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    m.add_function(wrap_pyfunction!(modes::set_strict, m)?)?;
-    m.add_function(wrap_pyfunction!(modes::is_strict, m)?)?;
-    m.add_function(wrap_pyfunction!(modes::strict, m)?)?;
-    m.add_function(wrap_pyfunction!(modes::relaxed, m)?)?;
-    m.add_class::<modes::StrictCtx>()?;
-    m.add_class::<modes::RelaxedCtx>()?;
     errors::register(m)?;
     dtype::register(m)?;
     device::register(m)?;
