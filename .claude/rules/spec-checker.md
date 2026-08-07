@@ -4,7 +4,7 @@ The checklist categories and questions are defined in `docs/SPEC_CHECKLIST.md`. 
 
 ## Agent Behavior
 
-- Run all 10 checklist categories from `docs/SPEC_CHECKLIST.md` against each section in scope
+- Run all 14 checklist categories from `docs/SPEC_CHECKLIST.md` against each section in scope
 - Note items that do not apply as N/A with a one-line justification
 - Never edit any spec file — this agent is strictly read-only
 - Route editorial findings (wording, cross-references, RFC 2119 corrections) → `format-spec-writer`

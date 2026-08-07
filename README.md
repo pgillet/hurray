@@ -59,6 +59,10 @@ The interchange protocol covers in-process (pointer passing), IPC (shared memory
 
 Hurray is designed to serve as the storage layer of an array database engine — covering the full tensor supply chain: capture, storage, retrieval, and sharing. The tiled/blocked layout enables chunk-based access and tile-skipping for sub-array queries. Morton Z-order and Hilbert curve layouts preserve spatial locality across dimensions, improving range query cache performance. The file format footer index supports O(1) tensor lookup by name and is designed to be extensible with spatial or dimension-range indexes. Spec decisions that would foreclose chunk-based storage, spatial locality, or dimension-range indexing MUST be evaluated against this use case before being adopted.
 
+### 12. Device-Aware Interchange
+
+Every tensor descriptor records where its data lives: a device tag (CPU, CUDA, ROCm, Metal, Vulkan, WebGPU, Hexagon, oneAPI/Level Zero, OpenCL), an orthogonal memory class (standard, host-pinned, unified, peer), and a synchronization mode. Interchange therefore preserves hardware placement — a buffer moves between heterogeneous devices and runtimes without losing which device holds it or how it must be synchronized before use. In the Python ecosystem this enables device-aware, zero-copy hand-off between array/tensor libraries (NumPy, PyTorch, JAX, CuPy): the bindings translate Hurray's device tag and memory class to the consumer's device model (e.g. DLPack's `DLDeviceType`) and fall back to the native full-fidelity buffer protocol for placements that model cannot express (such as unified or peer memory). Cross-hardware support is a first-class property of the format, not a binding-level afterthought.
+
 ---
 
 See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the full annotated file tree.
