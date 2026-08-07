@@ -1,8 +1,9 @@
-//! Array API creation functions: `zeros`, `ones`, `full`, `empty`, `*_like`,
+//! Tensor construction functions: `zeros`, `ones`, `full`, `empty`, `*_like`,
 //! `arange`, `linspace`, `eye`, `asarray`, `from_dlpack`.
 //!
-//! All functions are strict-mode only. Tier 2 dtypes (e.g. `int4`, `float8`)
-//! are rejected with `hurray.UnsupportedError`. Relaxed mode is reserved.
+//! These constructors are Tier 1 only. Tier 2 dtypes (e.g. `int4`, `float8`) have no
+//! meaningful fill/step semantics here and are rejected with `hurray.UnsupportedError`;
+//! such tensors are produced by the interop and decode paths instead.
 
 // PyO3 0.22 macro expansion emits a redundant .into() on PyErr — suppress.
 #![allow(clippy::useless_conversion)]
@@ -19,7 +20,6 @@ use crate::buffer::BufferStore;
 use crate::device::Device;
 use crate::dtype::Dtype;
 use crate::errors::{BufferError, InvalidDescriptorError, UnsupportedError};
-use crate::modes::is_strict;
 use crate::tensor::{is_tier1, Tensor};
 
 // ── Shared helpers ─────────────────────────────────────────────────────────────
@@ -54,11 +54,11 @@ fn resolve_device(device: Option<&Bound<'_, PyAny>>) -> PyResult<(DeviceTag, Mem
     }
 }
 
-/// Reject Tier 2 types in strict mode with `UnsupportedError`.
-fn check_tier1_strict(py: Python<'_>, ty: ElementType) -> PyResult<()> {
-    if is_strict(py)? && !is_tier1(ty) {
+/// Reject Tier 2 dtypes: these constructors only produce Tier 1 tensors.
+fn check_tier1(ty: ElementType) -> PyResult<()> {
+    if !is_tier1(ty) {
         return Err(UnsupportedError::new_err(format!(
-            "dtype '{}' is a Tier 2 type and is not supported in strict mode",
+            "dtype '{}' is a Tier 2 type and is not supported by tensor constructors",
             crate::dtype::element_type_name(ty)
         )));
     }
@@ -164,7 +164,7 @@ fn one_bytes(element_type: ElementType) -> &'static [u8] {
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf0, 0x3f, // real 1.0 f64 LE
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // imag 0.0 f64 LE
         ],
-        // Tier 2 types are rejected by check_tier1_strict before we get here.
+        // Tier 2 types are rejected by check_tier1 before we get here.
         _ => unreachable!("one_bytes called with non-Tier-1 or Bool type"),
     }
 }
@@ -350,7 +350,7 @@ pub(crate) fn to_numpy_dtype_name(et: ElementType) -> Option<&'static str> {
     }
 }
 
-// ── Array API creation functions ───────────────────────────────────────────────
+// ── Tensor construction functions ──────────────────────────────────────────────
 
 /// Return a new tensor of the given shape, filled with zeros.
 ///
@@ -374,7 +374,7 @@ pub fn zeros(
     device: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Tensor> {
     let et = resolve_dtype(dtype)?;
-    check_tier1_strict(py, et)?;
+    check_tier1(et)?;
     let (dtag, mc) = resolve_device(device)?;
     let s = parse_shape(shape)?;
     let n = s.element_count().unwrap_or(0);
@@ -404,7 +404,7 @@ pub fn ones(
     device: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Tensor> {
     let et = resolve_dtype(dtype)?;
-    check_tier1_strict(py, et)?;
+    check_tier1(et)?;
     let (dtag, mc) = resolve_device(device)?;
     let s = parse_shape(shape)?;
     let n = s.element_count().unwrap_or(0);
@@ -440,7 +440,7 @@ pub fn full(
     } else {
         infer_scalar_dtype(fill_value)?
     };
-    check_tier1_strict(py, et)?;
+    check_tier1(et)?;
     let (dtag, mc) = resolve_device(device)?;
     let s = parse_shape(shape)?;
     let n = s.element_count().unwrap_or(0);
@@ -450,8 +450,8 @@ pub fn full(
 
 /// Return a new uninitialized tensor of the given shape and type.
 ///
-/// The buffer is zero-initialized (Array API permits any initial values).
-/// Default dtype is `float64`. Strict mode only.
+/// The buffer is zero-initialized (the contents of an "empty" tensor are unspecified).
+/// Default dtype is `float64`. Tier 1 only.
 ///
 /// ## Examples
 ///
@@ -470,11 +470,11 @@ pub fn empty(
     device: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Tensor> {
     let et = resolve_dtype(dtype)?;
-    check_tier1_strict(py, et)?;
+    check_tier1(et)?;
     let (dtag, mc) = resolve_device(device)?;
     let s = parse_shape(shape)?;
     let n = s.element_count().unwrap_or(0);
-    // Zero-fill is a safe default; the Array API treats empty contents as undefined.
+    // Zero-fill is a safe default; the contents of an "empty" tensor are unspecified.
     let buf = vec![0u8; buffer_size_bytes(et, n) as usize];
     make_owned_tensor(py, buf, et, s, dtag, mc)
 }
@@ -507,7 +507,7 @@ pub fn zeros_like(
     } else {
         xr.descriptor.element_type
     };
-    check_tier1_strict(py, et)?;
+    check_tier1(et)?;
     let (dtag, mc) = if device.is_some() {
         resolve_device(device)?
     } else {
@@ -548,7 +548,7 @@ pub fn ones_like(
     } else {
         xr.descriptor.element_type
     };
-    check_tier1_strict(py, et)?;
+    check_tier1(et)?;
     let (dtag, mc) = if device.is_some() {
         resolve_device(device)?
     } else {
@@ -590,7 +590,7 @@ pub fn full_like(
     } else {
         xr.descriptor.element_type
     };
-    check_tier1_strict(py, et)?;
+    check_tier1(et)?;
     let (dtag, mc) = if device.is_some() {
         resolve_device(device)?
     } else {
@@ -631,7 +631,7 @@ pub fn empty_like(
     } else {
         xr.descriptor.element_type
     };
-    check_tier1_strict(py, et)?;
+    check_tier1(et)?;
     let (dtag, mc) = if device.is_some() {
         resolve_device(device)?
     } else {
@@ -700,7 +700,7 @@ pub fn arange(
     } else {
         ElementType::Int64
     };
-    check_tier1_strict(py, et)?;
+    check_tier1(et)?;
 
     // Count = max(0, ceil((stop - start) / step)).
     let raw_count = ((eff_stop - eff_start) / eff_step).ceil();
@@ -759,7 +759,7 @@ pub fn linspace(
     }
     let n = num as u64;
     let et = resolve_dtype(dtype)?;
-    check_tier1_strict(py, et)?;
+    check_tier1(et)?;
     if et == ElementType::Bool {
         return Err(UnsupportedError::new_err(
             "linspace does not support dtype=bool",
@@ -835,7 +835,7 @@ pub fn eye(
     };
 
     let et = resolve_dtype(dtype)?;
-    check_tier1_strict(py, et)?;
+    check_tier1(et)?;
     let (dtag, mc) = resolve_device(device)?;
 
     let s = Shape::new(vec![rows, cols])
@@ -919,10 +919,10 @@ pub fn asarray(
     device: Option<&Bound<'_, PyAny>>,
     copy: Option<bool>,
 ) -> PyResult<Tensor> {
-    let _ = device; // accepted for Array API compat; only CPU is supported in this version
+    let _ = device; // accepted for signature compatibility; only CPU is supported in this version
     let target_et = dtype.map(|d| resolve_dtype(Some(d))).transpose()?;
     if let Some(et) = target_et {
-        check_tier1_strict(py, et)?;
+        check_tier1(et)?;
         if et == ElementType::BFloat16 {
             return Err(UnsupportedError::new_err(
                 "asarray does not support bfloat16: NumPy has no native bfloat16 dtype. \
@@ -966,10 +966,10 @@ pub fn asarray(
 
 /// Construct a tensor from a DLPack capsule or an object with `__dlpack__`.
 ///
-/// This is the Array API `from_dlpack` entry point. It calls `x.__dlpack__()` to
-/// obtain a DLPack v1.0 capsule and wraps the result as a `hurray.Tensor`
-/// (zero-copy on CPU). The `device` and `copy` parameters are accepted for
-/// API compatibility but only CPU is supported in this version.
+/// The `from_dlpack` entry point. It calls `x.__dlpack__()` to obtain a DLPack v1.0
+/// capsule and wraps the result as a `hurray.Tensor` (zero-copy on CPU). The `device`
+/// and `copy` parameters are accepted for signature compatibility but only CPU is
+/// supported in this version.
 ///
 /// ## Errors
 ///
@@ -992,7 +992,7 @@ pub fn asarray(
 pub fn from_dlpack(
     py: Python<'_>,
     x: &Bound<'_, PyAny>,
-    // Accepted for Array API compat; only CPU zero-copy is supported in this version.
+    // Accepted for signature compatibility; only CPU zero-copy is supported in this version.
     device: Option<&Bound<'_, PyAny>>,
     copy: Option<bool>,
 ) -> PyResult<Tensor> {
