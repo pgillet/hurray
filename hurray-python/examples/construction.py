@@ -1,12 +1,12 @@
 """
-Array API creation functions and namespace.
+Tensor construction functions.
 
 Demonstrates:
 - hurray.zeros, ones, full, empty and their *_like variants
 - hurray.arange, linspace, eye
 - hurray.asarray (from Python lists and NumPy arrays)
 - hurray.from_dlpack (from NumPy arrays via DLPack)
-- hurray.Tensor.__array_namespace__()
+- Tier 2 dtypes are rejected by the constructors (Tier 1 only)
 """
 
 import numpy as np
@@ -147,23 +147,13 @@ def demo_from_dlpack():
     print(f"from_dlpack(numpy): shape={t.shape}")
 
 
-def demo_array_namespace():
-    """__array_namespace__ returns the hurray module for Tier 1 tensors."""
-    t = hurray.zeros([3, 3])
-    ns = t.__array_namespace__()
-    assert ns is hurray
-    print(f"__array_namespace__() is hurray: {ns is hurray}")
-
-    # Explicit version
-    ns2 = t.__array_namespace__(api_version="2025.12")
-    assert ns2 is hurray
-
-    # Unsupported version raises ValueError
+def demo_tier2_rejected():
+    """Construction functions are Tier 1 only; Tier 2 dtypes raise UnsupportedError."""
     try:
-        t.__array_namespace__(api_version="2000.01")
-        print("ERROR: expected ValueError")
-    except ValueError as e:
-        print(f"Unsupported version correctly rejected: {e}")
+        hurray.zeros([4], dtype=hurray.dtype.int4)
+        print("ERROR: expected UnsupportedError")
+    except hurray.UnsupportedError as e:
+        print(f"Tier 2 dtype correctly rejected: {e}")
 
 
 if __name__ == "__main__":
@@ -185,5 +175,5 @@ if __name__ == "__main__":
     print("=== from_dlpack ===")
     demo_from_dlpack()
     print()
-    print("=== __array_namespace__ ===")
-    demo_array_namespace()
+    print("=== Tier 2 rejected ===")
+    demo_tier2_rejected()

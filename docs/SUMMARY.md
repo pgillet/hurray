@@ -56,13 +56,12 @@
 - [Composite Tensors in Files](cookbook/composite-file.md)
 - [hurray-inspect CLI](cookbook/hurray-inspect-cli.md)
 - [Python: Dtype, Device, and Tensor](cookbook/hurray-python-tensor-basics.md)
-- [Python: Array API Namespace](cookbook/hurray-python-array-api.md)
+- [Python: Tensor Construction](cookbook/hurray-python-construction.md)
 - [Python: DLPack and NumPy Interop](cookbook/hurray-python-dlpack-numpy.md)
 - [Python: Native Buffer Protocol](cookbook/hurray-python-native-buffer.md)
 - [Python: Sparse Tensors and SciPy](cookbook/hurray-python-sparse-scipy.md)
 - [Python: File I/O](cookbook/hurray-python-file-io.md)
 - [Python: Tensor Display](cookbook/hurray-python-display.md)
-- [Python: Runtime Modes](cookbook/hurray-python-runtime-modes.md)
 - [Python: Error Handling](cookbook/hurray-python-error-handling.md)
 
 # Tutorials
