@@ -2,7 +2,7 @@
 
 This checklist is applied to every new or modified section of the Hurray format specification. Items that do not apply to a given section should be noted as N/A with a brief justification.
 
-The 13 categories correspond directly to the 11 Core Properties defined in `README.md`, plus two cross-cutting quality checks. Core Property 3 (Streamable by Design) applies differently to the streaming format and the file format; the checklist items below are labelled accordingly.
+The 14 categories correspond directly to the 12 Core Properties defined in `README.md`, plus two cross-cutting quality checks. Core Property 3 (Streamable by Design) applies differently to the streaming format and the file format; the checklist items below are labelled accordingly.
 
 ---
 
@@ -110,14 +110,22 @@ The 13 categories correspond directly to the 11 Core Properties defined in `READ
 - [ ] If new metadata fields are introduced, could they carry dimension domain or coordinate information relevant to an array database (e.g., axis labels, tile extents, dimension ranges)?
 - [ ] Is the section compatible with a SQL/MDA query engine (ISO 9075-15) consuming Hurray buffers? In particular: can query results be handed off to an ML inference pipeline without copying, and can quantized types be treated as first-class column types?
 
-## 12. RFC 2119 Correctness
+## 12. Device-Aware Interchange
+*(Core Property 12)*
+
+- [ ] If the section defines or references device placement, does it use the device tag + memory class + synchronization mode model from `buffer-protocol.md` (not ad-hoc device fields)?
+- [ ] Are device tag (which device) and memory class (how the memory is placed/shared) kept orthogonal?
+- [ ] If a new device tag or memory class is introduced, is its mapping to consumer device models (e.g. DLPack `DLDeviceType`) specified, along with the fallback for placements that cannot be expressed cross-runtime?
+- [ ] Does the section preserve device placement and synchronization requirements across interchange, rather than assuming host (CPU) memory?
+
+## 13. RFC 2119 Correctness
 
 - [ ] Does the section include the RFC 2119 notice near the top?
 - [ ] Are normative keywords (`MUST`, `SHOULD`, `MAY`, etc.) in uppercase?
 - [ ] Are normative keywords absent from non-normative blocks (prefixed `> **Note (non-normative):**`)?
 - [ ] Are open questions marked with `> **[OQ-N]:**` and sequentially numbered within the file?
 
-## 13. Cross-Section Consistency
+## 14. Cross-Section Consistency
 
 - [ ] Does any term, field, or formula in this section contradict another spec section?
 - [ ] Are all cross-references to other sections accurate (correct section names and field names)?
