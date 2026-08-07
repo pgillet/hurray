@@ -1,41 +1,19 @@
-# Array API Creation Functions and Namespace
+# Tensor Construction Functions
 
-`hurray.Tensor` implements the [Python Array API Standard 2025.12](https://data-apis.org/array-api/latest/)
-for Tier 1 element types. This page covers the creation functions and the
-`__array_namespace__` discovery mechanism.
+`hurray-python` provides a set of functions for building `hurray.Tensor` objects in
+Python: `zeros`, `ones`, `full`, `empty`, their `*_like` variants, `arange`,
+`linspace`, `eye`, `asarray`, and `from_dlpack`. These constructors produce **Tier 1**
+(standard numeric) tensors, which you then serialize with `save` or hand off zero-copy
+to NumPy/PyTorch. Tier 2 / quantized / sparse tensors are not built here — they arrive
+via the decode and interop paths.
 
-## Array API namespace discovery
-
-Array API consumers discover the namespace through `__array_namespace__()`.
-For Tier 1 tensors this returns the `hurray` module itself:
-
-```python
-import hurray
-
-t = hurray.zeros([3, 3])
-ns = t.__array_namespace__()
-assert ns is hurray        # same object
-
-# Explicit version check
-ns2 = t.__array_namespace__(api_version="2025.12")
-assert ns2 is hurray
-```
-
-Tier 2 tensors (e.g. `int4`, `float8_e4m3`) raise `AttributeError` from
-`__array_namespace__()` because they do not conform to the Array API. Code that
-gates on Array API compliance should catch this:
-
-```python
-try:
-    ns = tensor.__array_namespace__()
-except AttributeError:
-    ns = None   # Tier 2 or non-compliant tensor
-```
+`hurray.Tensor` is an interchange object, not an Array API array: it exposes an
+inspection and interop surface (`shape`, `dtype`, `device`, `__dlpack__`,
+`__hurray_buffer__`, …), not array computation. See ADR-029.
 
 ## Creation functions
 
-All creation functions default to `dtype=float64` when dtype is not specified,
-matching the Array API Standard.
+All creation functions default to `dtype=float64` when a dtype is not specified.
 
 ### `zeros` and `ones`
 
@@ -118,7 +96,7 @@ lower    = hurray.eye(4, k=-1)          # k=-1 sub-diagonal
 
 ## `asarray` — generic conversion
 
-`asarray` converts Python lists, NumPy arrays, and other Array API objects to
+`asarray` converts Python lists, NumPy arrays, and other array objects to
 `hurray.Tensor`. For NumPy arrays and `hurray.Tensor` inputs the data buffer
 is shared zero-copy where possible.
 
@@ -161,13 +139,15 @@ assert t.shape == (3,)
 assert t.dtype == hurray.float64
 ```
 
-This is the Array API entry point for DLPack interop. For NumPy arrays you can
-also use `hurray.from_numpy`, which takes the same zero-copy path.
+DLPack is an independent zero-copy interchange protocol (not the Array API); see
+[Python: DLPack and NumPy Interop](hurray-python-dlpack-numpy.md). For NumPy arrays
+you can also use `hurray.from_numpy`, which takes the same zero-copy path.
 
-## Strict mode and Tier 2 types
+## Tier 2 types are not constructible here
 
-All creation functions operate in **strict mode** only. Passing a Tier 2 dtype
-(e.g. `hurray.dtype.int4`) raises `UnsupportedError`:
+The construction functions are Tier 1 only. Passing a Tier 2 dtype (e.g.
+`hurray.dtype.int4`) raises `UnsupportedError` — there are no meaningful fill/step
+semantics for sub-byte or micro-float types in these helpers:
 
 ```python
 try:
@@ -176,11 +156,14 @@ except hurray.UnsupportedError as e:
     print(f"Tier 2 dtype rejected: {e}")
 ```
 
+Tier 2 / quantized tensors are produced by decoding Hurray data (`hurray.load`) or by
+the interop paths, not by these constructors.
+
 ## Runnable example
 
 ```bash
 # From the repo root:
 cd hurray-python
 maturin develop          # build the extension
-python examples/array_api.py
+python examples/construction.py
 ```
