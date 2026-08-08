@@ -14,7 +14,10 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"
 license = "MIT OR Apache-2.0"
+# Canonical project URLs — single source of truth for all publishable crates.
+# Change these here (not per-crate) if the repo moves or the site's canonical URL changes.
 repository = "https://github.com/pgillet/hurray"
+homepage = "https://www.pascalgillet.net/hurray/"
 authors = ["Hurray Contributors"]
 
 [workspace.dependencies]
