@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 128" width="192" height="128" role="img" aria-label="hurray">
+  <title>hurray</title>
+  <!-- 2×3 stacked lockup: hur / raɥ, bottom-right turned-h cell highlighted teal. -->
+  <rect x="129" y="65" width="62" height="62" fill="#0d9488"/>
+  <rect x="1" y="1" width="190" height="126" fill="none" stroke="#d8e6e2" stroke-width="2"/>
+  <path d="M64 1V127 M128 1V127 M1 64H191" stroke="#d8e6e2" stroke-width="2"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="34" font-weight="600" text-anchor="middle" fill="#12201e">
+    <text x="32" y="32" dominant-baseline="central">h</text>
+    <text x="96" y="32" dominant-baseline="central">u</text>
+    <text x="160" y="32" dominant-baseline="central">r</text>
+    <text x="32" y="96" dominant-baseline="central">r</text>
+    <text x="96" y="96" dominant-baseline="central">a</text>
+    <text x="160" y="96" dominant-baseline="central" fill="#ffffff" transform="rotate(180 160 96)">h</text>
+  </g>
+</svg>

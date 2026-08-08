@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}{{ config.title }}{% endblock title %}</title>
   <meta name="description" content="{% block description %}{{ config.description }}{% endblock description %}">
+  <link rel="icon" type="image/svg+xml" href="{{ get_url(path='favicon.svg') | safe }}">
   <link rel="stylesheet" href="{{ get_url(path='css/style.css') | safe }}">
   {% if config.generate_feeds %}
   <link rel="alternate" type="application/atom+xml" title="{{ config.title }} blog" href="{{ get_url(path='blog/atom.xml') | safe }}">
@@ -13,7 +14,21 @@
 <body>
   <header class="site-header">
     <div class="wrap">
-      <a class="brand" href="{{ get_url(path='@/_index.md') | safe }}">Hurray</a>
+      <a class="brand" href="{{ get_url(path='@/_index.md') | safe }}" aria-label="Hurray — home">
+        <svg class="brand-mark" viewBox="0 0 384 64" role="img" aria-label="hurray">
+          <rect class="bm-cell" x="321" y="1" width="62" height="62"/>
+          <rect class="bm-grid" x="1" y="1" width="382" height="62"/>
+          <path class="bm-grid" d="M64 1V63 M128 1V63 M192 1V63 M256 1V63 M320 1V63"/>
+          <g class="bm-ink" text-anchor="middle">
+            <text x="32" y="32" dominant-baseline="central">h</text>
+            <text x="96" y="32" dominant-baseline="central">u</text>
+            <text x="160" y="32" dominant-baseline="central">r</text>
+            <text x="224" y="32" dominant-baseline="central">r</text>
+            <text x="288" y="32" dominant-baseline="central">a</text>
+            <text class="bm-invert" x="352" y="32" dominant-baseline="central" transform="rotate(180 352 32)">h</text>
+          </g>
+        </svg>
+      </a>
       <nav class="site-nav">
         <a href="{{ get_url(path=config.extra.docs_url) | safe }}">Docs</a>
         <a href="{{ get_url(path='@/faq/_index.md') | safe }}">FAQ</a>
