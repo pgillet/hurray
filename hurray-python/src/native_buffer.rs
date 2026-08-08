@@ -19,9 +19,6 @@
 //! `BufferStore::Borrowed` whose `base` is the source `Tensor`. C consumer interop
 //! requiring a persistent `HurrayBuffer` is deferred to a future layer.
 
-// PyO3 0.22 macro expansion emits a redundant .into() — suppress false positive.
-#![allow(clippy::useless_conversion)]
-
 use std::ffi::CStr;
 
 use hurray_core::{DeviceTag, MemoryClass, SyncMode, TensorDescriptor};
@@ -68,7 +65,7 @@ struct NativeBufferContext {
 ///
 /// # Safety
 ///
-/// Called by CPython with a valid `PyObject*` pointing to a live PyCapsule.
+/// Called by CPython with a valid `Py<PyAny>*` pointing to a live PyCapsule.
 /// The GIL is always held when Python finalizers run.
 unsafe extern "C" fn hurray_buffer_capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
     let name_ptr = pyo3::ffi::PyCapsule_GetName(capsule);
@@ -91,7 +88,7 @@ unsafe extern "C" fn hurray_buffer_capsule_destructor(capsule: *mut pyo3::ffi::P
         let ctx_ptr = pyo3::ffi::PyCapsule_GetContext(capsule) as *mut NativeBufferContext;
         if !ctx_ptr.is_null() {
             // SAFETY: ctx_ptr was created by Box::into_raw; GIL is held for Py<PyAny> drop.
-            Python::with_gil(|_py| {
+            Python::attach(|_py| {
                 let _ = Box::from_raw(ctx_ptr);
             });
         }
@@ -116,7 +113,7 @@ unsafe extern "C" fn hurray_buffer_capsule_destructor(capsule: *mut pyo3::ffi::P
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_capsule(
     py: Python<'_>,
-    tensor_obj: PyObject,
+    tensor_obj: Py<PyAny>,
     descriptor: &TensorDescriptor,
     data_ptr: *mut std::ffi::c_void,
     byte_size: u64,
@@ -124,7 +121,7 @@ pub(crate) fn build_capsule(
     device_tag: DeviceTag,
     sync_mode: SyncMode,
     memory_class: MemoryClass,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     use hurray_ffi::buffer::hurray_buffer_from_ptr;
 
     // 1. Encode descriptor for round-trip reconstruction on the consumer side.
@@ -197,7 +194,7 @@ pub(crate) fn build_capsule(
     }
 
     // SAFETY: PyCapsule_New returned a non-null owned reference.
-    Ok(unsafe { PyObject::from_owned_ptr(py, capsule) })
+    Ok(unsafe { Bound::from_owned_ptr(py, capsule).unbind() })
 }
 
 // ── Consumer ──────────────────────────────────────────────────────────────────
@@ -389,14 +386,14 @@ mod tests {
     use super::*;
 
     fn init() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
     }
 
     #[test]
     fn from_hurray_buffer_rejects_non_protocol_objects() {
         init();
-        Python::with_gil(|py| {
-            let obj = py.eval_bound("42", None, None).unwrap();
+        Python::attach(|py| {
+            let obj = py.eval(c"42", None, None).unwrap();
             let result = from_hurray_buffer(py, &obj);
             assert!(result.is_err());
             assert!(result
@@ -408,7 +405,7 @@ mod tests {
     #[test]
     fn from_hurray_buffer_rejects_wrong_capsule_name() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // A capsule with the wrong name should raise BufferError.
             let capsule = unsafe {
                 pyo3::ffi::PyCapsule_New(
@@ -418,7 +415,7 @@ mod tests {
                 )
             };
             assert!(!capsule.is_null());
-            let capsule_obj = unsafe { PyObject::from_owned_ptr(py, capsule) };
+            let capsule_obj = unsafe { Bound::from_owned_ptr(py, capsule).unbind() };
 
             // Build a fake object that returns our capsule from __hurray_buffer__.
             // We can't easily do this in a unit test without a full Python class,

@@ -10,11 +10,10 @@
 //! `hurray_io::Error::Core` → `hurray.InvalidDescriptorError`
 //! All other `hurray_io::Error` variants → `hurray.FileError`
 
-// PyO3 0.22 macro expansion emits a redundant .into() — false positive.
-#![allow(clippy::useless_conversion)]
-
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
+#[cfg(test)]
+use pyo3::IntoPyObjectExt;
 
 use hurray_io::file::{FileReader, FileTensor, FileWriter, KvValue};
 
@@ -113,7 +112,7 @@ fn py_to_kv_value(val: &Bound<'_, PyAny>) -> PyResult<KvValue> {
         return Ok(KvValue::Bytes(val.extract::<Vec<u8>>()?));
     }
     if val.is_instance_of::<PyList>() {
-        let list = val.downcast::<PyList>()?;
+        let list = val.cast::<PyList>()?;
         if list.is_empty() {
             return Err(FileError::new_err("KV array must not be empty"));
         }
@@ -173,7 +172,7 @@ pub fn load(
 ) -> PyResult<Bound<'_, PyDict>> {
     // Release GIL while doing async file I/O.
     let file_tensors = py
-        .allow_threads(|| -> hurray_io::Result<Vec<(String, FileTensor)>> {
+        .detach(|| -> hurray_io::Result<Vec<(String, FileTensor)>> {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -198,7 +197,7 @@ pub fn load(
         .map_err(io_err_to_py)?;
 
     // GIL re-acquired: build Python dict.
-    let dict = PyDict::new_bound(py);
+    let dict = PyDict::new(py);
     for (name, ft) in file_tensors {
         let tensor = file_tensor_to_tensor(py, ft)?;
         dict.set_item(name, tensor)?;
@@ -268,7 +267,7 @@ pub fn save(
     };
 
     // Release GIL while doing async file I/O.
-    py.allow_threads(|| -> hurray_io::Result<()> {
+    py.detach(|| -> hurray_io::Result<()> {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -297,13 +296,13 @@ mod tests {
     use super::*;
 
     fn init_python() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
     }
 
     #[test]
     fn load_nonexistent_file_raises_file_error() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = load(
                 py,
                 "/nonexistent/path/does_not_exist.hrry".to_string(),
@@ -321,8 +320,8 @@ mod tests {
     #[test]
     fn save_to_invalid_path_raises_file_error() {
         init_python();
-        Python::with_gil(|py| {
-            let dict = PyDict::new_bound(py);
+        Python::attach(|py| {
+            let dict = PyDict::new(py);
             let result = save(py, "/nonexistent/dir/out.hrry".to_string(), &dict, None);
             assert!(result.is_err());
             let err = result.unwrap_err();
@@ -336,8 +335,8 @@ mod tests {
     #[test]
     fn py_to_kv_value_bool() {
         init_python();
-        Python::with_gil(|py| {
-            let val = pyo3::types::PyBool::new_bound(py, true);
+        Python::attach(|py| {
+            let val = pyo3::types::PyBool::new(py, true);
             let kv = py_to_kv_value(val.as_any()).unwrap();
             assert_eq!(kv, KvValue::Bool(true));
         });
@@ -346,9 +345,9 @@ mod tests {
     #[test]
     fn py_to_kv_value_int() {
         init_python();
-        Python::with_gil(|py| {
-            // PyO3 0.22: create a Python int by converting from Rust
-            let obj = 42_i64.into_py(py);
+        Python::attach(|py| {
+            // Create a Python int by converting from Rust
+            let obj = 42_i64.into_py_any(py).unwrap();
             let val = obj.bind(py);
             let kv = py_to_kv_value(val).unwrap();
             assert_eq!(kv, KvValue::Int64(42));
@@ -358,8 +357,8 @@ mod tests {
     #[test]
     fn py_to_kv_value_float() {
         init_python();
-        Python::with_gil(|py| {
-            let val = pyo3::types::PyFloat::new_bound(py, 2.5);
+        Python::attach(|py| {
+            let val = pyo3::types::PyFloat::new(py, 2.5);
             let kv = py_to_kv_value(val.as_any()).unwrap();
             assert!(matches!(kv, KvValue::Float64(v) if (v - 2.5).abs() < 1e-10));
         });
@@ -368,8 +367,8 @@ mod tests {
     #[test]
     fn py_to_kv_value_str() {
         init_python();
-        Python::with_gil(|py| {
-            let val = pyo3::types::PyString::new_bound(py, "hello");
+        Python::attach(|py| {
+            let val = pyo3::types::PyString::new(py, "hello");
             let kv = py_to_kv_value(val.as_any()).unwrap();
             assert_eq!(kv, KvValue::String("hello".to_string()));
         });
@@ -378,8 +377,8 @@ mod tests {
     #[test]
     fn py_to_kv_value_bytes() {
         init_python();
-        Python::with_gil(|py| {
-            let val = pyo3::types::PyBytes::new_bound(py, b"raw");
+        Python::attach(|py| {
+            let val = pyo3::types::PyBytes::new(py, b"raw");
             let kv = py_to_kv_value(val.as_any()).unwrap();
             assert_eq!(kv, KvValue::Bytes(b"raw".to_vec()));
         });
@@ -388,8 +387,8 @@ mod tests {
     #[test]
     fn py_to_kv_value_list_of_ints() {
         init_python();
-        Python::with_gil(|py| {
-            let list = PyList::new_bound(py, [1i64, 2, 3]);
+        Python::attach(|py| {
+            let list = PyList::new(py, [1i64, 2, 3]).unwrap();
             let kv = py_to_kv_value(list.as_any()).unwrap();
             assert_eq!(
                 kv,
@@ -405,9 +404,9 @@ mod tests {
     #[test]
     fn py_to_kv_value_empty_list_is_error() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let list: &[i64] = &[];
-            let list = PyList::new_bound(py, list);
+            let list = PyList::new(py, list).unwrap();
             let result = py_to_kv_value(list.as_any());
             assert!(result.is_err());
         });
@@ -416,7 +415,7 @@ mod tests {
     #[test]
     fn file_and_stream_error_are_os_errors() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             assert!(FileError::new_err("x").is_instance_of::<pyo3::exceptions::PyOSError>(py));
             assert!(crate::errors::StreamError::new_err("x")
                 .is_instance_of::<pyo3::exceptions::PyOSError>(py));

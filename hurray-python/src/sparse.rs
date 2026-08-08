@@ -13,11 +13,9 @@
 //!
 //! Attributes that don't apply to the active format raise `AttributeError` (D10).
 
-// PyO3 0.22 macro expansion emits a redundant .into() on PyErr — suppress.
-#![allow(clippy::useless_conversion)]
-
 use pyo3::prelude::*;
 use pyo3::types::PyTuple;
+use pyo3::IntoPyObjectExt;
 
 use hurray_core::{
     layout::{CooLayout, CscLayout, CsrLayout},
@@ -140,20 +138,20 @@ impl SparseTensor {
     #[getter]
     pub fn shape(&self, py: Python<'_>) -> PyResult<Py<PyTuple>> {
         use hurray_core::DYNAMIC;
-        let items: Vec<PyObject> = self
+        let items: Vec<Py<PyAny>> = self
             .descriptor
             .shape
             .dims()
             .iter()
-            .map(|&dim| {
+            .map(|&dim| -> PyResult<Py<PyAny>> {
                 if dim == DYNAMIC {
-                    py.None()
+                    Ok(py.None())
                 } else {
-                    dim.to_object(py)
+                    dim.into_py_any(py)
                 }
             })
-            .collect();
-        Ok(PyTuple::new_bound(py, items).unbind())
+            .collect::<PyResult<_>>()?;
+        Ok(PyTuple::new(py, items)?.unbind())
     }
 
     /// Number of dimensions (rank) of this sparse tensor.
@@ -224,7 +222,7 @@ impl SparseTensor {
     /// assert vals.shape == (sparse.nnz,)
     /// ```
     #[getter]
-    pub fn values(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+    pub fn values(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let s = slf.borrow();
         let nnz = s.nnz();
@@ -249,7 +247,7 @@ impl SparseTensor {
             ptr,
             len,
         )?;
-        Ok(Py::new(py, tensor)?.into_py(py))
+        Ok(Py::new(py, tensor)?.into_any())
     }
 
     /// A `hurray.Tensor` view over the COO index buffer (shape `[nnz, rank]`, dtype `uint64`).
@@ -263,7 +261,7 @@ impl SparseTensor {
     /// assert idx.shape == (sparse.nnz, sparse.ndim)
     /// ```
     #[getter]
-    pub fn indices(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+    pub fn indices(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let s = slf.borrow();
         // D10: attributes that don't apply to the current format raise AttributeError.
@@ -296,7 +294,7 @@ impl SparseTensor {
     /// assert col_idx.shape == (sparse.nnz,)
     /// ```
     #[getter]
-    pub fn col_indices(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+    pub fn col_indices(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let s = slf.borrow();
         // D10: attributes that don't apply to the current format raise AttributeError.
@@ -328,7 +326,7 @@ impl SparseTensor {
     /// assert rp.shape == (sparse.shape[0] + 1,)
     /// ```
     #[getter]
-    pub fn row_ptr(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+    pub fn row_ptr(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let s = slf.borrow();
         // D10: attributes that don't apply to the current format raise AttributeError.
@@ -366,7 +364,7 @@ impl SparseTensor {
     /// assert row_idx.shape == (sparse.nnz,)
     /// ```
     #[getter]
-    pub fn row_indices(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+    pub fn row_indices(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let s = slf.borrow();
         // D10: attributes that don't apply to the current format raise AttributeError.
@@ -398,7 +396,7 @@ impl SparseTensor {
     /// assert cp.shape == (sparse.shape[1] + 1,)
     /// ```
     #[getter]
-    pub fn col_ptr(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+    pub fn col_ptr(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let s = slf.borrow();
         // D10: attributes that don't apply to the current format raise AttributeError.
@@ -450,7 +448,7 @@ impl SparseTensor {
     /// m = sparse.to_scipy()
     /// assert isinstance(m, scipy.sparse.csr_matrix)
     /// ```
-    pub fn to_scipy(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+    pub fn to_scipy(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         {
             let s = slf.borrow();
@@ -470,7 +468,7 @@ impl SparseTensor {
         }
 
         // D7-pattern: import scipy lazily — hurray must not require scipy at module load.
-        let sp = py.import_bound("scipy.sparse").map_err(|_| {
+        let sp = py.import("scipy.sparse").map_err(|_| {
             pyo3::exceptions::PyImportError::new_err(
                 "scipy is not installed; install with: pip install scipy",
             )
@@ -523,12 +521,12 @@ impl SparseTensor {
         };
         let aux1_arr = aux1_py.bind(py).call_method0("__array__")?;
 
-        let kwargs = pyo3::types::PyDict::new_bound(py);
-        kwargs.set_item("shape", PyTuple::new_bound(py, [nrows, ncols]))?;
+        let kwargs = pyo3::types::PyDict::new(py);
+        kwargs.set_item("shape", PyTuple::new(py, [nrows, ncols])?)?;
         kwargs.set_item("copy", false)?;
 
         // csr_matrix((data, indices, indptr), shape=..., copy=False)
-        let args = PyTuple::new_bound(py, [&values_arr, &aux0_arr, &aux1_arr]);
+        let args = PyTuple::new(py, [&values_arr, &aux0_arr, &aux1_arr])?;
         let constructor_name = match fmt {
             SparseFormat::Csr => "csr_matrix",
             SparseFormat::Csc => "csc_matrix",
@@ -645,7 +643,7 @@ fn format_content_arrays(slf: &Bound<'_, SparseTensor>) -> PyResult<String> {
     let py = slf.py();
     // Content rendering needs numpy (the Tensor views format through it). If numpy is
     // absent, bail here so __repr__ falls back cleanly to the metadata string.
-    py.import_bound("numpy")?;
+    py.import("numpy")?;
 
     let fmt = slf.borrow().format;
 
@@ -655,7 +653,7 @@ fn format_content_arrays(slf: &Bound<'_, SparseTensor>) -> PyResult<String> {
     /// dense display) rather than `__array__`/DLPack, which does not work for the
     /// borrowed buffer views the sparse accessors return. `__str__` yields the compact
     /// inline `[1. 2. 3.]` form (NumPy's default separator), matching PyTorch's style.
-    fn tensor_to_str(py: Python<'_>, tensor_obj: PyObject) -> PyResult<String> {
+    fn tensor_to_str(py: Python<'_>, tensor_obj: Py<PyAny>) -> PyResult<String> {
         tensor_obj.bind(py).str()?.extract::<String>()
     }
 
@@ -695,7 +693,7 @@ pub(crate) fn build_uint64_view(
     ptr: *mut u8,
     len: usize,
     shape: Shape,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     let tensor = Tensor::new_borrowed_view(
         py,
         ElementType::Uint64,
@@ -706,7 +704,7 @@ pub(crate) fn build_uint64_view(
         ptr,
         len,
     )?;
-    Ok(Py::new(py, tensor)?.into_py(py))
+    Ok(Py::new(py, tensor)?.into_any())
 }
 
 /// Build a `SparseTensor` from three pre-validated component buffers and a descriptor.
@@ -904,18 +902,18 @@ mod tests {
     use pyo3::Python;
 
     fn init() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
     }
 
     fn build_module(py: Python<'_>) -> pyo3::Bound<'_, pyo3::types::PyModule> {
-        let m = pyo3::types::PyModule::new_bound(py, "hurray").unwrap();
+        let m = pyo3::types::PyModule::new(py, "hurray").unwrap();
         crate::errors::register(&m).unwrap();
         crate::dtype::register(&m).unwrap();
         crate::device::register(&m).unwrap();
         crate::tensor::register(&m).unwrap();
         crate::print_options::register(&m).unwrap();
         register(&m).unwrap();
-        let sys = py.import_bound("sys").unwrap();
+        let sys = py.import("sys").unwrap();
         let modules = sys.getattr("modules").unwrap();
         modules.set_item("hurray", &m).unwrap();
         m
@@ -1099,7 +1097,7 @@ mod tests {
     #[test]
     fn csr_properties() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let sparse = make_csr(py);
             assert_eq!(sparse.format(), "csr");
@@ -1111,7 +1109,7 @@ mod tests {
     #[test]
     fn csr_shape_tuple() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let sparse = make_csr(py);
             let shape = sparse.shape(py).unwrap();
@@ -1123,7 +1121,7 @@ mod tests {
     #[test]
     fn csr_repr_contains_fields() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             // __repr__ now takes &Bound<Self>; wrap the bare struct first.
             let sparse = Py::new(py, make_csr(py)).unwrap();
@@ -1140,7 +1138,7 @@ mod tests {
     #[test]
     fn sparse_str_equals_repr() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             // __repr__ and __str__ now take &Bound<Self>; wrap the bare struct first.
             let sparse = Py::new(py, make_csr(py)).unwrap();
@@ -1156,7 +1154,7 @@ mod tests {
     #[test]
     fn csr_is_unhashable() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let sparse = make_csr(py);
             let err = sparse.__hash__().unwrap_err();
@@ -1167,7 +1165,7 @@ mod tests {
     #[test]
     fn csr_indices_attribute_error() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
@@ -1182,7 +1180,7 @@ mod tests {
     #[test]
     fn csc_col_indices_attribute_error() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             // Build a CSC variant.
             let values: Vec<u8> = [1.0f32, 2.0].iter().flat_map(|f| f.to_le_bytes()).collect();
@@ -1243,7 +1241,7 @@ mod tests {
     #[test]
     fn csr_values_view_shape_and_dtype() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
@@ -1263,7 +1261,7 @@ mod tests {
     #[test]
     fn csr_row_ptr_view_shape() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
@@ -1282,7 +1280,7 @@ mod tests {
     #[test]
     fn csr_col_indices_view_shape() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
@@ -1297,7 +1295,7 @@ mod tests {
     #[test]
     fn coo_to_scipy_raises_unsupported() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             // Build a COO SparseTensor
             let values: Vec<u8> = [1.0f32].iter().flat_map(|f| f.to_le_bytes()).collect();
@@ -1373,7 +1371,7 @@ mod tests {
     #[test]
     fn default_display_is_metadata_csr() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             // Ensure we start in metadata mode (in case another test leaked state).
             reset_sparse_display(py);
@@ -1407,7 +1405,7 @@ mod tests {
     #[test]
     fn default_display_is_metadata_coo() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             reset_sparse_display(py);
             let sparse = Py::new(py, make_coo(py)).unwrap();
@@ -1428,7 +1426,7 @@ mod tests {
     #[test]
     fn default_display_is_metadata_csc() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             reset_sparse_display(py);
             let sparse = Py::new(py, make_csc(py)).unwrap();
@@ -1460,7 +1458,7 @@ mod tests {
     #[test]
     fn content_mode_csr_contextvar_is_set_and_repr_does_not_raise() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             reset_sparse_display(py);
             crate::print_options::set_print_options(py, Some("content")).unwrap();
@@ -1488,7 +1486,7 @@ mod tests {
 
             // When NumPy is available: also assert the array labels.
             // When NumPy is absent: __repr__ falls back silently to metadata (Job 2.8).
-            let numpy_available = py.import_bound("numpy").is_ok();
+            let numpy_available = py.import("numpy").is_ok();
             if numpy_available {
                 assert!(
                     r.contains("values="),
@@ -1516,7 +1514,7 @@ mod tests {
     #[test]
     fn content_mode_coo_contextvar_is_set_and_repr_does_not_raise() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             reset_sparse_display(py);
             crate::print_options::set_print_options(py, Some("content")).unwrap();
@@ -1531,7 +1529,7 @@ mod tests {
                 "repr must contain format (got: {r})"
             );
 
-            let numpy_available = py.import_bound("numpy").is_ok();
+            let numpy_available = py.import("numpy").is_ok();
             if numpy_available {
                 assert!(
                     r.contains("indices="),
@@ -1555,7 +1553,7 @@ mod tests {
     #[test]
     fn content_mode_csc_contextvar_is_set_and_repr_does_not_raise() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             reset_sparse_display(py);
             crate::print_options::set_print_options(py, Some("content")).unwrap();
@@ -1570,7 +1568,7 @@ mod tests {
                 "repr must contain format (got: {r})"
             );
 
-            let numpy_available = py.import_bound("numpy").is_ok();
+            let numpy_available = py.import("numpy").is_ok();
             if numpy_available {
                 assert!(
                     r.contains("values="),
@@ -1600,14 +1598,14 @@ mod tests {
     #[test]
     fn content_mode_fallback_to_metadata_when_numpy_absent() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             reset_sparse_display(py);
 
             // Only exercise the "fallback" branch when numpy really is absent.
             // When numpy is present this test still passes (repr succeeds), but we
             // cannot assert the metadata-only form because arrays will be present.
-            let numpy_available = py.import_bound("numpy").is_ok();
+            let numpy_available = py.import("numpy").is_ok();
             if numpy_available {
                 // Nothing to assert about the fallback path; skip.
                 return;
@@ -1646,7 +1644,7 @@ mod tests {
     #[test]
     fn str_equals_repr_in_content_mode() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             reset_sparse_display(py);
             crate::print_options::set_print_options(py, Some("content")).unwrap();
@@ -1667,11 +1665,11 @@ mod tests {
     #[test]
     fn get_print_options_returns_metadata_by_default() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             reset_sparse_display(py);
             let opts = crate::print_options::get_print_options(py).unwrap();
-            // get_print_options returns a PyObject (PyDict); extract "sparse_display" via Python.
+            // get_print_options returns a Py<PyAny> (PyDict); extract "sparse_display" via Python.
             let v: String = opts
                 .bind(py)
                 .get_item("sparse_display")
@@ -1685,7 +1683,7 @@ mod tests {
     #[test]
     fn get_print_options_reflects_content_after_set() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             reset_sparse_display(py);
             crate::print_options::set_print_options(py, Some("content")).unwrap();
@@ -1708,7 +1706,7 @@ mod tests {
     #[test]
     fn print_options_ctx_scopes_and_restores() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             reset_sparse_display(py);
 
@@ -1736,7 +1734,7 @@ mod tests {
                 r.starts_with("hurray.SparseTensor("),
                 "repr inside ctx must be well-formed (got: {r})"
             );
-            if py.import_bound("numpy").is_ok() {
+            if py.import("numpy").is_ok() {
                 assert!(
                     r.contains("values="),
                     "repr inside ctx must be content when numpy present (got: {r})"
@@ -1761,7 +1759,7 @@ mod tests {
     #[test]
     fn print_options_ctx_nested_restores_correctly() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             reset_sparse_display(py);
 
@@ -1811,7 +1809,7 @@ mod tests {
     #[test]
     fn set_print_options_invalid_value_raises_value_error() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let result = crate::print_options::set_print_options(py, Some("foo"));
             assert!(result.is_err(), "invalid value must return Err");
@@ -1827,7 +1825,7 @@ mod tests {
     #[test]
     fn print_options_ctx_invalid_value_raises_value_error() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let result = crate::print_options::PrintOptionsCtx::new(Some("bad".to_owned()));
             assert!(
@@ -1850,7 +1848,7 @@ mod tests {
     #[test]
     fn content_mode_does_not_affect_dense_tensor_repr() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // Dense Tensor needs its own build_module; reuse the one from this module
             // which already has tensor registered.
             let _m = build_module(py);
@@ -1860,7 +1858,7 @@ mod tests {
             use pyo3::types::PyBytes;
             let floats: [f32; 4] = [1.0, 2.0, 3.0, 4.0];
             let buf: Vec<u8> = floats.iter().flat_map(|f| f.to_le_bytes()).collect();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {

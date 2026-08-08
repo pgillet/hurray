@@ -14,9 +14,6 @@
 //! separate arrays while Hurray requires a single packed `[nnz, rank]` uint64
 //! index buffer (D19).
 
-// PyO3 0.22 macro expansion emits a redundant .into() on PyErr — suppress.
-#![allow(clippy::useless_conversion)]
-
 use pyo3::prelude::*;
 
 use hurray_core::{ElementType, Shape};
@@ -81,7 +78,7 @@ use crate::sparse::{
 #[pyfunction]
 pub fn from_scipy(py: Python<'_>, matrix: &Bound<'_, PyAny>) -> PyResult<SparseTensor> {
     // D7-pattern: import scipy lazily — hurray must not require scipy at module load.
-    py.import_bound("scipy.sparse").map_err(|_| {
+    py.import("scipy.sparse").map_err(|_| {
         pyo3::exceptions::PyImportError::new_err(
             "scipy is not installed; install with: pip install scipy",
         )
@@ -254,7 +251,7 @@ mod tests {
     use pyo3::Python;
 
     fn init() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
     }
 
     /// Check that `from_scipy` raises `UnsupportedError` for COO matrices.
@@ -262,14 +259,16 @@ mod tests {
     #[test]
     fn from_scipy_rejects_coo() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             // If scipy is not available, skip.
-            if py.import_bound("scipy.sparse").is_err() {
+            if py.import("scipy.sparse").is_err() {
                 return;
             }
             // Build a tiny COO matrix via Python eval.
             let code = "import scipy.sparse as sp, numpy as np; sp.coo_matrix(np.eye(3))";
-            let m = py.eval_bound(code, None, None).unwrap();
+            let m = py
+                .eval(&std::ffi::CString::new(code).unwrap(), None, None)
+                .unwrap();
             let result = from_scipy(py, &m);
             assert!(result.is_err());
             let err = result.unwrap_err();
@@ -283,12 +282,14 @@ mod tests {
     #[test]
     fn from_scipy_rejects_lil() {
         init();
-        Python::with_gil(|py| {
-            if py.import_bound("scipy.sparse").is_err() {
+        Python::attach(|py| {
+            if py.import("scipy.sparse").is_err() {
                 return;
             }
             let code = "import scipy.sparse as sp, numpy as np; sp.lil_matrix(np.eye(2))";
-            let m = py.eval_bound(code, None, None).unwrap();
+            let m = py
+                .eval(&std::ffi::CString::new(code).unwrap(), None, None)
+                .unwrap();
             let result = from_scipy(py, &m);
             assert!(result.is_err());
             assert!(result.unwrap_err().is_instance_of::<UnsupportedError>(py));
@@ -298,8 +299,8 @@ mod tests {
     #[test]
     fn from_scipy_rejects_non_uint64_indices() {
         init();
-        Python::with_gil(|py| {
-            if py.import_bound("scipy.sparse").is_err() {
+        Python::attach(|py| {
+            if py.import("scipy.sparse").is_err() {
                 return;
             }
             // Build a CSR matrix — SciPy defaults to int32 indices.
@@ -307,7 +308,9 @@ mod tests {
 import scipy.sparse as sp, numpy as np
 sp.csr_matrix(np.array([[1.0, 0.0],[0.0, 2.0]], dtype=np.float32))
 "#;
-            let m = py.eval_bound(code, None, None).unwrap();
+            let m = py
+                .eval(&std::ffi::CString::new(code).unwrap(), None, None)
+                .unwrap();
             let result = from_scipy(py, &m);
             assert!(result.is_err());
             assert!(
@@ -320,8 +323,8 @@ sp.csr_matrix(np.array([[1.0, 0.0],[0.0, 2.0]], dtype=np.float32))
     #[test]
     fn from_scipy_csr_succeeds_with_uint64_indices() {
         init();
-        Python::with_gil(|py| {
-            if py.import_bound("scipy.sparse").is_err() {
+        Python::attach(|py| {
+            if py.import("scipy.sparse").is_err() {
                 return;
             }
             let code = r#"
@@ -331,7 +334,9 @@ m.indices = m.indices.astype(np.uint64)
 m.indptr  = m.indptr.astype(np.uint64)
 m
 "#;
-            let m = py.eval_bound(code, None, None).unwrap();
+            let m = py
+                .eval(&std::ffi::CString::new(code).unwrap(), None, None)
+                .unwrap();
             let sparse =
                 from_scipy(py, &m).expect("from_scipy should succeed for CSR with uint64 indices");
             assert_eq!(sparse.format(), "csr");

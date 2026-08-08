@@ -5,9 +5,6 @@
 //! meaningful fill/step semantics here and are rejected with `hurray.UnsupportedError`;
 //! such tensors are produced by the interop and decode paths instead.
 
-// PyO3 0.22 macro expansion emits a redundant .into() on PyErr — suppress.
-#![allow(clippy::useless_conversion)]
-
 use hurray_core::{
     buffer_size_bytes, BufferHandle, DeviceTag, ElementType, LayoutDescriptor, MemoryClass, Shape,
     SyncMode, TensorDescriptor, DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR,
@@ -15,6 +12,8 @@ use hurray_core::{
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyComplex, PyFloat, PyInt};
+#[cfg(test)]
+use pyo3::IntoPyObjectExt;
 
 use crate::buffer::BufferStore;
 use crate::device::Device;
@@ -947,7 +946,7 @@ pub fn asarray(
 
     // Route through numpy: covers lists, numpy arrays, objects with __array__,
     // and objects with __dlpack__ (numpy ≥ 1.22 calls __dlpack__ transparently).
-    let np = py.import_bound("numpy")?;
+    let np = py.import("numpy")?;
 
     let arr = if let Some(et) = target_et {
         let np_dtype_name = to_numpy_dtype_name(et).ok_or_else(|| {
@@ -1028,17 +1027,17 @@ mod tests {
     use pyo3::Python;
 
     fn init() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
     }
 
     fn build_module(py: Python<'_>) -> pyo3::Bound<'_, pyo3::types::PyModule> {
-        let m = pyo3::types::PyModule::new_bound(py, "hurray").unwrap();
+        let m = pyo3::types::PyModule::new(py, "hurray").unwrap();
         crate::errors::register(&m).unwrap();
         crate::dtype::register(&m).unwrap();
         crate::device::register(&m).unwrap();
         crate::tensor::register(&m).unwrap();
         register(&m).unwrap();
-        let sys = py.import_bound("sys").unwrap();
+        let sys = py.import("sys").unwrap();
         let modules = sys.getattr("modules").unwrap();
         modules.set_item("hurray", &m).unwrap();
         m
@@ -1047,7 +1046,7 @@ mod tests {
     #[test]
     fn zeros_float64_default_dtype() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let t = zeros(py, vec![2, 3], None, None).unwrap();
             assert_eq!(t.descriptor.element_type, ElementType::Float64);
@@ -1063,7 +1062,7 @@ mod tests {
     #[test]
     fn ones_float32_pattern() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             // Build dtype object.
             let dtype_obj = Py::new(
@@ -1084,7 +1083,7 @@ mod tests {
     #[test]
     fn ones_bool_bit_packing() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let dtype_obj = Py::new(
                 py,
@@ -1105,9 +1104,9 @@ mod tests {
     #[test]
     fn full_int32_scalar() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
-            let fill_val_py = (42i32).into_py(py);
+            let fill_val_py = (42i32).into_py_any(py).unwrap();
             let fill_val = fill_val_py.bind(py);
             let dtype_obj = Py::new(
                 py,
@@ -1133,11 +1132,11 @@ mod tests {
     #[test]
     fn arange_int() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
-            let start_py = (0i64).into_py(py);
+            let start_py = (0i64).into_py_any(py).unwrap();
             let start = start_py.bind(py);
-            let stop_py = (5i64).into_py(py);
+            let stop_py = (5i64).into_py_any(py).unwrap();
             let stop = stop_py.bind(py);
             let t = arange(py, start, Some(stop), None, None, None).unwrap();
             assert_eq!(t.descriptor.element_type, ElementType::Int64);
@@ -1153,9 +1152,9 @@ mod tests {
     #[test]
     fn arange_single_arg() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
-            let stop_py = (3i64).into_py(py);
+            let stop_py = (3i64).into_py_any(py).unwrap();
             let stop = stop_py.bind(py);
             let t = arange(py, stop, None, None, None, None).unwrap();
             assert_eq!(t.descriptor.shape.dims(), &[3]);
@@ -1165,7 +1164,7 @@ mod tests {
     #[test]
     fn linspace_five_points() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let t = linspace(py, 0.0, 1.0, 5, None, None, true).unwrap();
             assert_eq!(t.descriptor.element_type, ElementType::Float64);
@@ -1181,7 +1180,7 @@ mod tests {
     #[test]
     fn linspace_no_endpoint() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             // endpoint=False: 4 elements in [0, 1), step = 0.25.
             let t = linspace(py, 0.0, 1.0, 4, None, None, false).unwrap();
@@ -1196,7 +1195,7 @@ mod tests {
     #[test]
     fn eye_3x3_float64() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let t = eye(py, 3, None, 0, None, None).unwrap();
             assert_eq!(t.descriptor.shape.dims(), &[3, 3]);
@@ -1212,7 +1211,7 @@ mod tests {
     #[test]
     fn eye_bool_diagonal() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let dtype_obj = Py::new(
                 py,
@@ -1236,7 +1235,7 @@ mod tests {
     #[test]
     fn tier2_dtype_rejected() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let dtype_obj = Py::new(
                 py,
@@ -1254,7 +1253,7 @@ mod tests {
     #[test]
     fn zeros_empty_shape() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             // Shape [0] → 0 elements → empty buffer is valid.
             let t = zeros(py, vec![0], None, None).unwrap();

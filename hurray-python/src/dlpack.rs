@@ -14,9 +14,6 @@
 //! treat NULL strides as C-contiguous. Explicit strides are only emitted for layouts
 //! that are genuinely non-contiguous.
 
-// PyO3 0.22 false positive on useless conversions inside macro-generated code.
-#![allow(clippy::useless_conversion)]
-
 use std::os::raw::{c_int, c_uint, c_void};
 
 use hurray_core::{DeviceTag, ElementType, LayoutDescriptor, MemoryClass};
@@ -125,7 +122,7 @@ struct DLPackPayload {
     /// Kept for its drop side-effect: keeps the Tensor (and its buffer) alive for the
     /// capsule's lifetime. Never read — the value matters, not what's in it.
     #[allow(dead_code)]
-    tensor_ref: PyObject,
+    tensor_ref: Py<PyAny>,
     shape: Box<[i64]>,
     /// `None` for row-major (DLPack NULL strides convention, D3).
     strides: Option<Box<[i64]>>,
@@ -156,7 +153,7 @@ pub unsafe extern "C" fn dlpack_deleter(managed: *mut DLManagedTensorVersioned) 
 /// the consumer is responsible — nothing to do.
 ///
 /// # Safety
-/// Called by the Python GC with a valid `PyObject*` pointing to a PyCapsule.
+/// Called by the Python GC with a valid `Py<PyAny>*` pointing to a PyCapsule.
 unsafe extern "C" fn capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
     let name = pyo3::ffi::PyCapsule_GetName(capsule);
     if name.is_null() {
@@ -201,14 +198,14 @@ pub const DLPACK_CAPSULE_NAME: &std::ffi::CStr = c"dltensor_versioned";
 #[allow(clippy::too_many_arguments)]
 pub fn build_capsule(
     py: Python<'_>,
-    tensor_obj: PyObject,
+    tensor_obj: Py<PyAny>,
     data_ptr: *mut c_void,
     element_type: ElementType,
     shape: &[u64],
     layout: &LayoutDescriptor,
     device_type: c_int,
     device_id: i32,
-) -> PyResult<PyObject> {
+) -> PyResult<Py<PyAny>> {
     // 1. Resolve DLDataType — fails for bool/int4/float8/quantized (D9).
     let dl_dtype = element_type_to_dlpack(element_type).ok_or_else(|| {
         pyo3::exceptions::PyBufferError::new_err(format!(
@@ -302,7 +299,7 @@ pub fn build_capsule(
     }
 
     // SAFETY: PyCapsule_New returned a non-null owned reference.
-    Ok(unsafe { PyObject::from_owned_ptr(py, capsule) })
+    Ok(unsafe { Bound::from_owned_ptr(py, capsule).unbind() })
 }
 
 // ── Type mapping helpers ───────────────────────────────────────────────────────
@@ -477,8 +474,8 @@ mod tests {
 
     #[test]
     fn cpu_standard_dlpack_device() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|_py| {
+        pyo3::Python::initialize();
+        Python::attach(|_py| {
             let code = device_to_dlpack(DeviceTag::Cpu, MemoryClass::Standard).unwrap();
             assert_eq!(code, DLDeviceType::Cpu as c_int);
         });
@@ -486,8 +483,8 @@ mod tests {
 
     #[test]
     fn rocm_unified_raises_unsupported() {
-        pyo3::prepare_freethreaded_python();
-        Python::with_gil(|py| {
+        pyo3::Python::initialize();
+        Python::attach(|py| {
             let result = device_to_dlpack(DeviceTag::Rocm, MemoryClass::Unified);
             assert!(result.is_err());
             assert!(result.unwrap_err().is_instance_of::<UnsupportedError>(py));

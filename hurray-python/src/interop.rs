@@ -4,9 +4,6 @@
 //! into the source object's buffer and holding a strong Python reference to
 //! keep the source alive for the Tensor's lifetime.
 
-// PyO3 0.22 macro expansion emits a redundant .into() on PyErr — suppress.
-#![allow(clippy::useless_conversion)]
-
 use hurray_core::{
     BufferHandle, LayoutDescriptor, MemoryClass, Shape, SyncMode, TensorDescriptor,
     DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR,
@@ -173,7 +170,7 @@ pub fn from_numpy(py: Python<'_>, array: &Bound<'_, PyAny>) -> PyResult<Tensor> 
 #[pyfunction]
 pub fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Tensor> {
     // D7: import torch at call time to avoid a hard dependency at module load.
-    let _ = py.import_bound("torch").map_err(|_| {
+    let _ = py.import("torch").map_err(|_| {
         pyo3::exceptions::PyImportError::new_err(
             "torch is not installed; install it with: pip install torch",
         )
@@ -191,10 +188,10 @@ pub fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Tensor>
 /// Renames the capsule from `"dltensor_versioned"` to `"used_dltensor_versioned"`
 /// (taking ownership) and registers a Python finalizer that calls the DLPack
 /// `deleter` when the resulting `Tensor` is garbage collected.
-pub(crate) fn from_dlpack_capsule(py: Python<'_>, capsule: PyObject) -> PyResult<Tensor> {
+pub(crate) fn from_dlpack_capsule(py: Python<'_>, capsule: Py<PyAny>) -> PyResult<Tensor> {
     // Use numpy.from_dlpack to do the heavy lifting: it handles capsule ownership,
     // producer synchronisation, and produces a CPU ndarray we can then wrap.
-    let np = py.import_bound("numpy")?;
+    let np = py.import("numpy")?;
     let arr = np.call_method1("from_dlpack", (&capsule,))?;
     // Recursively wrap the resulting ndarray via from_numpy.
     from_numpy(py, &arr)

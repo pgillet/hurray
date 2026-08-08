@@ -21,9 +21,6 @@
 //! └── hurray.StreamError             — streaming framing errors (Layer 8b)
 //! ```
 
-// PyO3 0.22 macro expansion emits a redundant .into() on PyErr — false positive.
-#![allow(clippy::useless_conversion)]
-
 use pyo3::prelude::*;
 
 pyo3::create_exception!(
@@ -96,20 +93,14 @@ pyo3::create_exception!(
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "InvalidDescriptorError",
-        m.py().get_type_bound::<InvalidDescriptorError>(),
+        m.py().get_type::<InvalidDescriptorError>(),
     )?;
-    m.add("BufferError", m.py().get_type_bound::<BufferError>())?;
-    m.add(
-        "CopyRequiredError",
-        m.py().get_type_bound::<CopyRequiredError>(),
-    )?;
-    m.add(
-        "UnsupportedError",
-        m.py().get_type_bound::<UnsupportedError>(),
-    )?;
-    m.add("InternalError", m.py().get_type_bound::<InternalError>())?;
-    m.add("FileError", m.py().get_type_bound::<FileError>())?;
-    m.add("StreamError", m.py().get_type_bound::<StreamError>())?;
+    m.add("BufferError", m.py().get_type::<BufferError>())?;
+    m.add("CopyRequiredError", m.py().get_type::<CopyRequiredError>())?;
+    m.add("UnsupportedError", m.py().get_type::<UnsupportedError>())?;
+    m.add("InternalError", m.py().get_type::<InternalError>())?;
+    m.add("FileError", m.py().get_type::<FileError>())?;
+    m.add("StreamError", m.py().get_type::<StreamError>())?;
     Ok(())
 }
 
@@ -155,13 +146,13 @@ mod tests {
     use super::*;
 
     fn init_python() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
     }
 
     #[test]
     fn invalid_descriptor_error_is_value_error() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let err = InvalidDescriptorError::new_err("bad descriptor");
             assert!(err.is_instance_of::<InvalidDescriptorError>(py));
             assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
@@ -171,7 +162,7 @@ mod tests {
     #[test]
     fn buffer_error_is_value_error() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let err = BufferError::new_err("misaligned");
             assert!(err.is_instance_of::<BufferError>(py));
             assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
@@ -181,7 +172,7 @@ mod tests {
     #[test]
     fn copy_required_error_is_value_error() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let err = CopyRequiredError::new_err("cast required");
             assert!(err.is_instance_of::<CopyRequiredError>(py));
             assert!(err.is_instance_of::<pyo3::exceptions::PyValueError>(py));
@@ -191,7 +182,7 @@ mod tests {
     #[test]
     fn unsupported_error_is_not_implemented_error() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let err = UnsupportedError::new_err("int4 not supported here");
             assert!(err.is_instance_of::<UnsupportedError>(py));
             assert!(err.is_instance_of::<pyo3::exceptions::PyNotImplementedError>(py));
@@ -201,7 +192,7 @@ mod tests {
     #[test]
     fn internal_error_is_runtime_error() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let err = InternalError::new_err("unexpected state");
             assert!(err.is_instance_of::<InternalError>(py));
             assert!(err.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
@@ -211,10 +202,10 @@ mod tests {
     #[test]
     fn catch_panic_converts_str_panic() {
         init_python();
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             let result: PyResult<i32> = catch_panic(|| panic!("something broke"));
             let err = result.unwrap_err();
-            Python::with_gil(|py| {
+            Python::attach(|py| {
                 assert!(err.is_instance_of::<InternalError>(py));
                 assert!(err.to_string().contains("something broke"));
             });
@@ -230,7 +221,7 @@ mod tests {
     #[test]
     fn file_error_is_os_error() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let err = FileError::new_err("file not found");
             assert!(err.is_instance_of::<FileError>(py));
             assert!(err.is_instance_of::<pyo3::exceptions::PyOSError>(py));
@@ -240,7 +231,7 @@ mod tests {
     #[test]
     fn stream_error_is_os_error() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let err = StreamError::new_err("framing error");
             assert!(err.is_instance_of::<StreamError>(py));
             assert!(err.is_instance_of::<pyo3::exceptions::PyOSError>(py));
@@ -250,7 +241,7 @@ mod tests {
     #[test]
     fn catch_panic_passes_through_err() {
         init_python();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result: PyResult<i32> = catch_panic(|| Err(UnsupportedError::new_err("nope")));
             let err = result.unwrap_err();
             assert!(err.is_instance_of::<UnsupportedError>(py));
