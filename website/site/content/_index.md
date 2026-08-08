@@ -20,6 +20,10 @@ It defines two binary formats that share **one tensor descriptor encoding**:
 - **Zero-copy first** — buffers are shared by reference across runtimes and languages
   through a stable C ABI, with 64-byte SIMD alignment (streaming) and 4 KiB page alignment
   for mmap-to-GPU loading (file).
+- **Device-aware interchange** — every descriptor carries its device placement (device
+  tag — CPU, CUDA, ROCm, Metal, Vulkan, WebGPU, Hexagon, oneAPI, OpenCL — plus memory
+  class and sync mode), so tensors move across heterogeneous hardware and hand off
+  zero-copy to NumPy, PyTorch, JAX, and CuPy in the Python ecosystem.
 - **Rich layout vocabulary** — twelve layouts: row-major, column-major, strided,
   tiled/blocked, Morton, Hilbert, sparse COO/CSR/CSC/CSF, block-paged (PagedAttention KV
   cache), and composite.
