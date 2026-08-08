@@ -28,6 +28,15 @@ OUT="$ROOT/website/public"
 BASE_URL="${BASE_URL:-}"
 DEV_ONLY="${DEV_ONLY:-}"
 
+# GitHub Pages can report an http:// base_url for a custom domain even though the site is
+# served over https. Zola bakes base_url into every absolute asset URL, so an http base_url
+# yields http:// CSS/JS/logo links that an https page blocks as mixed content (the shell then
+# renders completely unstyled). Force https so assets load. (mdBook uses relative links and is
+# unaffected either way.)
+if [ -n "$BASE_URL" ]; then
+  BASE_URL="${BASE_URL/#http:/https:}"
+fi
+
 # Release tags follow the spec version: MAJOR.MINOR.PATCH with an optional -prerelease
 # suffix, no leading "v" (ADR-028, OQ-1).
 TAG_RE='^[0-9]+\.[0-9]+\.[0-9]+([-+].*)?$'
