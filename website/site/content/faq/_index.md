@@ -42,14 +42,18 @@ stay zero-copy.
 
 The format and its C FFI boundary are deliberately language-agnostic — any language that
 can read a struct from a buffer can implement Hurray. The reference implementation is in
-Rust, with a C ABI layer and Python bindings (`__dlpack__` zero-copy interop) planned.
+Rust (core types plus streaming and file I/O) and includes a C ABI layer and Python
+bindings. The Python bindings offer zero-copy interop with NumPy and PyTorch — via
+`__dlpack__` and a native Hurray buffer protocol — plus `save`/`load` for the file format.
+Bindings for other languages can build directly on the same C ABI. There is also a
+`hurray-inspect` command-line tool for examining Hurray descriptors byte by byte.
 
 ## Is the format stable yet?
 
 The specification is at `0.1.0-draft`. The format is designed to be evolvable —
 backward-compatible and forward-additive across the whole `1.x` line, with public tags
 never rebound — but it is pre-1.0 and may still change. See the
-[versioning policy](/docs/stable/spec/versioning.html) in the docs.
+[versioning policy](/docs/dev/spec/versioning.html) in the docs.
 
 ## Where do I report issues or ask questions?
 
