@@ -12,13 +12,11 @@
 //!
 //! See `buffer.rs` for the full safety contract.
 
-// PyO3 0.22 macro expansion emits a redundant .into() on PyErr — suppress.
-#![allow(clippy::useless_conversion)]
-
 use std::os::raw::c_void;
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyTuple};
+use pyo3::IntoPyObjectExt;
 
 use hurray_core::{
     buffer_size_bytes, BufferHandle, LayoutDescriptor, Shape, SyncMode, TensorDescriptor,
@@ -116,7 +114,7 @@ impl Tensor {
             None => {
                 // Default to hurray.device.cpu — retrieve the singleton via sys.modules
                 // so `tensor.device is hurray.device.cpu` holds.
-                let sys = py.import_bound("sys")?;
+                let sys = py.import("sys")?;
                 let modules = sys.getattr("modules")?;
                 let device_mod = modules.get_item("hurray.device")?;
                 let cpu_obj = device_mod.getattr("cpu")?;
@@ -148,7 +146,7 @@ impl Tensor {
         // ── 3. Extract buffer bytes ──────────────────────────────────────────
         let buf_bytes: &[u8] = if let Ok(b) = buffer.extract::<&[u8]>() {
             b
-        } else if let Ok(b) = buffer.downcast::<PyBytes>() {
+        } else if let Ok(b) = buffer.cast::<PyBytes>() {
             b.as_bytes()
         } else {
             return Err(BufferError::new_err(
@@ -244,21 +242,21 @@ impl Tensor {
     /// ```
     #[getter]
     pub fn shape(&self, py: Python<'_>) -> PyResult<Py<PyTuple>> {
-        let items: Vec<PyObject> = self
+        let items: Vec<Py<PyAny>> = self
             .descriptor
             .shape
             .dims()
             .iter()
-            .map(|&dim| {
+            .map(|&dim| -> PyResult<Py<PyAny>> {
                 if dim == DYNAMIC {
-                    py.None()
+                    Ok(py.None())
                 } else {
                     // dim is u64; Python int is arbitrary-precision so no truncation.
-                    dim.to_object(py)
+                    dim.into_py_any(py)
                 }
             })
-            .collect();
-        Ok(PyTuple::new_bound(py, items).unbind())
+            .collect::<PyResult<_>>()?;
+        Ok(PyTuple::new(py, items)?.unbind())
     }
 
     /// Number of dimensions (rank) of this tensor.
@@ -342,11 +340,11 @@ impl Tensor {
         slf: &Bound<'_, Self>,
         // D6: stream accepted but ignored; all tensors are ProducerSynced in this pass.
         // D8: max_version, dl_device, copy accepted for forward-compat; not yet honored.
-        stream: Option<PyObject>,
-        max_version: Option<PyObject>,
-        dl_device: Option<PyObject>,
-        copy: Option<PyObject>,
-    ) -> PyResult<PyObject> {
+        stream: Option<Py<PyAny>>,
+        max_version: Option<Py<PyAny>>,
+        dl_device: Option<Py<PyAny>>,
+        copy: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
         // Suppress unused-variable warnings for intentionally-ignored parameters.
         let _ = (stream, max_version, dl_device, copy);
         let py = slf.py();
@@ -362,7 +360,7 @@ impl Tensor {
         let shape = t.descriptor.shape.dims();
 
         // Keep the Tensor alive for the capsule's entire lifetime via a strong ref.
-        let tensor_obj: PyObject = slf.clone().into_any().unbind();
+        let tensor_obj: Py<PyAny> = slf.clone().into_any().unbind();
 
         dlpack::build_capsule(
             py,
@@ -387,7 +385,7 @@ impl Tensor {
     pub fn __dlpack_device__(&self, py: Python<'_>) -> PyResult<Py<PyTuple>> {
         let dev = self.device_py.borrow(py);
         let device_type = dlpack::device_to_dlpack(dev.tag, dev.memory_class)?;
-        let tup = PyTuple::new_bound(py, [device_type, dev.device_id]).unbind();
+        let tup = PyTuple::new(py, [device_type, dev.device_id])?.unbind();
         Ok(tup)
     }
 
@@ -425,8 +423,8 @@ impl Tensor {
     pub fn __hurray_buffer__(
         slf: &Bound<'_, Self>,
         // ProducerSynced: stream hint accepted for API parity; not acted on in this pass.
-        stream: Option<PyObject>,
-    ) -> PyResult<PyObject> {
+        stream: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
         let _ = stream;
         let py = slf.py();
         let t = slf.borrow();
@@ -452,7 +450,7 @@ impl Tensor {
         // Encode descriptor before releasing the borrow.
         let descriptor = &t.descriptor;
         // Strong reference to the Tensor; kept alive via the capsule context.
-        let tensor_obj: PyObject = slf.clone().into_any().unbind();
+        let tensor_obj: Py<PyAny> = slf.clone().into_any().unbind();
 
         crate::native_buffer::build_capsule(
             py,
@@ -500,10 +498,10 @@ impl Tensor {
     #[pyo3(signature = (dtype = None, copy = None))]
     pub fn __array__(
         slf: &Bound<'_, Self>,
-        dtype: Option<PyObject>,
+        dtype: Option<Py<PyAny>>,
         // D4: copy=False + cast needed → CopyRequiredError (NumPy 2.0 NEP 47 convention).
-        copy: Option<PyObject>,
-    ) -> PyResult<PyObject> {
+        copy: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let t = slf.borrow();
 
@@ -533,7 +531,7 @@ impl Tensor {
         drop(t); // release borrow before calling __dlpack__
         let capsule = Tensor::__dlpack__(slf, None, None, None, None)?;
 
-        let np = py.import_bound("numpy")?;
+        let np = py.import("numpy")?;
         let arr = np.call_method1("from_dlpack", (capsule,))?;
 
         // Handle dtype cast request (D4).
@@ -582,10 +580,10 @@ impl Tensor {
     /// t = hurray.Tensor(bytes(16), hurray.float32, [4])
     /// torch_t = t.to_torch()
     /// ```
-    pub fn to_torch(slf: &Bound<'_, Self>) -> PyResult<PyObject> {
+    pub fn to_torch(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         // D7: import torch at call time to avoid a hard dependency at module load.
-        let torch = py.import_bound("torch").map_err(|_| {
+        let torch = py.import("torch").map_err(|_| {
             pyo3::exceptions::PyImportError::new_err(
                 "torch is not installed; install it with: pip install torch",
             )
@@ -677,13 +675,13 @@ impl Tensor {
             pyo3::exceptions::PyValueError::new_err("no numpy dtype for this element type")
         })?;
 
-        let np = py.import_bound("numpy")?;
+        let np = py.import("numpy")?;
 
         // SAFETY: GIL is held; Borrowed base is kept alive by self.buffer.
         let bytes = unsafe { self.buffer.as_slice() };
-        let py_bytes = pyo3::types::PyBytes::new_bound(py, bytes);
+        let py_bytes = pyo3::types::PyBytes::new(py, bytes);
 
-        let kw = pyo3::types::PyDict::new_bound(py);
+        let kw = pyo3::types::PyDict::new(py);
         kw.set_item("dtype", dtype_str)?;
         let arr_1d = np.call_method("frombuffer", (py_bytes,), Some(&kw))?;
 
@@ -720,7 +718,7 @@ impl Tensor {
     /// ```rust,no_run
     /// # use pyo3::prelude::*;
     /// # use hurray_core::{ElementType, Shape, DeviceTag, MemoryClass};
-    /// # Python::with_gil(|py| -> PyResult<()> {
+    /// # Python::attach(|py| -> PyResult<()> {
     /// // Internal use: called from sparse.rs to expose component buffers.
     /// # Ok(())
     /// # });
@@ -841,16 +839,16 @@ mod tests {
     use std::os::raw::c_int;
 
     fn init() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
     }
 
     fn build_module(py: Python<'_>) -> Bound<'_, pyo3::types::PyModule> {
-        let m = pyo3::types::PyModule::new_bound(py, "hurray").unwrap();
+        let m = pyo3::types::PyModule::new(py, "hurray").unwrap();
         crate::errors::register(&m).unwrap();
         crate::dtype::register(&m).unwrap();
         crate::device::register(&m).unwrap();
         register(&m).unwrap();
-        let sys = py.import_bound("sys").unwrap();
+        let sys = py.import("sys").unwrap();
         let modules = sys.getattr("modules").unwrap();
         modules.set_item("hurray", &m).unwrap();
         m
@@ -864,10 +862,10 @@ mod tests {
     #[test]
     fn construction_float32_succeeds() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -897,10 +895,10 @@ mod tests {
     #[test]
     fn construction_int4_succeeds() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf: Vec<u8> = vec![0xAB, 0xCD, 0xEF, 0x12];
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -918,10 +916,10 @@ mod tests {
     #[test]
     fn construction_buffer_too_small() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf: Vec<u8> = vec![0u8; 12];
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -938,10 +936,10 @@ mod tests {
     #[test]
     fn construction_negative_dim() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -962,10 +960,10 @@ mod tests {
         // hurray.Tensor is not an Array API array (ADR-029): __array_namespace__ must
         // be absent so array-agnostic consumers cleanly reject it rather than break.
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -988,10 +986,10 @@ mod tests {
     #[test]
     fn hurray_buffer_capsule_is_present() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1024,10 +1022,10 @@ mod tests {
     #[test]
     fn t_raises_not_implemented() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1051,10 +1049,10 @@ mod tests {
         // depends on numpy being importable at runtime; that path is covered by
         // examples/display.py which runs under maturin develop (with numpy present).
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1078,11 +1076,11 @@ mod tests {
     #[test]
     fn repr_fallback_for_tier2_tensor() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             // Int4 has no numpy dtype — repr must fall back to metadata-only form.
             let buf = vec![0x21u8]; // two int4 nibbles
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1104,10 +1102,10 @@ mod tests {
         // examples/display.py).  Without numpy it falls back to __repr__ — both
         // paths must return a non-empty, non-panicking string.
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1129,10 +1127,10 @@ mod tests {
     #[test]
     fn default_device_is_cpu() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1149,10 +1147,10 @@ mod tests {
     #[test]
     fn explicit_device_preserved() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1184,7 +1182,7 @@ mod tests {
     #[test]
     fn shape_dynamic_dim() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let shape = Shape::new(vec![1, DYNAMIC, 768]).unwrap();
             let buffer = BufferHandle::new(0, 1, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
@@ -1234,10 +1232,10 @@ mod tests {
     #[test]
     fn tensor_is_unhashable() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1255,10 +1253,10 @@ mod tests {
     #[test]
     fn dlpack_device_cpu() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1280,10 +1278,10 @@ mod tests {
     #[test]
     fn dlpack_capsule_created() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1307,11 +1305,11 @@ mod tests {
     #[test]
     fn dlpack_bool_raises_buffer_error() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             // 1 byte can hold 8 bools in Hurray's 1-bit packed format.
             let buf: Vec<u8> = vec![0u8; 1];
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1337,12 +1335,12 @@ mod tests {
     #[test]
     fn construction_without_device_module_fails_gracefully() {
         init();
-        Python::with_gil(|py| {
-            let m = pyo3::types::PyModule::new_bound(py, "hurray_bare").unwrap();
+        Python::attach(|py| {
+            let m = pyo3::types::PyModule::new(py, "hurray_bare").unwrap();
             crate::errors::register(&m).unwrap();
             crate::dtype::register(&m).unwrap();
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {
@@ -1357,10 +1355,10 @@ mod tests {
     #[test]
     fn buffer_store_is_owned_after_construction() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let _m = build_module(py);
             let buf = float32_buf_2x3();
-            let py_buf = PyBytes::new_bound(py, &buf);
+            let py_buf = PyBytes::new(py, &buf);
             let dtype = Py::new(
                 py,
                 Dtype {

@@ -9,10 +9,6 @@
 //! See `docs/spec/buffer-protocol.md § Device Tags` for the normative definitions
 //! of the device tag and memory class enumerations.
 
-// PyO3 0.22 macro expansion emits a redundant .into() on PyErr for functions
-// returning PyResult<()> — suppress the false positive across this module.
-#![allow(clippy::useless_conversion)]
-
 use pyo3::class::basic::CompareOp;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -276,7 +272,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Device>()?;
 
     // Create the `hurray.device` submodule.
-    let device_mod = PyModule::new_bound(py, "device")?;
+    let device_mod = PyModule::new(py, "device")?;
 
     for &(name, kind) in DEVICE_CONSTANTS {
         let tag = device_tag_from_str(kind).ok_or_else(|| {
@@ -296,7 +292,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
 
     // Register `hurray.device` in `sys.modules` so `from hurray.device import cpu` works.
-    let sys = py.import_bound("sys")?;
+    let sys = py.import("sys")?;
     let modules = sys.getattr("modules")?;
     modules.set_item("hurray.device", &device_mod)?;
 
@@ -312,7 +308,7 @@ mod tests {
     use pyo3::Python;
 
     fn init() {
-        pyo3::prepare_freethreaded_python();
+        pyo3::Python::initialize();
     }
 
     #[test]
@@ -337,7 +333,7 @@ mod tests {
     #[test]
     fn constructor_fails_unknown_kind() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = Device::new("tpu", None, None);
             assert!(result.is_err(), "unknown kind should return Err");
             let err = result.unwrap_err();
@@ -351,7 +347,7 @@ mod tests {
     #[test]
     fn constructor_fails_unknown_memory_class() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = Device::new("cpu", None, Some("device_local"));
             assert!(result.is_err(), "unknown memory_class should return Err");
             let err = result.unwrap_err();
@@ -365,7 +361,7 @@ mod tests {
     #[test]
     fn constructor_fails_negative_device_id() {
         init();
-        Python::with_gil(|py| {
+        Python::attach(|py| {
             let result = Device::new("cuda", Some(-1), None);
             assert!(result.is_err(), "negative device_id should return Err");
             let err = result.unwrap_err();

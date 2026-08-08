@@ -14,10 +14,6 @@
 //! The `hurray.dtype` submodule is registered in `sys.modules` so
 //! `from hurray.dtype import int4` works correctly (D4).
 
-// PyO3 0.22 macro expansion emits a redundant .into() on PyErr for functions
-// returning PyResult<()> — suppress the false positive across this module.
-#![allow(clippy::useless_conversion)]
-
 use pyo3::class::basic::CompareOp;
 use pyo3::prelude::*;
 use pyo3::types::PyModule;
@@ -351,7 +347,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Dtype>()?;
 
     // Create the `hurray.dtype` submodule.
-    let dtype_mod = PyModule::new_bound(py, "dtype")?;
+    let dtype_mod = PyModule::new(py, "dtype")?;
 
     for &ty in ALL_ELEMENT_TYPES {
         let name = element_type_name(ty);
@@ -367,7 +363,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     }
 
     // Register `hurray.dtype` in `sys.modules` so `from hurray.dtype import int4` works.
-    let sys = py.import_bound("sys")?;
+    let sys = py.import("sys")?;
     let modules = sys.getattr("modules")?;
     modules.set_item("hurray.dtype", &dtype_mod)?;
 
@@ -383,8 +379,8 @@ mod tests {
     use pyo3::Python;
 
     fn init() {
-        // Required before any Python::with_gil call in test binaries.
-        pyo3::prepare_freethreaded_python();
+        // Required before any Python::attach call in test binaries.
+        pyo3::Python::initialize();
     }
 
     #[test]
@@ -482,7 +478,7 @@ mod tests {
     #[test]
     fn eq_same_type() {
         init();
-        Python::with_gil(|_py| {
+        Python::attach(|_py| {
             let a = Dtype {
                 inner: ElementType::Float32,
             };

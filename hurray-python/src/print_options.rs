@@ -23,17 +23,13 @@
 //! `ContextVar.reset(token)` in `__exit__`. This is exception-safe and restores
 //! the exact prior value, including nested usage.
 
-// PyO3 0.22 macro expansion emits a redundant .into() on PyErr for functions
-// returning PyResult<()> — suppress the false positive across this module.
-#![allow(clippy::useless_conversion)]
-
 use pyo3::prelude::*;
-use pyo3::sync::GILOnceCell;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::PyDict;
 
-// GILOnceCell over thread_local: ContextVar gives asyncio-Task isolation that
+// PyOnceLock over thread_local: ContextVar gives asyncio-Task isolation that
 // thread-locals cannot.
-static SPARSE_DISPLAY_VAR: GILOnceCell<Py<PyAny>> = GILOnceCell::new();
+static SPARSE_DISPLAY_VAR: PyOnceLock<Py<PyAny>> = PyOnceLock::new();
 
 /// The two valid values for the `sparse_display` option.
 const METADATA: &str = "metadata";
@@ -45,9 +41,9 @@ const CONTENT: &str = "content";
 fn sparse_display_var(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
     SPARSE_DISPLAY_VAR
         .get_or_try_init(py, || {
-            let cv_mod = py.import_bound("contextvars")?;
+            let cv_mod = py.import("contextvars")?;
             // ContextVar(name, *, default=...) — default is keyword-only.
-            let kwargs = PyDict::new_bound(py);
+            let kwargs = PyDict::new(py);
             kwargs.set_item("default", METADATA)?;
             let var: Py<PyAny> = cv_mod
                 .call_method(
@@ -120,8 +116,8 @@ pub fn set_print_options(py: Python<'_>, sparse_display: Option<&str>) -> PyResu
 /// assert opts["sparse_display"] == "metadata"
 /// ```
 #[pyfunction]
-pub fn get_print_options(py: Python<'_>) -> PyResult<PyObject> {
-    let d = PyDict::new_bound(py);
+pub fn get_print_options(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let d = PyDict::new(py);
     let current: String = sparse_display_var(py)?
         .call_method0("get")?
         .extract::<String>()?;
