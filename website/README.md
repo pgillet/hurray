@@ -31,3 +31,32 @@ cd website/site && zola serve        # live-reload the outer shell
 ```
 
 Build output (`book/book/`, `site/public/`, `public/`) is git-ignored.
+
+## Canonical URLs (single sources)
+
+If the project moves (e.g. to a GitHub organization) or the site's canonical address
+changes, update these — each is the single source for its scope. Nothing else needs to
+change except prose links in READMEs / CHANGELOG (listed last).
+
+**Site URL** (`https://www.pascalgillet.net/hurray/`)
+- `Cargo.toml` → `[workspace.package].homepage` — inherited by every published crate.
+- `website/site/config.toml` → `base_url` — local/fallback only; the deploy overrides it
+  from the GitHub Pages URL (`pages.outputs.base_url`, coerced to https in
+  `website/build-site.sh`), so the deployed site follows Pages automatically.
+
+**Repository URL** (`https://github.com/pgillet/hurray`)
+- `Cargo.toml` → `[workspace.package].repository` — inherited by every published crate.
+- `website/site/config.toml` → `[extra].github_url` — the shell's GitHub links.
+- `website/book/book.toml` → `git-repository-url` and `edit-url-template` — the book's
+  repo + "edit this page" links.
+- `hurray-ffi/cbindgen.toml` → generated C header banner.
+
+**Prose links** (not parameterizable — plain Markdown): the crate `README.md` files,
+root `README.md`, `CHANGELOG.md`, and `CLAUDE.md` reference the repo/site URLs in text.
+GitHub auto-redirects the old repo path after a transfer, so these keep working; update
+them at leisure.
+
+> Note: GitHub Pages serves a custom domain only for the account that owns it. Moving the
+> repo to an org drops it from `www.pascalgillet.net/hurray` (that domain belongs to the
+> user site) back to `<org>.github.io/hurray` unless a domain/subdomain is attached to the
+> org's Pages.
