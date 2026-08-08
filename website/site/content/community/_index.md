@@ -15,7 +15,7 @@ recipes, and tutorials — are welcome.
   sending a large pull request.
 - Spec changes go through the amendment process: a decision is recorded as an
   **Architecture Decision Record** (ADR) before the normative text changes. Browse the
-  [ADR appendix](/docs/stable/adr/ADR-001-private-extension-type-descriptors.html) in the
+  [ADR appendix](/docs/dev/adr/ADR-001-private-extension-type-descriptors.html) in the
   docs.
 - Every implementation change ships with tests, documentation, and a cookbook example.
 

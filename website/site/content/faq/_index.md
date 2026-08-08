@@ -53,7 +53,7 @@ Bindings for other languages can build directly on the same C ABI. There is also
 The specification is at `0.1.0-draft`. The format is designed to be evolvable —
 backward-compatible and forward-additive across the whole `1.x` line, with public tags
 never rebound — but it is pre-1.0 and may still change. See the
-[versioning policy](/docs/stable/spec/versioning.html) in the docs.
+[versioning policy](/docs/dev/spec/versioning.html) in the docs.
 
 ## Where do I report issues or ask questions?
 
