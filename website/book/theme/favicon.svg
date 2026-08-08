@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 64" width="128" height="64" role="img" aria-label="hurray">
+  <title>hurray</title>
+  <!-- The two closing cells: a + turned-h. All-teal so it reads on light or dark tab bars. -->
+  <rect x="65" y="1" width="62" height="62" fill="#0d9488"/>
+  <rect x="1" y="1" width="126" height="62" fill="none" stroke="#0d9488" stroke-width="3"/>
+  <path d="M64 1V63" stroke="#0d9488" stroke-width="3"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="36" font-weight="700" text-anchor="middle">
+    <text x="32" y="33" dominant-baseline="central" fill="#0d9488">a</text>
+    <text x="96" y="33" dominant-baseline="central" fill="#ffffff" transform="rotate(180 96 32)">h</text>
+  </g>
+</svg>

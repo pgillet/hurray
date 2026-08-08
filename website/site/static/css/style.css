@@ -1,14 +1,15 @@
-/* Hurray site shell — neutral placeholder theme (branding deferred, ADR-028 OQ-3).
-   Light/dark via prefers-color-scheme; kept intentionally minimal. */
+/* Hurray site shell — teal/emerald brand theme (ADR-028 OQ-3 resolved).
+   Neutrals carry a faint teal-cool bias so they read as chosen, not default grey.
+   Light default; dark via prefers-color-scheme. */
 
 :root {
   --bg: #ffffff;
-  --fg: #1a1d21;
-  --muted: #5b6570;
-  --border: #e3e7ec;
-  --surface: #f6f8fa;
-  --accent: #2f6feb;
-  --accent-fg: #ffffff;
+  --fg: #12201e;
+  --muted: #566b67;
+  --border: #d8e6e2;
+  --surface: #f3f8f7;
+  --accent: #0d9488;      /* teal-600 — links, buttons, highlighted logo cell */
+  --accent-fg: #ffffff;   /* text/glyph on an accent fill */
   --max: 52rem;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -16,13 +17,13 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #0f1216;
-    --fg: #e6e9ee;
-    --muted: #9aa4b0;
-    --border: #262c33;
-    --surface: #161b21;
-    --accent: #6ea1ff;
-    --accent-fg: #0f1216;
+    --bg: #0b1413;
+    --fg: #e7efed;
+    --muted: #8fa39f;
+    --border: #223330;
+    --surface: #111e1c;
+    --accent: #2dd4bf;    /* teal-400 — brighter for the dark ground */
+    --accent-fg: #08201d;
   }
 }
 
@@ -60,7 +61,13 @@ a:hover { text-decoration: underline; }
   gap: 1rem;
   flex-wrap: wrap;
 }
-.brand { font-weight: 700; font-size: 1.15rem; color: var(--fg); }
+.brand { display: inline-flex; align-items: center; }
+.brand-mark { height: 1.7rem; width: auto; display: block; }
+.brand-mark text { font-family: var(--mono); font-size: 34px; font-weight: 600; }
+.bm-cell { fill: var(--accent); }
+.bm-grid { fill: none; stroke: var(--border); stroke-width: 2; }
+.bm-ink { fill: var(--fg); }
+.bm-invert { fill: var(--accent-fg); }
 .site-nav { display: flex; gap: 1.1rem; flex-wrap: wrap; }
 .site-nav a { color: var(--muted); font-size: 0.95rem; }
 .site-nav a:hover { color: var(--fg); text-decoration: none; }
