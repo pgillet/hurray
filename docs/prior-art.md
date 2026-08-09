@@ -367,6 +367,24 @@ encoding, parallel shard transfers, and a hook for an RDMA data plane.
 
 ---
 
+### 2.18 Apache TVM (and MLC-LLM)
+
+**What it is:** An open-source machine-learning *compiler* stack. It ingests models (PyTorch, ONNX, …), lowers them through a graph IR (Relay, now Relax) to a tensor IR (TIR), auto-tunes kernels (AutoTVM / Ansor / MetaSchedule), and emits optimized code for a wide range of backends (x86/ARM CPUs, CUDA/ROCm/Metal/Vulkan/WebGPU GPUs, microcontrollers). **MLC-LLM** is a TVM/Relax-based project that compiles and runs LLMs across heterogeneous consumer hardware (phones, laptops, browsers).
+
+**Relationship to DLPack:** TVM comes from the same DMLC lineage that produced **DLPack** (see §2.1); its runtime `NDArray` is DLPack-native. The zero-copy ABI Hurray targets for in-process interop is, in effect, TVM's in-memory tensor format — so TVM validates that choice rather than competing with it.
+
+**Layout model:** Not a storage format — TVM *transforms* layouts as a compilation concern, aggressively rewriting to hardware-preferred forms (tiling, packed `NCHWc`, tensor-core fragments) for kernel performance. It has no on-disk layout vocabulary of its own.
+
+**Quantization:** Compilation-time passes (int8, and grouped/int4 weight quantization in MLC-LLM), not a normative on-disk representation. Quantized weights are TVM's problem to *generate and execute*, not to *interchange*.
+
+**Interchange:** In-process via DLPack (NDArray). Model artifacts are compiled modules (`.so`/`.tar`) plus a parameter blob; there is no framework-agnostic, quantization/layout-aware interchange or streaming format — parameters are typically carried as NumPy-derived or ad-hoc bundles.
+
+**Adoption:** Mature and influential; one of the pioneers of "compile a model to any hardware." MLC-LLM is widely used for on-device LLM inference.
+
+**Assessment:** Orthogonal and complementary — TVM is *compute* (codegen, tuning, execution); Hurray is *interchange* (moving, storing, and describing tensor data). In the tensor supply chain, TVM is an execution stage and Hurray is transport + storage + description around it. Two concrete integration paths: (1) hand dense Tier-1 tensors to/from a TVM `NDArray` zero-copy via DLPack, exactly as with NumPy/PyTorch; (2) use Hurray's file format as the quantization- and layout-aware on-disk container for TVM/MLC-LLM weights (the role GGUF plays for llama.cpp) — MLC-LLM's shuttling of grouped-int4 weights across heterogeneous hardware sits squarely in Hurray's target domain. Hurray adds none of TVM's core value (no compiler, no autotuning); it fills the gap TVM leaves — a framework-agnostic, zero-copy interchange + storage format. TVM's layout rewrites are also a reference for which packed/tiled layouts a producer might hand over pre-optimized (Hurray's tiled/blocked layouts) to avoid a re-layout copy.
+
+---
+
 ## 3. KV Cache Transfer in Disaggregated LLM Inference
 
 The transport entries above (§§2.13–2.16: NIXL, NCCL, UCX, Arrow Flight) are
