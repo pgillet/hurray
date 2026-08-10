@@ -49,3 +49,34 @@ html { font-family: var(--hurray-font); }
   color: #f0e6a6;
   border-color: #5c5410;
 }
+
+/* ── Language tabs (lang-tabs.js) ─────────────────────────────────────────────
+   Rust/Python switcher for recipes with code in more than one language. Before
+   JS runs (or if disabled) every code block is shown stacked; once ready, the
+   bar appears and only the selected language's block is visible. */
+.lang-tabs-bar {
+  display: flex;
+  gap: .25rem;
+  margin: 0 0 -1px;
+  flex-wrap: wrap;
+}
+.lang-tab {
+  font: inherit;
+  font-size: .85rem;
+  cursor: pointer;
+  padding: .3rem .8rem;
+  border: 1px solid var(--icons, #ccc);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: var(--sidebar-bg, #f6f7f6);
+  color: var(--fg);
+  opacity: .7;
+}
+.lang-tab[aria-selected="true"] {
+  opacity: 1;
+  color: var(--links);
+  border-color: var(--links);
+  font-weight: 600;
+}
+.lang-tab:focus-visible { outline: 2px solid var(--links); outline-offset: 1px; }
+.lang-tabs-ready pre[hidden] { display: none !important; }

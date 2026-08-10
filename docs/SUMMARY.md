@@ -42,6 +42,10 @@
 
 # Cookbook
 
+- [Quickstart](cookbook/quickstart.md)
+- [Framework Interop](cookbook/framework-interop.md)
+- [Quantized Inference](cookbook/quantized-inference.md)
+- [IPC and Streaming Interchange](cookbook/ipc-streaming.md)
 - [Layer 0: Element Types and Shape](cookbook/layer-0-element-types-and-shape.md)
 - [Layer 1: Buffer Protocol](cookbook/layer-1-buffer-protocol.md)
 - [Layer 2: Quantization Descriptors](cookbook/layer-2-quantization-descriptors.md)
