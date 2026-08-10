@@ -86,13 +86,16 @@ pub fn from_scipy(py: Python<'_>, matrix: &Bound<'_, PyAny>) -> PyResult<SparseT
 
     let fmt: String = matrix.getattr("format")?.extract()?;
     match fmt.as_str() {
-        // D19: COO rejected — SciPy stores row/col separately; Hurray needs packed [nnz,rank].
+        // D19: COO rejected here — SciPy stores row/col separately while Hurray needs a
+        // packed [nnz, rank] buffer, so it cannot be zero-copy from a coo_matrix. Repack and
+        // use hurray.sparse_coo instead (which shares the packed arrays zero-copy).
         "coo" => {
             return Err(UnsupportedError::new_err(
-                "from_scipy does not support COO format zero-copy because SciPy stores \
-                 row/col as two separate arrays while Hurray requires a single packed \
-                 [nnz, rank] uint64 buffer. Repack first: \
-                 indices = np.stack([m.row, m.col], axis=1).astype(np.uint64)",
+                "from_scipy does not support COO (SciPy stores row/col as two separate arrays; \
+                 Hurray needs a single packed [nnz, rank] uint64 buffer). Repack and use \
+                 hurray.sparse_coo: \
+                 indices = np.stack([m.row, m.col], axis=1).astype(np.uint64); \
+                 hurray.sparse_coo(m.data, indices, m.shape)",
             ));
         }
         "csr" | "csc" => {}
@@ -215,7 +218,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 ///
 /// Uses `__array_interface__` which is available on all NumPy arrays.
 /// If `expected` is `Some(et)`, verifies the array's dtype matches.
-fn extract_numpy_buffer(
+pub(crate) fn extract_numpy_buffer(
     _py: Python<'_>,
     arr: &Bound<'_, PyAny>,
     expected: Option<ElementType>,

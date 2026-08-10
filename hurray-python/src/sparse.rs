@@ -792,9 +792,127 @@ pub(crate) fn build_three_buffer_handles(
     Ok((bh_values, bh_aux0, bh_aux1))
 }
 
-/// Build a COO `TensorDescriptor`.
-// TODO: activate in the COO Python construction pass (follow-on to 8a.4).
-#[allow(dead_code)]
+/// Require a NumPy array to be C-contiguous (no silent copy on borrow).
+fn require_c_contiguous(arr: &Bound<'_, PyAny>, name: &str) -> PyResult<()> {
+    let c: bool = arr.getattr("flags")?.get_item("C_CONTIGUOUS")?.extract()?;
+    if !c {
+        return Err(UnsupportedError::new_err(format!(
+            "{name} must be C-contiguous; call numpy.ascontiguousarray({name}) first"
+        )));
+    }
+    Ok(())
+}
+
+/// Read a NumPy array's shape from `__array_interface__`.
+fn array_shape(arr: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
+    let dims: Vec<i64> = arr
+        .getattr("__array_interface__")?
+        .get_item("shape")?
+        .extract()?;
+    Ok(dims.iter().map(|&d| d.max(0) as u64).collect())
+}
+
+/// Construct a COO [`SparseTensor`] from packed component arrays, zero-copy.
+///
+/// `values` is a 1-D array of `nnz` elements. `indices` is a 2-D `uint64` array of shape
+/// `[nnz, rank]` giving each non-zero's coordinates in row-major (C-contiguous) order —
+/// Hurray's packed COO layout. `shape` is the dense tensor shape; its length is the rank
+/// and must equal `indices.shape[1]`.
+///
+/// Both arrays are shared without copying; the returned tensor holds strong references to
+/// keep them alive. `scipy.sparse.coo_matrix` stores row/col as two arrays, so it is not
+/// accepted directly — repack first:
+/// `indices = numpy.stack([m.row, m.col], axis=1).astype(numpy.uint64)`.
+///
+/// ## Examples
+///
+/// ```python
+/// import numpy as np, hurray
+///
+/// values = np.array([5.0, 7.0], dtype=np.float32)
+/// indices = np.array([[0, 0], [1, 1]], dtype=np.uint64)  # [nnz, rank]
+/// t = hurray.sparse_coo(values, indices, [2, 2])
+/// assert t.format == "coo"
+/// assert t.nnz == 2
+/// ```
+#[pyfunction]
+#[pyo3(signature = (values, indices, shape))]
+pub fn sparse_coo(
+    py: Python<'_>,
+    values: &Bound<'_, PyAny>,
+    indices: &Bound<'_, PyAny>,
+    shape: Vec<i64>,
+) -> PyResult<SparseTensor> {
+    if shape.iter().any(|&d| d < 0) {
+        return Err(InvalidDescriptorError::new_err(
+            "shape must have non-negative dimensions",
+        ));
+    }
+    let rank = shape.len();
+    let hurray_shape = Shape::new(shape.iter().map(|&d| d as u64).collect::<Vec<u64>>())
+        .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
+
+    // indices: 2-D, C-contiguous, uint64, [nnz, rank].
+    require_c_contiguous(indices, "indices")?;
+    let idx_shape = array_shape(indices)?;
+    if idx_shape.len() != 2 {
+        return Err(InvalidDescriptorError::new_err(format!(
+            "indices must be a 2-D array of shape [nnz, rank]; got {}-D",
+            idx_shape.len()
+        )));
+    }
+    let nnz = idx_shape[0];
+    if idx_shape[1] != rank as u64 {
+        return Err(InvalidDescriptorError::new_err(format!(
+            "indices.shape[1] ({}) must equal the tensor rank ({rank})",
+            idx_shape[1]
+        )));
+    }
+    let (idx_ptr, idx_len, idx_et) = crate::scipy_interop::extract_numpy_buffer(py, indices, None)?;
+    if idx_et != ElementType::Uint64 {
+        return Err(UnsupportedError::new_err(format!(
+            "indices must be uint64; got {idx_et:?}. Cast first: indices.astype(numpy.uint64)"
+        )));
+    }
+
+    // values: 1-D, C-contiguous, length nnz.
+    require_c_contiguous(values, "values")?;
+    let val_shape = array_shape(values)?;
+    if val_shape.len() != 1 || val_shape[0] != nnz {
+        return Err(InvalidDescriptorError::new_err(format!(
+            "values must be a 1-D array of length nnz ({nnz}); got shape {val_shape:?}"
+        )));
+    }
+    let (val_ptr, val_len, element_type) =
+        crate::scipy_interop::extract_numpy_buffer(py, values, None)?;
+
+    let descriptor = build_coo_descriptor(
+        element_type,
+        hurray_shape,
+        nnz,
+        val_len as u64,
+        idx_len as u64,
+    )?;
+
+    // Zero-copy: each source array is the base that keeps its borrowed buffer alive.
+    let values_base: Py<PyAny> = values.clone().unbind();
+    let indices_base: Py<PyAny> = indices.clone().unbind();
+    // SAFETY: pointers come from the arrays' __array_interface__; the bases keep the
+    // backing memory alive for the lifetime of the returned tensor's buffer views.
+    let values_buf = unsafe { BufferStore::borrowed(val_ptr, val_len, values_base) };
+    let indices_buf = unsafe { BufferStore::borrowed(idx_ptr, idx_len, indices_base) };
+
+    make_sparse_tensor(
+        py,
+        descriptor,
+        SparseFormat::Coo,
+        values_buf,
+        indices_buf,
+        None,
+    )
+}
+
+/// Build a COO `TensorDescriptor`. Used by [`sparse_coo`].
 pub(crate) fn build_coo_descriptor(
     element_type: ElementType,
     shape: Shape,
@@ -890,6 +1008,7 @@ pub(crate) fn build_csc_descriptor(
 /// Register `SparseTensor` on the `hurray` module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SparseTensor>()?;
+    m.add_function(wrap_pyfunction!(sparse_coo, m)?)?;
     Ok(())
 }
 
@@ -1103,6 +1222,54 @@ mod tests {
             assert_eq!(sparse.format(), "csr");
             assert_eq!(sparse.ndim(), 2);
             assert_eq!(sparse.nnz(), 4);
+        });
+    }
+
+    #[test]
+    fn sparse_coo_constructs_from_packed_arrays() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            if py.import("numpy").is_err() {
+                return; // numpy not available in this environment
+            }
+            let np = py.import("numpy").unwrap();
+            let vkw = pyo3::types::PyDict::new(py);
+            vkw.set_item("dtype", "float32").unwrap();
+            let values = np
+                .call_method("array", (vec![5.0f64, 7.0],), Some(&vkw))
+                .unwrap();
+            let ikw = pyo3::types::PyDict::new(py);
+            ikw.set_item("dtype", "uint64").unwrap();
+            let indices = np
+                .call_method("array", (vec![vec![0u64, 0], vec![1, 1]],), Some(&ikw))
+                .unwrap();
+
+            let t = sparse_coo(py, &values, &indices, vec![2, 2]).unwrap();
+            assert_eq!(t.format(), "coo");
+            assert_eq!(t.ndim(), 2);
+            assert_eq!(t.nnz(), 2);
+        });
+    }
+
+    #[test]
+    fn sparse_coo_rejects_non_uint64_indices() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            if py.import("numpy").is_err() {
+                return;
+            }
+            let np = py.import("numpy").unwrap();
+            let values = np.call_method1("array", (vec![5.0f64],)).unwrap();
+            // int32 indices — must be rejected (Hurray COO indices are uint64).
+            let ikw = pyo3::types::PyDict::new(py);
+            ikw.set_item("dtype", "int32").unwrap();
+            let indices = np
+                .call_method("array", (vec![vec![0i64, 0]],), Some(&ikw))
+                .unwrap();
+            let err = sparse_coo(py, &values, &indices, vec![2, 2]).unwrap_err();
+            assert!(err.is_instance_of::<UnsupportedError>(py));
         });
     }
 
