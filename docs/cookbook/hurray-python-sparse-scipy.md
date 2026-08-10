@@ -101,17 +101,30 @@ m_csr.indptr  = m_csr.indptr.astype(np.uint64)
 sparse = hurray.from_scipy(m_csr)
 ```
 
-**Workaround — construct directly from a packed index buffer:**
+**Preferred — `hurray.sparse_coo` from packed arrays (zero-copy):**
+
+`hurray.sparse_coo(values, indices, shape)` builds a COO `SparseTensor` directly and
+shares both arrays without copying. `indices` is a 2-D `uint64` array of shape
+`[nnz, rank]` (Hurray's packed layout); `values` is 1-D of length `nnz`.
 
 ```python
-row = m_coo.row.astype(np.uint64)
-col = m_coo.col.astype(np.uint64)
-indices = np.stack([row, col], axis=1)   # shape [nnz, 2], one copy
+import numpy as np, hurray
 
-# (Direct COO SparseTensor construction from raw buffers is in a future pass.)
+# Straight from packed arrays:
+values = np.array([5.0, 7.0], dtype=np.float32)
+indices = np.array([[0, 0], [1, 1]], dtype=np.uint64)   # [nnz, rank]
+t = hurray.sparse_coo(values, indices, [2, 2])
+assert t.format == "coo" and t.nnz == 2
+
+# Repacking a SciPy coo_matrix (one copy to interleave row/col, then zero-copy):
+indices = np.stack([m_coo.row, m_coo.col], axis=1).astype(np.uint64)
+t = hurray.sparse_coo(m_coo.data, indices, m_coo.shape)
 ```
 
-`SparseTensor.to_scipy()` on a COO tensor also raises `hurray.UnsupportedError`.
+Only the `np.stack` interleave copies; `sparse_coo` itself borrows both arrays and holds
+strong references so the buffers stay alive for the tensor's lifetime.
+
+`SparseTensor.to_scipy()` on a COO tensor raises `hurray.UnsupportedError`.
 Access `.values` and `.indices` directly and construct `scipy.sparse.coo_matrix`
 manually if needed.
 

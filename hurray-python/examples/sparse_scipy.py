@@ -86,23 +86,30 @@ def demo_coo_rejection():
     from_scipy rejects COO because SciPy stores row/col as two separate arrays
     while Hurray requires a single packed [nnz, rank] uint64 buffer (D19).
 
-    The workaround is to repack and construct the SparseTensor directly —
-    or convert to CSR/CSC first.
+    Construct COO directly with hurray.sparse_coo (zero-copy from packed arrays),
+    or convert to CSR/CSC first for from_scipy.
     """
     m_coo = sp.coo_matrix(np.eye(3, dtype=np.float32))
     try:
         hurray.from_scipy(m_coo)
         print("ERROR: expected UnsupportedError for COO")
     except hurray.UnsupportedError as e:
-        print(f"COO correctly rejected: {e}")
+        print(f"from_scipy correctly rejects COO: {e}")
 
-    # Workaround: convert to CSR first.
+    # Preferred: repack row/col into [nnz, rank] uint64 and use hurray.sparse_coo.
+    indices = np.stack([m_coo.row, m_coo.col], axis=1).astype(np.uint64)
+    t = hurray.sparse_coo(m_coo.data, indices, m_coo.shape)
+    assert t.format == "coo"
+    assert t.nnz == 3
+    print(f"sparse_coo OK: format={t.format}, nnz={t.nnz}, shape={t.shape}")
+
+    # Alternative: convert to CSR first, then from_scipy.
     m_csr = m_coo.tocsr()
     m_csr.indices = m_csr.indices.astype(np.uint64)
     m_csr.indptr = m_csr.indptr.astype(np.uint64)
     sparse = hurray.from_scipy(m_csr)
     assert sparse.format == "csr"
-    print("COO workaround (tocsr) OK")
+    print("COO→CSR alternative OK")
 
 
 if __name__ == "__main__":
