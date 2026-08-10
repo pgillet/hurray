@@ -19,15 +19,19 @@
 //
 //   </div>
 //
-// Degrades gracefully: with JavaScript disabled, every code block is shown,
-// each prefixed by its language label.
+// Tabs are grouped by language: one tab per distinct language, and that tab
+// toggles *every* code block of that language in the group. This is deliberate —
+// different mdBook versions emit a different number of <pre> elements for a
+// runnable Rust block, so counting <pre> is unreliable; counting languages is not.
+//
+// Degrades gracefully: with JavaScript disabled, every code block is shown.
 
 (function () {
   "use strict";
 
   var STORAGE_KEY = "hurray-code-lang";
   var LABELS = { rust: "Rust", python: "Python", c: "C", bash: "Shell", toml: "TOML" };
-  var groups = []; // { el, tabs: [{ lang, pre, button }] }
+  var groups = []; // { order: [lang], byLang: { lang: [pre] }, buttons: [{ lang, button }] }
 
   function label(lang) {
     return LABELS[lang] || (lang ? lang.charAt(0).toUpperCase() + lang.slice(1) : "Code");
@@ -49,33 +53,41 @@
 
   function selectLang(lang) {
     groups.forEach(function (g) {
-      // A group shows `lang` if it has it; otherwise it keeps its first tab.
-      var has = g.tabs.some(function (t) { return t.lang === lang; });
-      var target = has ? lang : g.tabs[0].lang;
-      g.tabs.forEach(function (t) {
-        var active = t.lang === target;
-        t.pre.hidden = !active;
-        t.button.setAttribute("aria-selected", active ? "true" : "false");
-        t.button.tabIndex = active ? 0 : -1;
+      // A group shows `lang` if it has it; otherwise it falls back to its first.
+      var target = g.byLang[lang] ? lang : g.order[0];
+      g.order.forEach(function (l) {
+        var active = l === target;
+        g.byLang[l].forEach(function (pre) { pre.hidden = !active; });
+      });
+      g.buttons.forEach(function (b) {
+        var active = b.lang === target;
+        b.button.setAttribute("aria-selected", active ? "true" : "false");
+        b.button.tabIndex = active ? 0 : -1;
       });
     });
   }
 
   function build(container) {
-    var pres = [];
-    // Only direct <pre> descendants of this container are tabbed.
-    container.querySelectorAll("pre").forEach(function (pre) {
-      if (pre.closest(".lang-tabs") === container) { pres.push(pre); }
-    });
-    if (pres.length < 2) { return; } // nothing to switch
+    if (container.classList.contains("lang-tabs-ready")) { return; }
 
-    var tabs = [];
+    // Group every language-tagged <pre> in this container by its language.
+    var order = [];
+    var byLang = {};
+    container.querySelectorAll("pre").forEach(function (pre) {
+      if (pre.closest(".lang-tabs") !== container) { return; }
+      var lang = langOf(pre);
+      if (!lang) { return; }
+      if (!byLang[lang]) { byLang[lang] = []; order.push(lang); }
+      byLang[lang].push(pre);
+    });
+    if (order.length < 2) { return; } // nothing to switch between
+
     var bar = document.createElement("div");
     bar.className = "lang-tabs-bar";
     bar.setAttribute("role", "tablist");
+    var buttons = [];
 
-    pres.forEach(function (pre) {
-      var lang = langOf(pre) || "code";
+    order.forEach(function (lang) {
       var btn = document.createElement("button");
       btn.type = "button";
       btn.className = "lang-tab";
@@ -87,25 +99,25 @@
         selectLang(lang);
       });
       bar.appendChild(btn);
-      tabs.push({ lang: lang, pre: pre, button: btn });
+      buttons.push({ lang: lang, button: btn });
     });
 
-    // Arrow-key navigation within the tablist.
+    // Arrow-key navigation across the tablist.
     bar.addEventListener("keydown", function (e) {
       if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") { return; }
-      var idx = tabs.findIndex(function (t) { return t.button === document.activeElement; });
+      var idx = buttons.findIndex(function (b) { return b.button === document.activeElement; });
       if (idx < 0) { return; }
-      var next = e.key === "ArrowRight" ? (idx + 1) % tabs.length
-                                        : (idx - 1 + tabs.length) % tabs.length;
-      tabs[next].button.focus();
-      remember(tabs[next].lang);
-      selectLang(tabs[next].lang);
+      var next = e.key === "ArrowRight" ? (idx + 1) % buttons.length
+                                        : (idx - 1 + buttons.length) % buttons.length;
+      buttons[next].button.focus();
+      remember(buttons[next].lang);
+      selectLang(buttons[next].lang);
       e.preventDefault();
     });
 
     container.insertBefore(bar, container.firstChild);
     container.classList.add("lang-tabs-ready");
-    groups.push({ el: container, tabs: tabs });
+    groups.push({ order: order, byLang: byLang, buttons: buttons });
   }
 
   function init() {
@@ -114,10 +126,9 @@
     containers.forEach(build);
     if (!groups.length) { return; }
 
-    // Default to the remembered language, else the first group's first tab.
     var pref = preferred();
-    var known = groups[0].tabs.map(function (t) { return t.lang; });
-    selectLang(pref && LABELS[pref] !== undefined ? pref : known[0]);
+    var first = groups[0].order[0];
+    selectLang(pref && LABELS[pref] !== undefined ? pref : first);
   }
 
   if (document.readyState === "loading") {
