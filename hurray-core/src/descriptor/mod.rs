@@ -159,6 +159,7 @@ use crate::descriptor::composite_member::CompositeMemberDescriptor as CompositeM
 use crate::descriptor::ext_type::ExtensionTypeDescriptor as ExtDesc;
 use crate::descriptor::shard::ShardDescriptor as ShardDesc;
 use crate::descriptor::statistics::Statistics as Stats;
+use crate::quantization::QuantizationDescriptor;
 use crate::{BufferHandle, ElementType, Error, LayoutDescriptor, Result, Shape};
 
 /// The top-level tensor descriptor carrying all metadata required to interpret
@@ -250,6 +251,10 @@ impl TensorDescriptor {
     /// - [`Error::ExtensionTypeFlagMismatch`] — `extension_type` is `Some` but
     ///   `element_type.tag()` is not in `0xF0`–`0xFE`, or vice-versa.
     /// - [`Error::InvalidShape`] — `shard.parent_shape.len() != shape.rank()`.
+    /// - [`Error::InvalidLayout`] — a block-paged or CSF layout carries a `shard` descriptor
+    ///   (spec § Sharding).
+    /// - [`Error::InvalidQuantization`] — a block-paged layout carries a `quantization`
+    ///   descriptor incompatible with the paged layout (spec § Quantization Compatibility).
     ///
     /// # Examples
     ///
@@ -354,6 +359,24 @@ impl TensorDescriptor {
                     "CSF layout MUST NOT carry a shard descriptor (spec § Sharding)".to_string(),
                 ));
             }
+        }
+
+        // Spec (block-paged.md § Quantization Compatibility): a block-paged layout carrying a
+        // quantization descriptor must use a quant axis/block_size compatible with the paged
+        // layout. Enforced here — the cross-section seam where the typed layout and the raw
+        // quantization bytes are both in hand — by decoding the descriptor and delegating to
+        // the layout's own rule. (The bytes are stored raw on the descriptor; this is the one
+        // place both are known, mirroring the shard rejection above.)
+        if let (LayoutDescriptor::BlockPaged(bp), Some(q)) = (&layout, &quantization) {
+            let (qd, _) = QuantizationDescriptor::decode(q)?;
+            let (axis, block_size) = match &qd {
+                QuantizationDescriptor::PerChannelAffine(x) => (x.axis(), 0u32),
+                QuantizationDescriptor::PerBlockAffine(x) => (x.axis(), x.block_size()),
+                QuantizationDescriptor::Nf4(x) => (x.axis(), x.block_size()),
+                QuantizationDescriptor::Mxfp(x) => (x.axis(), x.block_size()),
+                QuantizationDescriptor::PerTensorAffine(_) => (0u32, 0u32),
+            };
+            bp.validate_quantization_compatibility(qd.scheme_tag().tag(), axis, block_size)?;
         }
 
         Ok(Self {
@@ -813,6 +836,95 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, Error::InvalidLayout(_)));
+    }
+
+    #[test]
+    fn new_rejects_block_paged_with_incompatible_quantization() {
+        use crate::layout::{BlockPagedLayout, BlockTableIndexType, KvRole};
+        use crate::quantization::PerChannelAffine;
+
+        // Per-channel quantization on the paged axis (axis 0) is prohibited for a
+        // block-paged layout (block-paged.md § Quantization Compatibility). This is the
+        // cross-section check wired into TensorDescriptor::new.
+        let quant = QuantizationDescriptor::PerChannelAffine(
+            PerChannelAffine::new_symmetric(0, 1).unwrap(),
+        )
+        .encode_to_vec();
+        let shape = Shape::new(vec![6u64, 2, 8]).unwrap();
+        let buf = BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
+        let layout = LayoutDescriptor::BlockPaged(BlockPagedLayout::new(
+            4,
+            5,
+            0,
+            2,
+            KvRole::Key,
+            Some(3),
+            BlockTableIndexType::U32,
+        ));
+        let err = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float16,
+            shape,
+            0,
+            layout,
+            vec![buf],
+            Some(quant),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::InvalidQuantization(_)));
+    }
+
+    #[test]
+    fn new_accepts_block_paged_with_compatible_quantization() {
+        use crate::layout::{BlockPagedLayout, BlockTableIndexType, KvRole};
+        use crate::quantization::PerChannelAffine;
+
+        // Per-channel on axis 1 (num_heads) is permitted for block-paged.
+        let quant = QuantizationDescriptor::PerChannelAffine(
+            PerChannelAffine::new_symmetric(1, 1).unwrap(),
+        )
+        .encode_to_vec();
+        let shape = Shape::new(vec![6u64, 2, 8]).unwrap();
+        let buf = BufferHandle::new(
+            64,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap();
+        let layout = LayoutDescriptor::BlockPaged(BlockPagedLayout::new(
+            4,
+            5,
+            0,
+            2,
+            KvRole::Key,
+            Some(3),
+            BlockTableIndexType::U32,
+        ));
+        let desc = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float16,
+            shape,
+            0,
+            layout,
+            vec![buf],
+            Some(quant),
+            None,
+            None,
+            None,
+        );
+        assert!(desc.is_ok());
     }
 
     #[test]

@@ -449,15 +449,13 @@ fn decode_block_paged(cursor: &mut ByteCursor<'_>) -> crate::Result<LayoutDescri
         });
     }
 
-    // TODO(spec): block-paged quantization compatibility (block-paged.md §
-    // Quantization Compatibility) requires cross-validating the layout's
-    // page_size against the quantization descriptor's axis and block_size.
-    // The quantization bytes are stored raw at this layer (TensorDescriptor.quantization
-    // is Option<Vec<u8>>); the check is deferred to the typed quantization layer
-    // (Layer 4 / higher) via BlockPagedLayout::validate_quantization_compatibility.
-    // Note: shard rejection (block-paged.md § Sharding) is enforced in
-    // TensorDescriptor::new, the cross-section seam where layout and shard are both
-    // known — see descriptor/mod.rs. It is intentionally not checked here.
+    // Block-paged quantization compatibility (block-paged.md § Quantization Compatibility)
+    // is NOT checked here: the quantization bytes are stored raw at this layer
+    // (TensorDescriptor.quantization is Option<Vec<u8>>), so the layout codec cannot see them.
+    // It is enforced in TensorDescriptor::new — the cross-section seam where the typed layout
+    // and the raw quantization bytes are both in hand — via
+    // BlockPagedLayout::validate_quantization_compatibility, alongside the shard rejection
+    // (block-paged.md § Sharding). See descriptor/mod.rs.
 
     Ok(LayoutDescriptor::BlockPaged(BlockPagedLayout::new(
         page_size,
