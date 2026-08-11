@@ -18,12 +18,15 @@ html { font-family: var(--hurray-font); }
 .navy   { --links: #2dd4bf; }
 .ayu    { --links: #2dd4bf; }
 
+/* Sizes below are in em, not rem: mdBook sets html { font-size: 62.5% }, so a rem
+   is 10px there and rem-sized UI renders ~1.6x too small next to 1.6rem body text. */
+
 /* Version selector injected into the menu bar by version-selector.js. */
-.hurray-version-wrap { display: flex; align-items: center; margin: 0 .4rem; }
+.hurray-version-wrap { display: flex; align-items: center; margin: 0 .4em; }
 .hurray-version-select {
   font: inherit;
-  font-size: .85rem;
-  padding: .1rem .3rem;
+  font-size: .875em;
+  padding: .15em .4em;
   border-radius: 6px;
   border: 1px solid var(--icons, #ccc);
   background: var(--bg);
@@ -37,9 +40,9 @@ html { font-family: var(--hurray-font); }
   color: #664d03;
   border: 1px solid #ffe69c;
   border-radius: 6px;
-  padding: .5rem .75rem;
-  margin: 0 0 1.25rem;
-  font-size: .9rem;
+  padding: .6em .8em;
+  margin: 0 0 1.25em;
+  font-size: .95em;
 }
 .hurray-dev-banner a { font-weight: 600; }
 .navy .hurray-dev-banner,
@@ -56,15 +59,15 @@ html { font-family: var(--hurray-font); }
    bar appears and only the selected language's block is visible. */
 .lang-tabs-bar {
   display: flex;
-  gap: .25rem;
+  gap: .3em;
   margin: 0 0 -1px;
   flex-wrap: wrap;
 }
 .lang-tab {
   font: inherit;
-  font-size: .85rem;
+  font-size: .95em;
   cursor: pointer;
-  padding: .3rem .8rem;
+  padding: .4em .95em;
   border: 1px solid var(--icons, #ccc);
   border-bottom: none;
   border-radius: 6px 6px 0 0;
