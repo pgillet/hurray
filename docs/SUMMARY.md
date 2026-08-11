@@ -106,3 +106,5 @@
     - [ADR-026: Subpaving Nested Region Descriptors](adr/ADR-026-subpaving-nested-region-descriptors.md)
     - [ADR-027: Composite Tensors](adr/ADR-027-composite-tensors-head-members-composition-rule.md)
     - [ADR-028: Documentation Website](adr/ADR-028-documentation-website.md)
+    - [ADR-029: hurray-python is Interchange-First](adr/ADR-029-hurray-python-interchange-first-drop-array-api-claim.md)
+    - [ADR-030: Multi-Buffer Native Buffer Protocol](adr/ADR-030-multi-buffer-native-buffer-protocol.md)
