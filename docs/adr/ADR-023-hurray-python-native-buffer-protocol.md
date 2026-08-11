@@ -251,10 +251,11 @@ by `format-spec-writer`. Do NOT apply them here.
 ## Open Questions Deferred
 
 - **Multi-buffer tensors (`SparseTensor`).** Should `__hurray_buffer__` return a tuple
-  of capsules or be restricted to dense tensors? **Deferred to Layer 8c planning.**
-  Initial recommendation: restrict to dense `hurray.Tensor`; add
-  `__hurray_sparse_buffer__` in a later sub-layer once sparse interop requirements
-  are clearer.
+  of capsules or be restricted to dense tensors? **RESOLVED by ADR-030**: one capsule
+  carries every buffer, wrapping a `HurrayBufferList`. The initial recommendation
+  recorded here — restrict to dense and add `__hurray_sparse_buffer__` later — is
+  superseded; it conflated multi-buffer with sparse, while dense per-channel-quantized,
+  block-paged, and composite tensors are multi-buffer too.
 - **Cross-process (IPC) variant.** A capsule only works in-process; cross-process
   Hurray-native exchange would need an OS-handle-based protocol. **Deferred** to a
   later layer.
