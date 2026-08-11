@@ -141,9 +141,16 @@ bump.
 and forces consumers to probe for two protocols and reconcile their semantics.
 
 **Widen `HurrayBuffer` itself to hold N allocations.** Rejected. `HurrayBuffer` maps to
-one allocation with one release callback, one device tag, and one sync mode; buffers in
-a multi-buffer tensor may legitimately differ in device and sync mode. Collapsing them
-into one handle would lose that per-buffer metadata.
+one allocation with one release callback, and each buffer of a tensor declares its own
+`byte_size`, `alignment`, and `sync_mode`. Collapsing them into one handle would lose
+that per-buffer metadata and, more importantly, the per-buffer release callback that
+lets buffers with independent owners be freed independently. (`device_tag` and
+`memory_class` are *not* per-buffer in practice: `buffer-protocol.md`
+§ Device Colocation requires every buffer of one descriptor to share both.)
+
+**Require the producer to slice one contiguous allocation into N sub-buffers.**
+Rejected as a *requirement*, though it remains permitted as a producer strategy — see
+§ Notes below.
 
 ## Consequences
 
@@ -181,6 +188,31 @@ No amendments under `docs/spec/` are required.
 - **Async counterpart.** Unchanged from ADR-023: no `__ahurray_buffer__`; `sync_mode`
   already carries the per-buffer synchronisation contract. Deferred.
 - **Per-buffer `stream` handling.** ADR-023 § 6 defines `stream` for a single buffer.
-  Where the buffers of one tensor sit on different devices, whether `stream` applies
-  per-buffer or per-tensor is left open until a concrete multi-device case appears; the
-  present implementation targets buffers sharing one device.
+  Buffers of one descriptor always share a device and memory class
+  (`buffer-protocol.md` § Device Colocation), but `sync_mode` is not covered by that
+  rule and may differ between them. Whether a `stream` argument applies per-buffer or
+  per-tensor when sync modes differ is left open until a concrete case appears; the
+  present implementation targets buffers sharing one sync mode.
+
+## Notes (non-normative)
+
+**Why not one contiguous allocation, sliced?** A producer MAY do exactly that: the
+buffer handle is a declaration of properties, not a pointer
+(`buffer-protocol.md` § Buffer Handle), and nothing requires the N pointers behind a
+descriptor to live in distinct allocations. A producer that controls all of its buffers
+can allocate one block, place each buffer at a 64-byte-aligned offset within it, and
+hand out N handles pointing into that block. This decision does not forbid that; it
+declines to *require* it, for three reasons.
+
+1. **Buffers frequently have independent owners.** A quantized tensor's data may be a
+   PyTorch storage while its scales are a NumPy array, or its values may be an mmap
+   region while its indices were just computed. Requiring one contiguous block means
+   copying foreign memory into it at the boundary, which contradicts the zero-copy-first
+   principle the protocol exists to serve.
+2. **Release is per buffer.** Each `HurrayBuffer` carries its own release callback
+   (ADR-009). One block collapses that into all-or-nothing: a consumer could not release
+   the data and retain the scales, and a producer could not hand out buffers whose
+   lifetimes differ.
+3. **It saves no bookkeeping.** A sliced block still needs N `(offset, length)` pairs
+   plus inter-slice alignment padding — the same cardinality as N handles, with strictly
+   less generality.
