@@ -21,5 +21,11 @@ edit-url-template = "https://github.com/pgillet/hurray/edit/main/docs/{path}"
 additional-css = ["theme/hurray.css"]
 additional-js = ["theme/version-selector.js", "theme/lang-tabs.js"]
 
+[output.html.playground]
+# No run button: it posts the snippet to play.rust-lang.org, which only carries the
+# top-100 crates.io crates — hurray-core is not among them, so every run failed with
+# "unresolved import `hurray_core`". Copy button and highlighting are unaffected.
+runnable = false
+
 [output.html.search]
 enable = true
