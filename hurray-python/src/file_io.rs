@@ -33,14 +33,24 @@ fn io_err_to_py(e: hurray_io::Error) -> PyErr {
 
 /// Build a `hurray.Tensor` from a `FileTensor` returned by `FileReader`.
 ///
-/// Only single-buffer (dense) tensors are supported. Multi-buffer descriptors
-/// (COO / CSR / CSC sparse layouts) raise `hurray.UnsupportedError`.
+/// Multi-buffer tensors — per-channel / NF4 / MXFP quantization, sparse layouts,
+/// block-paged — are carried in descriptor buffer-table order (ADR-030 § 3).
 fn file_tensor_to_tensor(py: Python<'_>, ft: FileTensor) -> PyResult<Py<Tensor>> {
-    if ft.buffers.len() != 1 {
-        return Err(UnsupportedError::new_err(format!(
-            "tensor {:?} has {} buffers; sparse tensors are not yet supported by \
-             hurray.load() — use the SparseTensor API directly",
+    if ft.buffers.is_empty() {
+        return Err(InvalidDescriptorError::new_err(format!(
+            "tensor {:?} carries no buffers",
+            ft.name
+        )));
+    }
+
+    // The reader yields one byte range per buffer handle, so a mismatch means the
+    // file's buffer table and its payload disagree — reject rather than hand back
+    // a descriptor whose buffer indices do not resolve.
+    if ft.buffers.len() != ft.descriptor.buffers.len() {
+        return Err(InvalidDescriptorError::new_err(format!(
+            "tensor {:?}: descriptor declares {} buffers but {} were read",
             ft.name,
+            ft.descriptor.buffers.len(),
             ft.buffers.len()
         )));
     }
@@ -57,7 +67,13 @@ fn file_tensor_to_tensor(py: Python<'_>, ft: FileTensor) -> PyResult<Py<Tensor>>
             hurray_core::MemoryClass::Standard,
         ));
 
-    let buffer = BufferStore::from_slice(&ft.buffers[0]);
+    let mut read_buffers = ft.buffers.iter();
+    // The emptiness check above guarantees a first element.
+    let buffer = match read_buffers.next() {
+        Some(b) => BufferStore::from_slice(b),
+        None => return Err(InvalidDescriptorError::new_err("tensor carries no buffers")),
+    };
+    let aux_buffers: Vec<BufferStore> = read_buffers.map(|b| BufferStore::from_slice(b)).collect();
 
     let dtype_py = Py::new(
         py,
@@ -79,6 +95,7 @@ fn file_tensor_to_tensor(py: Python<'_>, ft: FileTensor) -> PyResult<Py<Tensor>>
         Tensor {
             descriptor: desc,
             buffer,
+            aux_buffers,
             dtype_py,
             device_py,
         },
@@ -149,7 +166,9 @@ fn py_dict_to_kv(kv_dict: &Bound<'_, PyDict>) -> PyResult<Vec<(String, KvValue)>
 /// - `hurray.FileError` — file not found, corrupt HRRYFILE, unexpected EOF,
 ///   invalid magic, CRC mismatch, etc.
 /// - `hurray.InvalidDescriptorError` — a tensor descriptor failed to decode.
-/// - `hurray.UnsupportedError` — the file contains a multi-buffer (sparse) tensor.
+/// Multi-buffer tensors load as a `hurray.Tensor` carrying every buffer in
+/// descriptor order (ADR-030). A sparse tensor therefore round-trips its values
+/// and index arrays, though it is returned as a `Tensor`, not a `SparseTensor`.
 ///
 /// # Examples
 ///
@@ -245,8 +264,8 @@ pub fn save(
     tensors: &Bound<'_, PyDict>,
     kv: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<()> {
-    // Extract tensor data while holding GIL: descriptor + raw bytes.
-    let mut entries: Vec<(String, hurray_core::TensorDescriptor, Vec<u8>)> =
+    // Extract tensor data while holding GIL: descriptor + raw bytes per buffer.
+    let mut entries: Vec<(String, hurray_core::TensorDescriptor, Vec<Vec<u8>>)> =
         Vec::with_capacity(tensors.len());
     for (key, val) in tensors {
         let name: String = key.extract()?;
@@ -256,9 +275,14 @@ pub fn save(
                  SparseTensor file I/O is not yet supported",
             )
         })?;
-        // SAFETY: GIL is held; buffer is valid for the lifetime of `tensor`.
-        let bytes = unsafe { tensor.buffer.as_slice() }.to_vec();
-        entries.push((name, tensor.descriptor.clone(), bytes));
+        // Every buffer in descriptor order (ADR-030 § 3), so quantization scale
+        // and sparse index buffers reach the file alongside the data.
+        // SAFETY: GIL is held; buffers are valid for the lifetime of `tensor`.
+        let buffers: Vec<Vec<u8>> = tensor
+            .buffers()
+            .map(|b| unsafe { b.as_slice() }.to_vec())
+            .collect();
+        entries.push((name, tensor.descriptor.clone(), buffers));
     }
     let kv_pairs = if let Some(d) = kv {
         py_dict_to_kv(d)?
@@ -275,8 +299,9 @@ pub fn save(
             .block_on(async {
                 let file = tokio::fs::File::create(&path).await?;
                 let mut writer = FileWriter::new(file).await?;
-                for (name, desc, buf) in &entries {
-                    writer.write_tensor(name, desc, &[buf.as_slice()]).await?;
+                for (name, desc, buffers) in &entries {
+                    let slices: Vec<&[u8]> = buffers.iter().map(|b| b.as_slice()).collect();
+                    writer.write_tensor(name, desc, &slices).await?;
                 }
                 writer.finish(kv_pairs).await?;
                 Ok(())
@@ -409,6 +434,98 @@ mod tests {
             let list = PyList::new(py, list).unwrap();
             let result = py_to_kv_value(list.as_any());
             assert!(result.is_err());
+        });
+    }
+
+    #[test]
+    fn multi_buffer_tensor_round_trips_through_save_and_load() {
+        use hurray_core::{
+            BufferHandle, DeviceTag, ElementType, LayoutDescriptor, MemoryClass, Shape, SyncMode,
+            TensorDescriptor, DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR,
+            MIN_BUFFER_ALIGNMENT,
+        };
+        use pyo3::types::PyDict;
+
+        init_python();
+        Python::attach(|py| {
+            let data = vec![9u8; 8];
+            let scales = vec![3u8; 16];
+
+            let bh = |len: u64| {
+                BufferHandle::with_memory_class(
+                    len,
+                    MIN_BUFFER_ALIGNMENT,
+                    DeviceTag::Cpu,
+                    SyncMode::ProducerSynced,
+                    MemoryClass::Standard,
+                )
+                .unwrap()
+            };
+            let descriptor = TensorDescriptor::new(
+                DESCRIPTOR_VERSION_MAJOR,
+                DESCRIPTOR_VERSION_MINOR,
+                ElementType::Int8,
+                Shape::new(vec![2u64, 4]).unwrap(),
+                0,
+                LayoutDescriptor::RowMajor,
+                vec![bh(8), bh(16)],
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+            let tensor = Tensor {
+                descriptor,
+                buffer: BufferStore::from_slice(&data),
+                aux_buffers: vec![BufferStore::from_slice(&scales)],
+                dtype_py: Py::new(
+                    py,
+                    crate::dtype::Dtype {
+                        inner: ElementType::Int8,
+                    },
+                )
+                .unwrap(),
+                device_py: Py::new(
+                    py,
+                    crate::device::Device {
+                        tag: DeviceTag::Cpu,
+                        memory_class: MemoryClass::Standard,
+                        device_id: 0,
+                    },
+                )
+                .unwrap(),
+            };
+
+            let dir = std::env::temp_dir().join("hurray_multi_buffer_roundtrip");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("two_buffers.hrry");
+
+            let tensors = PyDict::new(py);
+            tensors.set_item("w", Py::new(py, tensor).unwrap()).unwrap();
+            save(py, path.to_string_lossy().into_owned(), &tensors, None).unwrap();
+
+            let loaded = load(py, path.to_string_lossy().into_owned(), None).unwrap();
+            let got: Py<Tensor> = loaded
+                .get_item("w")
+                .unwrap()
+                .expect("tensor 'w' must be present")
+                .extract()
+                .unwrap();
+            let got = got.borrow(py);
+
+            // Both buffers survive, in descriptor order, byte for byte.
+            assert_eq!(got.buffer_count(), 2);
+            let bytes: Vec<Vec<u8>> = got
+                .buffers()
+                .map(|b| unsafe { b.as_slice() }.to_vec())
+                .collect();
+            assert_eq!(bytes[0], data);
+            assert_eq!(bytes[1], scales);
+            assert_eq!(got.descriptor.buffers.len(), 2);
+
+            std::fs::remove_file(&path).ok();
         });
     }
 

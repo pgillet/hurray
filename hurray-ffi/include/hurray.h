@@ -20,9 +20,9 @@
 // ```
 // use hurray_ffi::HURRAY_C_ABI_VERSION;
 //
-// assert_eq!(HURRAY_C_ABI_VERSION, 2);
+// assert_eq!(HURRAY_C_ABI_VERSION, 3);
 // ```
-#define HURRAY_C_ABI_VERSION 2
+#define HURRAY_C_ABI_VERSION 3
 
 // Opaque handle to a buffer registered with the Hurray C ABI.
 //
@@ -31,6 +31,15 @@
 // pointer. The handle is heap-allocated by [`hurray_buffer_from_ptr`] and
 // MUST be released exactly once by [`hurray_buffer_destroy`].
 typedef struct HurrayBuffer HurrayBuffer;
+
+// Opaque handle to an ordered, owning list of [`HurrayBuffer`] handles.
+//
+// Like [`HurrayBuffer`], this struct is **not** `#[repr(C)]`; its layout is an
+// implementation detail and callers MUST treat it as a black-box pointer.
+// Keeping it opaque is what allows [`hurray_buffer_list_get`] to bounds-check
+// and to hand back a borrowed handle — a bare `HurrayBuffer**` array could do
+// neither.
+typedef struct HurrayBufferList HurrayBufferList;
 
 // Opaque handle to a decoded tensor descriptor.
 //
@@ -145,6 +154,9 @@ typedef struct HurraySyncEventPayload {
 
 // An unclassified internal error occurred.
 #define HURRAY_ERR_INTERNAL -10
+
+// An index argument is outside the valid range for the collection.
+#define HURRAY_ERR_INDEX_OUT_OF_BOUNDS -11
 
 // Reads the declared alignment of a buffer handle (in bytes).
 //
@@ -285,6 +297,189 @@ HurrayStatus hurray_buffer_handoff_event(const struct HurrayBuffer *buffer,
 // `buffer` MUST be a valid, non-null pointer to a live [`HurrayBuffer`].
  HurrayStatus hurray_buffer_handoff_producer_synced(const struct HurrayBuffer *buffer) ;
 
+// Destroys `*list` and every [`HurrayBuffer`] it owns, then writes null through
+// `list`.
+//
+// Nulling the caller's pointer is the sound half of Arrow's "release marks the
+// structure released" discipline: the list allocation itself is freed here, so
+// a marker written inside it could not be read back, but the caller's own
+// variable can be invalidated.
+//
+// Each owned slot is nulled as its handle is destroyed, so a release callback
+// that panics or re-enters cannot cause a double free. A panicking callback
+// leaks the remainder of the list rather than corrupting it.
+//
+// Passing a pointer to a null pointer is a no-op and returns [`HURRAY_OK`],
+// which makes cleanup paths idempotent.
+//
+// # Safety
+//
+// - `list` MUST be a valid, non-null, writable pointer to a `*mut HurrayBufferList`.
+// - `*list` MUST be a live handle from [`hurray_buffer_list_new`], or null.
+//
+// # Examples
+//
+// ```
+// use hurray_ffi::buffer_list::{hurray_buffer_list_destroy, hurray_buffer_list_new};
+// use hurray_ffi::{HurrayBufferList, HURRAY_OK};
+//
+// let mut list: *mut HurrayBufferList = std::ptr::null_mut();
+// unsafe { hurray_buffer_list_new(0, &mut list) };
+//
+// assert_eq!(unsafe { hurray_buffer_list_destroy(&mut list) }, HURRAY_OK);
+// assert!(list.is_null());
+//
+// // Idempotent: destroying an already-nulled pointer is a no-op.
+// assert_eq!(unsafe { hurray_buffer_list_destroy(&mut list) }, HURRAY_OK);
+// ```
+ HurrayStatus hurray_buffer_list_destroy(struct HurrayBufferList **list) ;
+
+// Borrows the [`HurrayBuffer`] at `index`.
+//
+// The returned handle is **borrowed**: ownership stays with the list, and the
+// caller MUST NOT call `hurray_buffer_destroy` on it. It stays valid until the
+// list is destroyed.
+//
+// Returns [`HURRAY_ERR_INDEX_OUT_OF_BOUNDS`] if `index` is not less than the
+// list length.
+//
+// # Safety
+//
+// - `list` MUST be a live handle from [`hurray_buffer_list_new`].
+// - `out_buffer` MUST be a valid, non-null, writable pointer.
+//
+// # Examples
+//
+// ```
+// use hurray_ffi::buffer_list::{
+//     hurray_buffer_list_destroy, hurray_buffer_list_get, hurray_buffer_list_new,
+// };
+// use hurray_ffi::status::HURRAY_ERR_INDEX_OUT_OF_BOUNDS;
+// use hurray_ffi::{HurrayBuffer, HurrayBufferList};
+//
+// let mut list: *mut HurrayBufferList = std::ptr::null_mut();
+// unsafe { hurray_buffer_list_new(0, &mut list) };
+//
+// // An empty list has no index 0.
+// let mut got: *mut HurrayBuffer = std::ptr::null_mut();
+// assert_eq!(
+//     unsafe { hurray_buffer_list_get(list, 0, &mut got) },
+//     HURRAY_ERR_INDEX_OUT_OF_BOUNDS
+// );
+//
+// unsafe { hurray_buffer_list_destroy(&mut list) };
+// ```
+
+HurrayStatus hurray_buffer_list_get(const struct HurrayBufferList *list,
+                                    uint64_t index,
+                                    struct HurrayBuffer **out_buffer)
+;
+
+// Reads the number of buffers in `list`.
+//
+// # Safety
+//
+// - `list` MUST be a live handle from [`hurray_buffer_list_new`].
+// - `out_len` MUST be a valid, non-null, writable pointer.
+//
+// # Examples
+//
+// ```
+// use hurray_ffi::buffer_list::{
+//     hurray_buffer_list_destroy, hurray_buffer_list_len, hurray_buffer_list_new,
+// };
+// use hurray_ffi::{HurrayBufferList, HURRAY_OK};
+//
+// let mut list: *mut HurrayBufferList = std::ptr::null_mut();
+// unsafe { hurray_buffer_list_new(0, &mut list) };
+//
+// let mut len: u64 = 7;
+// assert_eq!(unsafe { hurray_buffer_list_len(list, &mut len) }, HURRAY_OK);
+// assert_eq!(len, 0);
+//
+// unsafe { hurray_buffer_list_destroy(&mut list) };
+// ```
+ HurrayStatus hurray_buffer_list_len(const struct HurrayBufferList *list, uint64_t *out_len) ;
+
+// Creates an empty [`HurrayBufferList`].
+//
+// `capacity` is a hint only; the list grows as needed. Pass the tensor's
+// buffer count to avoid reallocation.
+//
+// The caller owns the returned list and MUST destroy it exactly once with
+// [`hurray_buffer_list_destroy`].
+//
+// # Safety
+//
+// `out_list` MUST be a valid, non-null, writable pointer.
+//
+// # Examples
+//
+// ```
+// use hurray_ffi::buffer_list::{hurray_buffer_list_destroy, hurray_buffer_list_new};
+// use hurray_ffi::{HurrayBufferList, HURRAY_OK};
+//
+// let mut list: *mut HurrayBufferList = std::ptr::null_mut();
+// assert_eq!(unsafe { hurray_buffer_list_new(2, &mut list) }, HURRAY_OK);
+// assert!(!list.is_null());
+//
+// assert_eq!(unsafe { hurray_buffer_list_destroy(&mut list) }, HURRAY_OK);
+// assert!(list.is_null()); // destroy nulls the caller's pointer
+// ```
+ HurrayStatus hurray_buffer_list_new(uint64_t capacity, struct HurrayBufferList **out_list) ;
+
+// Appends `buffer` to `list`, transferring ownership of the handle to the list.
+//
+// On success the caller MUST NOT destroy `buffer` — destroying the list
+// destroys it. On failure ownership stays with the caller.
+//
+// Buffers MUST be pushed in descriptor buffer-table order: the first push is
+// buffer index `0`, the second is index `1`, and so on.
+//
+// # Safety
+//
+// - `list` MUST be a live handle from [`hurray_buffer_list_new`].
+// - `buffer` MUST be a live handle from `hurray_buffer_from_ptr` that has not
+//   been destroyed and is not already owned by another list.
+//
+// # Examples
+//
+// ```
+// use hurray_ffi::buffer::hurray_buffer_from_ptr;
+// use hurray_ffi::buffer_list::{
+//     hurray_buffer_list_destroy, hurray_buffer_list_len, hurray_buffer_list_new,
+//     hurray_buffer_list_push,
+// };
+// use hurray_ffi::{HurrayBuffer, HurrayBufferList, HURRAY_OK};
+//
+// #[repr(align(64))]
+// struct Aligned([u8; 64]);
+// let mut data = Aligned([0u8; 64]);
+//
+// let mut buffer: *mut HurrayBuffer = std::ptr::null_mut();
+// assert_eq!(
+//     unsafe {
+//         hurray_buffer_from_ptr(
+//             data.0.as_mut_ptr().cast(), 64, 64, 0, 0, 0,
+//             None, std::ptr::null_mut(), &mut buffer,
+//         )
+//     },
+//     HURRAY_OK
+// );
+//
+// let mut list: *mut HurrayBufferList = std::ptr::null_mut();
+// unsafe { hurray_buffer_list_new(1, &mut list) };
+// assert_eq!(unsafe { hurray_buffer_list_push(list, buffer) }, HURRAY_OK);
+//
+// let mut len: u64 = 0;
+// unsafe { hurray_buffer_list_len(list, &mut len) };
+// assert_eq!(len, 1);
+//
+// // Destroying the list destroys the pushed buffer too.
+// unsafe { hurray_buffer_list_destroy(&mut list) };
+// ```
+ HurrayStatus hurray_buffer_list_push(struct HurrayBufferList *list, struct HurrayBuffer *buffer) ;
+
 // Reads the memory class wire byte of a buffer handle.
 //
 // # Safety
@@ -309,7 +504,7 @@ HurrayStatus hurray_buffer_memory_class(const struct HurrayBuffer *buffer,
 // # Examples
 //
 // ```
-// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 2);
+// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 3);
 // ```
  uint32_t hurray_c_abi_version(void) ;
 
