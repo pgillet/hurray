@@ -19,12 +19,13 @@ foundation for all non-Python language bindings.
 
 The C ABI carries a single `uint32` version identifier exposed via a constant
 `HURRAY_C_ABI_VERSION` and a runtime accessor `hurray_c_abi_version()`. The
-current version is `2`:
+current version is `3`:
 
 | Version | Changes |
 |---------|---------|
 | `1` | Initial C ABI: opaque handles, buffer release callbacks, panic-safe error returns. |
 | `2` | Per-mode buffer handoff sync payloads (`SYNC_PRODUCER_SYNCED`, `SYNC_EVENT`, `SYNC_CONSUMER_STREAM`) and the event-release callback. See [Buffer Handoff Synchronisation](#buffer-handoff-synchronisation). |
+| `3` | `HurrayBufferList` for multi-buffer tensors, and the native buffer capsule now wraps a list rather than a single `HurrayBuffer` (ADR-030). See [Buffer Lists](#buffer-lists). |
 
 A consumer of the C ABI MUST query `hurray_c_abi_version()` before invoking any
 function whose contract changed in a later version. A consumer compiled against
@@ -43,6 +44,7 @@ handles**. Callers MUST NOT dereference or inspect the pointed-to memory directl
 |---|---|
 | `HurrayDescriptor*` | A parsed tensor descriptor |
 | `HurrayBuffer*` | A buffer handle (data + metadata) |
+| `HurrayBufferList*` | An ordered, owning collection of buffer handles |
 | `HurrayReader*` | A streaming tensor reader |
 | `HurrayWriter*` | A streaming tensor writer |
 
@@ -50,6 +52,36 @@ Each handle is obtained from a `hurray_*_create` function and MUST be released b
 the corresponding `hurray_*_destroy` function. Double-free and use-after-free are
 undefined behaviour on the caller side; the implementation MUST detect them in debug
 builds (e.g., via a poisoned sentinel).
+
+## Buffer Lists
+
+A tensor whose descriptor references more than one buffer — per-channel / NF4 /
+MXFP quantization, sparse layouts, block-paged, composite — needs all of its
+buffers to travel together. `HurrayBufferList` is that carrier (ADR-030).
+
+| Function | Contract |
+|---|---|
+| `hurray_buffer_list_new(capacity, out_list)` | Creates an empty list. `capacity` is a hint. |
+| `hurray_buffer_list_push(list, buffer)` | Appends `buffer`, **transferring ownership** to the list on success. On failure ownership stays with the caller. |
+| `hurray_buffer_list_len(list, out_len)` | Number of buffers in the list. |
+| `hurray_buffer_list_get(list, index, out_buffer)` | Borrows the handle at `index`. Returns `HURRAY_ERR_INDEX_OUT_OF_BOUNDS` if `index >= len`. |
+| `hurray_buffer_list_destroy(list)` | Destroys the list and every handle it owns, then writes null through `list`. |
+
+The following rules are normative.
+
+- A list **owns** every handle pushed into it. A handle obtained from
+  `hurray_buffer_list_get` is **borrowed**: the caller MUST NOT call
+  `hurray_buffer_destroy` on it. It remains valid until the list is destroyed.
+- Buffers MUST be pushed in descriptor buffer-table order: element `i` of the
+  list is buffer index `i` of the descriptor.
+- `hurray_buffer_list_destroy` takes a **pointer to the caller's handle
+  variable** and MUST write null through it, so the caller's variable is
+  observably dead and a repeated destroy is a no-op. This is the sound half of
+  the "release marks the structure released" discipline: the list allocation is
+  freed, so only memory the caller owns can carry the marker.
+- Destroying a list MUST destroy every owned handle exactly once, and MUST null
+  each owned slot as it goes, so that a release callback which panics or
+  re-enters cannot cause a double free.
 
 ## Panic Safety
 

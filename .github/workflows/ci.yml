@@ -94,8 +94,9 @@ jobs:
         run: .venv/bin/maturin develop -m hurray-python/Cargo.toml
         env:
           VIRTUAL_ENV: ${{ github.workspace }}/.venv
-      - name: Run Python conformance tests
-        run: .venv/bin/python -m pytest hurray-python/tests/test_conformance.py -v
+      # Whole directory, not one file: a new test module must not need a CI edit to run.
+      - name: Run Python tests
+        run: .venv/bin/python -m pytest hurray-python/tests/ -v
 
   semver:
     name: SemVer

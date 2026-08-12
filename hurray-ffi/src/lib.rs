@@ -20,6 +20,7 @@
 //! incompatible library versions.
 
 pub mod buffer;
+pub mod buffer_list;
 pub mod descriptor;
 pub(crate) mod panic;
 pub mod status;
@@ -28,12 +29,13 @@ pub mod sync;
 // ── Re-exports ────────────────────────────────────────────────────────────────
 
 pub use buffer::{hurray_buffer_from_ptr, HurrayBuffer, HurrayReleaseCallback};
+pub use buffer_list::{hurray_buffer_list_new, HurrayBufferList};
 pub use descriptor::{hurray_descriptor_decode, HurrayDescriptor};
 pub use status::{
-    HurrayStatus, HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_ERR_INTERNAL, HURRAY_ERR_INTERNAL_PANIC,
-    HURRAY_ERR_INVALID_LAYOUT, HURRAY_ERR_INVALID_MAGIC, HURRAY_ERR_INVALID_SYNC_MODE,
-    HURRAY_ERR_INVALID_TYPE, HURRAY_ERR_NULL_POINTER, HURRAY_ERR_SYNC_MODE_MISMATCH,
-    HURRAY_ERR_VERSION_MISMATCH, HURRAY_OK,
+    HurrayStatus, HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INTERNAL,
+    HURRAY_ERR_INTERNAL_PANIC, HURRAY_ERR_INVALID_LAYOUT, HURRAY_ERR_INVALID_MAGIC,
+    HURRAY_ERR_INVALID_SYNC_MODE, HURRAY_ERR_INVALID_TYPE, HURRAY_ERR_NULL_POINTER,
+    HURRAY_ERR_SYNC_MODE_MISMATCH, HURRAY_ERR_VERSION_MISMATCH, HURRAY_OK,
 };
 pub use sync::{HurrayEventReleaseFn, HurraySyncConsumerStreamPayload, HurraySyncEventPayload};
 
@@ -49,9 +51,9 @@ pub use sync::{HurrayEventReleaseFn, HurraySyncConsumerStreamPayload, HurraySync
 /// ```
 /// use hurray_ffi::HURRAY_C_ABI_VERSION;
 ///
-/// assert_eq!(HURRAY_C_ABI_VERSION, 2);
+/// assert_eq!(HURRAY_C_ABI_VERSION, 3);
 /// ```
-pub const HURRAY_C_ABI_VERSION: u32 = 2;
+pub const HURRAY_C_ABI_VERSION: u32 = 3;
 
 /// Returns the [`HURRAY_C_ABI_VERSION`] constant.
 ///
@@ -60,7 +62,7 @@ pub const HURRAY_C_ABI_VERSION: u32 = 2;
 /// # Examples
 ///
 /// ```
-/// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 2);
+/// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 3);
 /// ```
 #[no_mangle]
 pub extern "C" fn hurray_c_abi_version() -> u32 {

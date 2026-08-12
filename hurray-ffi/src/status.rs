@@ -59,6 +59,9 @@ pub const HURRAY_ERR_SYNC_MODE_MISMATCH: HurrayStatus = -9;
 /// An unclassified internal error occurred.
 pub const HURRAY_ERR_INTERNAL: HurrayStatus = -10;
 
+/// An index argument is outside the valid range for the collection.
+pub const HURRAY_ERR_INDEX_OUT_OF_BOUNDS: HurrayStatus = -11;
+
 // ── Error mapping ─────────────────────────────────────────────────────────────
 
 /// Maps a [`hurray_core::Error`] to the closest [`HurrayStatus`] error code.

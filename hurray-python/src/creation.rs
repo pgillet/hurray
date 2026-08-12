@@ -120,6 +120,7 @@ fn make_owned_tensor(
     Ok(Tensor {
         descriptor,
         buffer: BufferStore::Owned(data.into_boxed_slice()),
+        aux_buffers: Vec::new(),
         dtype_py,
         device_py,
     })

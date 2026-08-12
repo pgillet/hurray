@@ -536,6 +536,77 @@ impl SparseTensor {
         Ok(matrix.into())
     }
 
+    // ── Native buffer protocol ────────────────────────────────────────────────
+
+    /// Return a `"hurray_buffer"` PyCapsule carrying **every** buffer of this
+    /// sparse tensor, for zero-copy sharing with Hurray-aware extensions.
+    ///
+    /// ADR-030 § 5 retired the separate `__hurray_sparse_buffer__` protocol that
+    /// ADR-023 had floated: sparse is just the multi-buffer case, so consumers
+    /// probe for one protocol and get values plus index arrays in descriptor
+    /// buffer-table order — values, then the primary index array, then the
+    /// secondary one for CSR/CSC.
+    ///
+    /// ## Errors
+    ///
+    /// - `hurray.BufferError` — the descriptor carries no buffer handles.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// t = hurray.sparse_coo([[0, 1]], [1.0], [2, 2], dtype=hurray.float32)
+    /// cap = t.__hurray_buffer__()
+    /// assert cap is not None
+    /// ```
+    #[pyo3(signature = (stream = None))]
+    pub fn __hurray_buffer__(
+        slf: &Bound<'_, Self>,
+        // ProducerSynced: stream hint accepted for API parity; not acted on here.
+        stream: Option<Py<PyAny>>,
+    ) -> PyResult<Py<PyAny>> {
+        let _ = stream;
+        let py = slf.py();
+        let t = slf.borrow();
+
+        if t.descriptor.buffers.is_empty() {
+            return Err(BufferError::new_err(
+                "sparse tensor has no buffer handles; cannot produce a native buffer capsule",
+            ));
+        }
+
+        // Descriptor order for every sparse format is values, aux0, aux1 — the same
+        // order build_coo/csr/csc_descriptor push their handles in.
+        let stores = std::iter::once(&t.values_buf)
+            .chain(std::iter::once(&t.aux_buf_0))
+            .chain(t.aux_buf_1.iter());
+
+        let capsule_buffers: Vec<crate::native_buffer::CapsuleBuffer> = stores
+            .zip(t.descriptor.buffers.iter())
+            .map(|(store, handle)| {
+                let byte_size = store.len() as u64;
+                crate::native_buffer::CapsuleBuffer {
+                    data_ptr: store.as_ptr() as *mut std::ffi::c_void,
+                    byte_size,
+                    alignment: if byte_size == 0 {
+                        1
+                    } else {
+                        handle.alignment()
+                    },
+                    device_tag: handle.device_tag(),
+                    sync_mode: handle.sync_mode(),
+                    memory_class: handle.memory_class(),
+                }
+            })
+            .collect();
+
+        let descriptor = &t.descriptor;
+        let tensor_obj: Py<PyAny> = slf.clone().into_any().unbind();
+
+        crate::native_buffer::build_capsule(py, tensor_obj, descriptor, &capsule_buffers)
+    }
+
     // ── Dunders ───────────────────────────────────────────────────────────────
 
     /// Sparse tensors are unhashable — mutable objects must not be used as dict keys.

@@ -141,6 +141,7 @@ pub fn from_numpy(py: Python<'_>, array: &Bound<'_, PyAny>) -> PyResult<Tensor> 
     Ok(Tensor {
         descriptor,
         buffer,
+        aux_buffers: Vec::new(),
         dtype_py,
         device_py,
     })

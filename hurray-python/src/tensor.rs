@@ -70,7 +70,16 @@ pub struct Tensor {
     /// Tensor descriptor carrying element type, shape, layout, and buffer metadata.
     pub descriptor: TensorDescriptor,
     /// Element data buffer — owned copy or zero-copy borrowed reference (D2).
+    /// This is descriptor buffer index 0; every tensor has one.
     pub buffer: BufferStore,
+    /// Buffers at descriptor indices `1..N`: quantization scales and zero points,
+    /// sparse index arrays, block-paged page tables (ADR-030 § 3, buffer order is
+    /// descriptor order).
+    ///
+    /// Split from `buffer` rather than folded into one `Vec` because an empty
+    /// `Vec` does not allocate: a dense unquantized tensor — the overwhelmingly
+    /// common case — pays nothing for multi-buffer support.
+    pub aux_buffers: Vec<BufferStore>,
     /// Python-side dtype handle; holds the caller's object so
     /// `tensor.dtype is hurray.float32` holds when the user passes a singleton.
     pub dtype_py: Py<Dtype>,
@@ -210,6 +219,7 @@ impl Tensor {
         Ok(Self {
             descriptor,
             buffer: BufferStore::from_slice(buf_bytes),
+            aux_buffers: Vec::new(),
             dtype_py,
             device_py,
         })
@@ -429,40 +439,41 @@ impl Tensor {
         let py = slf.py();
         let t = slf.borrow();
 
-        let first_buf = t.descriptor.buffers.first().ok_or_else(|| {
-            BufferError::new_err(
+        if t.descriptor.buffers.is_empty() {
+            return Err(BufferError::new_err(
                 "tensor has no buffer handles; cannot produce a native buffer capsule",
-            )
-        })?;
+            ));
+        }
 
-        let data_ptr = t.buffer.as_ptr() as *mut c_void;
-        // Use alignment=1 for empty buffers to satisfy hurray_buffer_from_ptr's null-check.
-        let byte_size = t.buffer.len() as u64;
-        let alignment = if byte_size == 0 {
-            1
-        } else {
-            first_buf.alignment()
-        };
-        let device_tag = first_buf.device_tag();
-        let sync_mode = first_buf.sync_mode();
-        let memory_class = first_buf.memory_class();
+        // Pair each buffer store with its declared handle, in descriptor order
+        // (ADR-030 § 3): the store supplies the address, the handle the metadata.
+        let capsule_buffers: Vec<crate::native_buffer::CapsuleBuffer> = t
+            .buffers()
+            .zip(t.descriptor.buffers.iter())
+            .map(|(store, handle)| {
+                let byte_size = store.len() as u64;
+                crate::native_buffer::CapsuleBuffer {
+                    data_ptr: store.as_ptr() as *mut c_void,
+                    byte_size,
+                    // alignment=1 for empty buffers, to satisfy the handle constructor.
+                    alignment: if byte_size == 0 {
+                        1
+                    } else {
+                        handle.alignment()
+                    },
+                    device_tag: handle.device_tag(),
+                    sync_mode: handle.sync_mode(),
+                    memory_class: handle.memory_class(),
+                }
+            })
+            .collect();
 
         // Encode descriptor before releasing the borrow.
         let descriptor = &t.descriptor;
         // Strong reference to the Tensor; kept alive via the capsule context.
         let tensor_obj: Py<PyAny> = slf.clone().into_any().unbind();
 
-        crate::native_buffer::build_capsule(
-            py,
-            tensor_obj,
-            descriptor,
-            data_ptr,
-            byte_size,
-            alignment,
-            device_tag,
-            sync_mode,
-            memory_class,
-        )
+        crate::native_buffer::build_capsule(py, tensor_obj, descriptor, &capsule_buffers)
     }
 
     // ── NumPy interop ─────────────────────────────────────────────────────────
@@ -663,6 +674,25 @@ impl Tensor {
     }
 }
 
+// ── Buffer access ─────────────────────────────────────────────────────────────
+
+impl Tensor {
+    /// Iterates every buffer in **descriptor buffer-table order** (ADR-030 § 3):
+    /// the data buffer first, then the auxiliary buffers.
+    ///
+    /// Every consumer that needs "all buffers of this tensor" MUST go through
+    /// here, so the ordering invariant that buffer indices in quantization and
+    /// layout descriptors rely on is stated exactly once.
+    pub fn buffers(&self) -> impl Iterator<Item = &BufferStore> {
+        std::iter::once(&self.buffer).chain(self.aux_buffers.iter())
+    }
+
+    /// The number of buffers this tensor holds, including the data buffer.
+    pub fn buffer_count(&self) -> usize {
+        1 + self.aux_buffers.len()
+    }
+}
+
 // ── Display helpers ───────────────────────────────────────────────────────────
 
 impl Tensor {
@@ -791,6 +821,7 @@ impl Tensor {
         Ok(Self {
             descriptor,
             buffer,
+            aux_buffers: Vec::new(),
             dtype_py,
             device_py,
         })
@@ -832,7 +863,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use hurray_core::{DeviceTag, ElementType, MemoryClass};
     use pyo3::Python;
@@ -842,7 +873,7 @@ mod tests {
         pyo3::Python::initialize();
     }
 
-    fn build_module(py: Python<'_>) -> Bound<'_, pyo3::types::PyModule> {
+    pub(crate) fn build_module(py: Python<'_>) -> Bound<'_, pyo3::types::PyModule> {
         let m = pyo3::types::PyModule::new(py, "hurray").unwrap();
         crate::errors::register(&m).unwrap();
         crate::dtype::register(&m).unwrap();
@@ -1219,6 +1250,7 @@ mod tests {
             let tensor = Tensor {
                 descriptor,
                 buffer: BufferStore::from_slice(&[]),
+                aux_buffers: Vec::new(),
                 dtype_py,
                 device_py,
             };
