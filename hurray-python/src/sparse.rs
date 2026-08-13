@@ -2106,8 +2106,18 @@ mod tests {
             .unwrap();
             let tensor = Py::new(
                 py,
-                crate::tensor::Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![4], None)
-                    .unwrap(),
+                crate::tensor::Tensor::new(
+                    py,
+                    py_buf.as_any(),
+                    dtype.bind(py),
+                    vec![4],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
             )
             .unwrap();
 

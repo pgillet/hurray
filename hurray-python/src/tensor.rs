@@ -109,13 +109,28 @@ impl Tensor {
     /// assert t.size == 6
     /// ```
     #[new]
-    #[pyo3(signature = (buffer, dtype, shape, device = None))]
+    #[pyo3(signature = (
+        buffer,
+        dtype,
+        shape,
+        device = None,
+        *,
+        aux_buffers = None,
+        quantization = None,
+        statistics = None,
+        shard = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         py: Python<'_>,
         buffer: &Bound<'_, PyAny>,
         dtype: &Bound<'_, Dtype>,
         shape: Vec<i64>,
         device: Option<Py<Device>>,
+        aux_buffers: Option<Vec<Py<PyAny>>>,
+        quantization: Option<&Bound<'_, PyAny>>,
+        statistics: Option<&Bound<'_, crate::metadata::Statistics>>,
+        shard: Option<&Bound<'_, crate::metadata::Shard>>,
     ) -> PyResult<Self> {
         // ── 1. Resolve device ────────────────────────────────────────────────
         let device_py: Py<Device> = match device {
@@ -192,14 +207,52 @@ impl Tensor {
             MIN_BUFFER_ALIGNMENT
         };
 
-        let buffer_handle = BufferHandle::with_memory_class(
-            buf_bytes.len() as u64,
-            alignment,
-            device_tag,
-            sync_mode,
-            memory_class,
-        )
-        .map_err(|e| BufferError::new_err(format!("invalid buffer parameters: {e}")))?;
+        let make_handle = |len: usize| {
+            BufferHandle::with_memory_class(
+                len as u64,
+                if len == 0 { 1 } else { MIN_BUFFER_ALIGNMENT },
+                device_tag,
+                sync_mode,
+                memory_class,
+            )
+            .map_err(|e| BufferError::new_err(format!("invalid buffer parameters: {e}")))
+        };
+        let _ = alignment;
+
+        // ── 6. Auxiliary buffers (descriptor indices 1..N) ───────────────────
+        let mut handles = vec![make_handle(buf_bytes.len())?];
+        let mut aux_stores: Vec<BufferStore> = Vec::new();
+        if let Some(aux) = aux_buffers {
+            for (offset, obj) in aux.iter().enumerate() {
+                let bound = obj.bind(py);
+                let bytes: &[u8] = if let Ok(b) = bound.extract::<&[u8]>() {
+                    b
+                } else if let Ok(b) = bound.cast::<PyBytes>() {
+                    b.as_bytes()
+                } else {
+                    return Err(BufferError::new_err(format!(
+                        "aux_buffers[{offset}]: expected bytes, bytearray, or a                          buffer-compatible object"
+                    )));
+                };
+                handles.push(make_handle(bytes.len())?);
+                aux_stores.push(BufferStore::from_slice(bytes));
+            }
+        }
+
+        // ── 7. Optional descriptor sections ──────────────────────────────────
+        let quant_desc = quantization
+            .map(crate::quantization::extract_quantization)
+            .transpose()?;
+
+        // Reject an index that resolves to no buffer here, at authoring time. A
+        // descriptor referencing a scale buffer that was never supplied encodes and
+        // decodes cleanly, so the consumer would receive a dangling index instead of
+        // an error — the exact failure the multi-buffer transport exists to prevent.
+        if let Some(ref q) = quant_desc {
+            hurray_core::validate_buffer_placement(q, &handles, 0).map_err(|e| {
+                InvalidDescriptorError::new_err(format!("invalid quantization: {e}"))
+            })?;
+        }
 
         let descriptor = TensorDescriptor::new(
             DESCRIPTOR_VERSION_MAJOR,
@@ -208,10 +261,10 @@ impl Tensor {
             hurray_shape,
             0, // byte_offset: element [0,…,0] is at the start of the buffer
             LayoutDescriptor::RowMajor,
-            vec![buffer_handle],
-            None, // no quantization
-            None, // no shard
-            None, // no statistics
+            handles,
+            quant_desc.map(|q| q.encode_to_vec()),
+            shard.map(|s| s.get().inner.clone()),
+            statistics.map(|s| s.get().inner.clone()),
             None, // no extension type
         )
         .map_err(|e| InvalidDescriptorError::new_err(format!("invalid tensor descriptor: {e}")))?;
@@ -219,7 +272,7 @@ impl Tensor {
         Ok(Self {
             descriptor,
             buffer: BufferStore::from_slice(buf_bytes),
-            aux_buffers: Vec::new(),
+            aux_buffers: aux_stores,
             dtype_py,
             device_py,
         })
@@ -904,8 +957,18 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let tensor = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None)
-                .expect("construction should succeed");
+            let tensor = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("construction should succeed");
 
             assert_eq!(tensor.ndim(), 2);
             assert_eq!(tensor.size(), Some(6));
@@ -937,8 +1000,18 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let tensor = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![8], None)
-                .expect("int4 construction should succeed");
+            let tensor = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![8],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("int4 construction should succeed");
             assert_eq!(tensor.size(), Some(8));
             assert!(tensor.dtype(py).borrow(py).is_sub_byte());
         });
@@ -958,7 +1031,17 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let result = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None);
+            let result = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
             assert!(result.is_err());
             assert!(result.unwrap_err().is_instance_of::<BufferError>(py));
         });
@@ -978,7 +1061,17 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let result = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![-1, 3], None);
+            let result = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![-1, 3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
             assert!(result.is_err());
             assert!(result
                 .unwrap_err()
@@ -1004,7 +1097,18 @@ pub(crate) mod tests {
             .unwrap();
             let tensor = Py::new(
                 py,
-                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap(),
+                Tensor::new(
+                    py,
+                    py_buf.as_any(),
+                    dtype.bind(py),
+                    vec![2, 3],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
             )
             .unwrap();
             assert!(
@@ -1030,7 +1134,18 @@ pub(crate) mod tests {
             .unwrap();
             let tensor = Py::new(
                 py,
-                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap(),
+                Tensor::new(
+                    py,
+                    py_buf.as_any(),
+                    dtype.bind(py),
+                    vec![2, 3],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
             )
             .unwrap();
             assert!(
@@ -1064,8 +1179,18 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let tensor =
-                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
+            let tensor = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             assert!(tensor.t().is_err());
             assert!(tensor
                 .t()
@@ -1091,8 +1216,18 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let tensor =
-                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
+            let tensor = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             let r = tensor.__repr__(py).unwrap();
             assert!(
                 r.starts_with("hurray.Tensor("),
@@ -1119,7 +1254,18 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let tensor = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2], None).unwrap();
+            let tensor = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![2],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             let r = tensor.__repr__(py).unwrap();
             assert!(r.contains("shape="), "fallback repr should include shape=");
             assert!(r.contains("int4"), "fallback repr should include dtype");
@@ -1144,8 +1290,18 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let tensor =
-                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
+            let tensor = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             let s = tensor.__str__(py).unwrap();
             assert!(!s.is_empty(), "__str__ must not be empty");
             assert!(
@@ -1169,8 +1325,18 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let tensor =
-                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
+            let tensor = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             assert_eq!(tensor.device_py.borrow(py).kind(), "cpu");
         });
     }
@@ -1204,6 +1370,10 @@ pub(crate) mod tests {
                 dtype.bind(py),
                 vec![2, 3],
                 Some(cuda_device),
+                None,
+                None,
+                None,
+                None,
             )
             .unwrap();
             assert_eq!(tensor.device_py.borrow(py).kind(), "cuda");
@@ -1261,6 +1431,238 @@ pub(crate) mod tests {
         });
     }
 
+    // ── Descriptor authoring (ADR-030 Pass 2) ────────────────────────────────
+
+    /// Build the per-channel INT8 tensor from the #146 acceptance criteria:
+    /// int8 data in buffer 0, float32 scales in buffer 1, referenced by index.
+    fn per_channel_int8(py: Python<'_>) -> PyResult<Tensor> {
+        let _m = build_module(py);
+        let data = PyBytes::new(py, &[0u8; 8]);
+        let scales = PyBytes::new(py, &[0u8; 8]);
+        let dtype = Py::new(
+            py,
+            Dtype {
+                inner: ElementType::Int8,
+            },
+        )?;
+        let quant = Py::new(py, crate::quantization::PerChannelAffine::symmetric(0, 1)?)?;
+        Tensor::new(
+            py,
+            data.as_any(),
+            dtype.bind(py),
+            vec![2, 4],
+            None,
+            Some(vec![scales.into_any().unbind()]),
+            Some(quant.bind(py).as_any()),
+            None,
+            None,
+        )
+    }
+
+    #[test]
+    fn per_channel_quantized_tensor_carries_scheme_and_scale_buffer() {
+        init();
+        Python::attach(|py| {
+            let tensor = per_channel_int8(py).unwrap();
+
+            // Two buffers: data and scales, in descriptor order.
+            assert_eq!(tensor.buffer_count(), 2);
+            assert_eq!(tensor.descriptor.buffers.len(), 2);
+
+            // The quantization section is present and decodes to per-channel affine.
+            let encoded = tensor.descriptor.quantization.as_ref().unwrap();
+            let (decoded, _read) = hurray_core::QuantizationDescriptor::decode(encoded).unwrap();
+            match decoded {
+                hurray_core::QuantizationDescriptor::PerChannelAffine(q) => {
+                    assert_eq!(q.axis(), 0);
+                    assert_eq!(q.scale_buffer_index(), 1);
+                    assert_eq!(q.zero_point_buffer_index(), None);
+                }
+                other => panic!("expected per-channel affine, got {other:?}"),
+            }
+        });
+    }
+
+    #[test]
+    fn quantized_descriptor_survives_encode_decode() {
+        init();
+        Python::attach(|py| {
+            let tensor = per_channel_int8(py).unwrap();
+            let bytes = tensor.descriptor.encode().unwrap();
+            let back = hurray_core::TensorDescriptor::decode(&bytes).unwrap();
+            assert_eq!(back, tensor.descriptor);
+        });
+    }
+
+    #[test]
+    fn scale_buffer_index_past_the_end_is_rejected_at_construction() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            let data = PyBytes::new(py, &[0u8; 8]);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Int8,
+                },
+            )
+            .unwrap();
+            // Index 1 with no aux buffer: the descriptor would encode fine and hand a
+            // consumer a dangling buffer index, so it must fail here instead.
+            let quant = Py::new(
+                py,
+                crate::quantization::PerChannelAffine::symmetric(0, 1).unwrap(),
+            )
+            .unwrap();
+            let err = Tensor::new(
+                py,
+                data.as_any(),
+                dtype.bind(py),
+                vec![2, 4],
+                None,
+                None,
+                Some(quant.bind(py).as_any()),
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(
+                err.to_string().contains("quantization"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[test]
+    fn statistics_and_shard_reach_the_descriptor() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            let data = PyBytes::new(py, &[0u8; 24]);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Float32,
+                },
+            )
+            .unwrap();
+            let stats = Py::new(
+                py,
+                crate::metadata::Statistics::new(
+                    Some(6),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let shard = Py::new(
+                py,
+                crate::metadata::Shard::new(vec![4, 3], vec![2, 0]).unwrap(),
+            )
+            .unwrap();
+
+            let tensor = Tensor::new(
+                py,
+                data.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                Some(stats.bind(py)),
+                Some(shard.bind(py)),
+            )
+            .unwrap();
+
+            let stats_out = tensor.descriptor.statistics.as_ref().unwrap();
+            assert_eq!(stats_out.nnz, 6);
+            assert!(stats_out.computed_mask.nnz_valid());
+            // Only nnz was supplied, so nothing else claims validity.
+            assert!(!stats_out.computed_mask.value_range_valid());
+
+            let shard_out = tensor.descriptor.shard.as_ref().unwrap();
+            assert_eq!(shard_out.parent_shape, vec![4, 3]);
+            assert_eq!(shard_out.shard_offset, vec![2, 0]);
+        });
+    }
+
+    #[test]
+    fn per_tensor_affine_needs_no_aux_buffer() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            let data = PyBytes::new(py, &[0u8; 8]);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Int8,
+                },
+            )
+            .unwrap();
+            let quant = Py::new(
+                py,
+                crate::quantization::PerTensorAffine::new(0.02, 128).unwrap(),
+            )
+            .unwrap();
+            let tensor = Tensor::new(
+                py,
+                data.as_any(),
+                dtype.bind(py),
+                vec![2, 4],
+                None,
+                None,
+                Some(quant.bind(py).as_any()),
+                None,
+                None,
+            )
+            .unwrap();
+            // Inline scale and zero point: still a single-buffer tensor.
+            assert_eq!(tensor.buffer_count(), 1);
+            assert!(tensor.descriptor.quantization.is_some());
+        });
+    }
+
+    #[test]
+    fn a_non_quantization_object_is_rejected() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            let data = PyBytes::new(py, &[0u8; 8]);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Int8,
+                },
+            )
+            .unwrap();
+            let not_a_scheme = pyo3::types::PyString::new(py, "per-channel");
+            let err = Tensor::new(
+                py,
+                data.as_any(),
+                dtype.bind(py),
+                vec![2, 4],
+                None,
+                None,
+                Some(not_a_scheme.as_any()),
+                None,
+                None,
+            )
+            .unwrap_err();
+            assert!(err
+                .to_string()
+                .contains("expected a quantization descriptor"));
+        });
+    }
+
     #[test]
     fn tensor_is_unhashable() {
         init();
@@ -1275,8 +1677,18 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let tensor =
-                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
+            let tensor = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             let err = tensor.__hash__().unwrap_err();
             assert!(err.is_instance_of::<pyo3::exceptions::PyTypeError>(py));
         });
@@ -1296,8 +1708,18 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let tensor =
-                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
+            let tensor = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             let tup = tensor.__dlpack_device__(py).unwrap();
             let tup_bound = tup.bind(py);
             let device_type: c_int = tup_bound.get_item(0).unwrap().extract().unwrap();
@@ -1323,7 +1745,18 @@ pub(crate) mod tests {
             .unwrap();
             let tensor_py = Py::new(
                 py,
-                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap(),
+                Tensor::new(
+                    py,
+                    py_buf.as_any(),
+                    dtype.bind(py),
+                    vec![2, 3],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
             )
             .unwrap();
             let bound = tensor_py.bind(py);
@@ -1351,7 +1784,18 @@ pub(crate) mod tests {
             .unwrap();
             let tensor_py = Py::new(
                 py,
-                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![8], None).unwrap(),
+                Tensor::new(
+                    py,
+                    py_buf.as_any(),
+                    dtype.bind(py),
+                    vec![8],
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
             )
             .unwrap();
             let bound = tensor_py.bind(py);
@@ -1380,7 +1824,17 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let _ = Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None);
+            let _ = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            );
         });
     }
 
@@ -1398,8 +1852,18 @@ pub(crate) mod tests {
                 },
             )
             .unwrap();
-            let tensor =
-                Tensor::new(py, py_buf.as_any(), dtype.bind(py), vec![2, 3], None).unwrap();
+            let tensor = Tensor::new(
+                py,
+                py_buf.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             assert!(matches!(tensor.buffer, BufferStore::Owned(_)));
             assert_eq!(tensor.buffer.len(), 24); // 6 × f32 = 24 bytes
         });

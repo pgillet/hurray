@@ -18,8 +18,10 @@ mod dtype;
 pub mod errors;
 mod file_io;
 mod interop;
+mod metadata;
 mod native_buffer;
 mod print_options;
+pub(crate) mod quantization;
 mod scipy_interop;
 mod sparse;
 mod tensor;
@@ -69,5 +71,7 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     creation::register(m)?;
     file_io::register(m)?;
     print_options::register(m)?;
+    quantization::register(m)?;
+    metadata::register(m)?;
     Ok(())
 }

@@ -46,6 +46,7 @@
 - [Framework Interop](cookbook/framework-interop.md)
 - [Quantized Inference](cookbook/quantized-inference.md)
 - [Multi-Buffer Tensors](cookbook/multi-buffer-tensors.md)
+- [Authoring Quantized Tensors](cookbook/authoring-quantized-tensors.md)
 - [IPC and Streaming Interchange](cookbook/ipc-streaming.md)
 - [Layer 0: Element Types and Shape](cookbook/layer-0-element-types-and-shape.md)
 - [Layer 1: Buffer Protocol](cookbook/layer-1-buffer-protocol.md)

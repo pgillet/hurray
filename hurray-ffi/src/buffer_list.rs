@@ -381,13 +381,16 @@ mod tests {
     #[repr(align(64))]
     struct Aligned([u8; 128]);
 
-    static RELEASES: AtomicUsize = AtomicUsize::new(0);
-
-    unsafe extern "C" fn counting_release(_data: *mut c_void, _ctx: *mut c_void) {
-        RELEASES.fetch_add(1, Ordering::SeqCst);
+    /// Counts releases through the caller-supplied context pointer rather than a
+    /// global: cargo runs tests in parallel, so a shared counter would be raced by
+    /// any other test that destroys a buffer.
+    unsafe extern "C" fn counting_release(_data: *mut c_void, ctx: *mut c_void) {
+        if !ctx.is_null() {
+            (*(ctx as *const AtomicUsize)).fetch_add(1, Ordering::SeqCst);
+        }
     }
 
-    fn make_buffer(data: &mut Aligned, size: u64) -> *mut HurrayBuffer {
+    fn make_buffer(data: &mut Aligned, size: u64, releases: &AtomicUsize) -> *mut HurrayBuffer {
         let mut buffer: *mut HurrayBuffer = std::ptr::null_mut();
         let status = unsafe {
             hurray_buffer_from_ptr(
@@ -398,7 +401,7 @@ mod tests {
                 0,
                 0,
                 Some(counting_release),
-                std::ptr::null_mut(),
+                releases as *const AtomicUsize as *mut c_void,
                 &mut buffer,
             )
         };
@@ -442,8 +445,9 @@ mod tests {
     fn push_then_len_and_get_round_trip_in_order() {
         let mut a = Aligned([1u8; 128]);
         let mut b = Aligned([2u8; 128]);
-        let buf_a = make_buffer(&mut a, 128);
-        let buf_b = make_buffer(&mut b, 64);
+        let releases = AtomicUsize::new(0);
+        let buf_a = make_buffer(&mut a, 128, &releases);
+        let buf_b = make_buffer(&mut b, 64, &releases);
 
         let mut list: *mut HurrayBufferList = std::ptr::null_mut();
         unsafe { hurray_buffer_list_new(2, &mut list) };
@@ -473,7 +477,8 @@ mod tests {
     #[test]
     fn get_rejects_an_out_of_range_index() {
         let mut a = Aligned([0u8; 128]);
-        let buf = make_buffer(&mut a, 128);
+        let releases = AtomicUsize::new(0);
+        let buf = make_buffer(&mut a, 128, &releases);
         let mut list: *mut HurrayBufferList = std::ptr::null_mut();
         unsafe { hurray_buffer_list_new(1, &mut list) };
         unsafe { hurray_buffer_list_push(list, buf) };
@@ -493,7 +498,7 @@ mod tests {
 
     #[test]
     fn destroying_the_list_releases_every_owned_buffer_exactly_once() {
-        RELEASES.store(0, Ordering::SeqCst);
+        let releases = AtomicUsize::new(0);
         let mut a = Aligned([0u8; 128]);
         let mut b = Aligned([0u8; 128]);
         let mut c = Aligned([0u8; 128]);
@@ -501,12 +506,12 @@ mod tests {
         let mut list: *mut HurrayBufferList = std::ptr::null_mut();
         unsafe { hurray_buffer_list_new(3, &mut list) };
         for data in [&mut a, &mut b, &mut c] {
-            let buf = make_buffer(data, 128);
+            let buf = make_buffer(data, 128, &releases);
             unsafe { hurray_buffer_list_push(list, buf) };
         }
 
         unsafe { hurray_buffer_list_destroy(&mut list) };
-        assert_eq!(RELEASES.load(Ordering::SeqCst), 3);
+        assert_eq!(releases.load(Ordering::SeqCst), 3);
         assert!(list.is_null());
     }
 }

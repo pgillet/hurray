@@ -530,6 +530,85 @@ mod tests {
     }
 
     #[test]
+    fn python_authored_quantized_tensor_round_trips_through_a_file() {
+        use pyo3::types::{PyBytes, PyDict};
+
+        init_python();
+        Python::attach(|py| {
+            // #146 acceptance: author a per-channel INT8 tensor with its scale
+            // buffer from Python, save it, and read the scheme back off disk.
+            let m = pyo3::types::PyModule::new(py, "hurray").unwrap();
+            crate::errors::register(&m).unwrap();
+            crate::dtype::register(&m).unwrap();
+            crate::device::register(&m).unwrap();
+            let sys = py.import("sys").unwrap();
+            sys.getattr("modules")
+                .unwrap()
+                .set_item("hurray", &m)
+                .unwrap();
+
+            let data = PyBytes::new(py, &[7u8; 8]);
+            let scales = PyBytes::new(py, &[1u8; 8]);
+            let dtype = Py::new(
+                py,
+                crate::dtype::Dtype {
+                    inner: hurray_core::ElementType::Int8,
+                },
+            )
+            .unwrap();
+            let quant = Py::new(
+                py,
+                crate::quantization::PerChannelAffine::symmetric(0, 1).unwrap(),
+            )
+            .unwrap();
+
+            let tensor = Tensor::new(
+                py,
+                data.as_any(),
+                dtype.bind(py),
+                vec![2, 4],
+                None,
+                Some(vec![scales.into_any().unbind()]),
+                Some(quant.bind(py).as_any()),
+                None,
+                None,
+            )
+            .unwrap();
+
+            let dir = std::env::temp_dir().join("hurray_quantized_roundtrip");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("weights.hrry");
+
+            let tensors = PyDict::new(py);
+            tensors.set_item("w", Py::new(py, tensor).unwrap()).unwrap();
+            save(py, path.to_string_lossy().into_owned(), &tensors, None).unwrap();
+
+            let loaded = load(py, path.to_string_lossy().into_owned(), None).unwrap();
+            let got: Py<Tensor> = loaded
+                .get_item("w")
+                .unwrap()
+                .expect("tensor 'w' must be present")
+                .extract()
+                .unwrap();
+            let got = got.borrow(py);
+
+            // Data and scales both survived, and the scheme came back intact.
+            assert_eq!(got.buffer_count(), 2);
+            let encoded = got.descriptor.quantization.as_ref().unwrap();
+            let (decoded, _) = hurray_core::QuantizationDescriptor::decode(encoded).unwrap();
+            match decoded {
+                hurray_core::QuantizationDescriptor::PerChannelAffine(q) => {
+                    assert_eq!(q.axis(), 0);
+                    assert_eq!(q.scale_buffer_index(), 1);
+                }
+                other => panic!("expected per-channel affine, got {other:?}"),
+            }
+
+            std::fs::remove_file(&path).ok();
+        });
+    }
+
+    #[test]
     fn file_and_stream_error_are_os_errors() {
         init_python();
         Python::attach(|py| {
