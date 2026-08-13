@@ -653,7 +653,18 @@ mod tests {
                 },
             )
             .unwrap();
-            let tensor = Tensor::new(py, &buf, dtype.bind(py), vec![4], None).unwrap();
+            let tensor = Tensor::new(
+                py,
+                &buf,
+                dtype.bind(py),
+                vec![4],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             let bound = Py::new(py, tensor).unwrap().into_bound(py);
 
             let rebuilt = from_hurray_buffer(py, &bound).unwrap();
