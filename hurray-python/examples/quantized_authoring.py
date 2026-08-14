@@ -112,5 +112,20 @@ with tempfile.TemporaryDirectory() as tmp:
     hurray.save(str(path), {"w": quantized})
     back = hurray.load(str(path))["w"]
     print("\n=== Round trip ===")
-    print(f"  loaded: shape={back.shape} dtype={back.dtype}")
-    print("  run `hurray-inspect weights.hrry` to see the scheme byte by byte")
+    print(f"  loaded: shape={back.shape} dtype={back.dtype} buffers={back.buffer_count}")
+
+    # The consumer side: ask the loaded tensor what it is holding. The getters
+    # return the same classes the constructor accepts, so an inspected scheme can
+    # be handed straight back to build another tensor.
+    q = back.quantization
+    print(f"  scheme:  {q!r}")
+    print(f"  axis={q.axis} scale_buffer_index={q.scale_buffer_index}")
+    print(f"  symmetric: {q.zero_point_buffer_index is None}")
+    print("  run `hurray-inspect weights.hrry` to see the same thing byte by byte")
+
+# ── Sections are None when absent ─────────────────────────────────────────────
+
+plain = hurray.Tensor(bytes(16), hurray.float32, [4])
+print("\n=== An ordinary tensor ===")
+print(f"  quantization={plain.quantization} statistics={plain.statistics} shard={plain.shard}")
+print(f"  buffer_count={plain.buffer_count}")
