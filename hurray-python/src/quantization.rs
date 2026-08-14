@@ -613,6 +613,29 @@ pub(crate) fn extract_quantization(obj: &Bound<'_, PyAny>) -> PyResult<Quantizat
     )))
 }
 
+/// Wrap a decoded core `QuantizationDescriptor` in its Python class.
+///
+/// The inverse of [`extract_quantization`], used when reading a descriptor back
+/// off the wire or off disk.
+pub(crate) fn quantization_to_py(
+    py: Python<'_>,
+    desc: QuantizationDescriptor,
+) -> PyResult<Py<PyAny>> {
+    Ok(match desc {
+        QuantizationDescriptor::PerTensorAffine(inner) => {
+            Py::new(py, PerTensorAffine { inner })?.into_any()
+        }
+        QuantizationDescriptor::PerChannelAffine(inner) => {
+            Py::new(py, PerChannelAffine { inner })?.into_any()
+        }
+        QuantizationDescriptor::PerBlockAffine(inner) => {
+            Py::new(py, PerBlockAffine { inner })?.into_any()
+        }
+        QuantizationDescriptor::Nf4(inner) => Py::new(py, Nf4 { inner })?.into_any(),
+        QuantizationDescriptor::Mxfp(inner) => Py::new(py, Mxfp { inner })?.into_any(),
+    })
+}
+
 // ── Registration ──────────────────────────────────────────────────────────────
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

@@ -358,6 +358,110 @@ impl Tensor {
         self.device_py.clone_ref(py)
     }
 
+    /// Number of buffers this tensor holds, including the data buffer.
+    ///
+    /// `1` for an ordinary dense tensor; more when the descriptor references
+    /// quantization scales, sparse index arrays, or a page table.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// t = hurray.Tensor(bytes(16), hurray.float32, [4])
+    /// assert t.buffer_count == 1
+    /// ```
+    #[getter(buffer_count)]
+    pub fn py_buffer_count(&self) -> usize {
+        self.buffer_count()
+    }
+
+    /// The quantization scheme, or `None` if the tensor is not quantized.
+    ///
+    /// Returns the same class you would pass to the constructor —
+    /// `PerTensorAffine`, `PerChannelAffine`, `PerBlockAffine`, `NF4`, or `MXFP` —
+    /// so a descriptor read off disk or off the wire can be inspected, and passed
+    /// straight back to build another tensor.
+    ///
+    /// ## Errors
+    ///
+    /// - `hurray.InvalidDescriptorError` — the stored quantization section could
+    ///   not be decoded.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import struct, hurray
+    ///
+    /// t = hurray.Tensor(
+    ///     bytes(8), hurray.int8, [2, 4],
+    ///     aux_buffers=[struct.pack("2f", 0.02, 0.017)],
+    ///     quantization=hurray.PerChannelAffine.symmetric(0, 1),
+    /// )
+    ///
+    /// q = t.quantization
+    /// assert q.axis == 0
+    /// assert q.scale_buffer_index == 1
+    ///
+    /// assert hurray.Tensor(bytes(16), hurray.float32, [4]).quantization is None
+    /// ```
+    #[getter]
+    pub fn quantization(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let Some(bytes) = self.descriptor.quantization.as_ref() else {
+            return Ok(None);
+        };
+        // Decoding on read rather than caching a parsed copy: the descriptor stores
+        // the encoded section, and re-parsing keeps one source of truth.
+        let (desc, _read) = hurray_core::QuantizationDescriptor::decode(bytes).map_err(|e| {
+            InvalidDescriptorError::new_err(format!("failed to decode quantization: {e}"))
+        })?;
+        crate::quantization::quantization_to_py(py, desc).map(Some)
+    }
+
+    /// The statistics section, or `None` if the tensor carries none.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// t = hurray.Tensor(
+    ///     bytes(24), hurray.float32, [2, 3],
+    ///     statistics=hurray.Statistics(nnz=6),
+    /// )
+    /// assert t.statistics.nnz == 6
+    /// assert hurray.Tensor(bytes(16), hurray.float32, [4]).statistics is None
+    /// ```
+    #[getter]
+    pub fn statistics(&self, py: Python<'_>) -> PyResult<Option<Py<crate::metadata::Statistics>>> {
+        match self.descriptor.statistics.as_ref() {
+            None => Ok(None),
+            Some(s) => Py::new(py, crate::metadata::Statistics { inner: s.clone() }).map(Some),
+        }
+    }
+
+    /// The shard descriptor, or `None` if this tensor is not a shard.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// t = hurray.Tensor(
+    ///     bytes(24), hurray.float32, [2, 3],
+    ///     shard=hurray.Shard([4, 3], [2, 0]),
+    /// )
+    /// assert t.shard.parent_shape == (4, 3)
+    /// assert hurray.Tensor(bytes(16), hurray.float32, [4]).shard is None
+    /// ```
+    #[getter]
+    pub fn shard(&self, py: Python<'_>) -> PyResult<Option<Py<crate::metadata::Shard>>> {
+        match self.descriptor.shard.as_ref() {
+            None => Ok(None),
+            Some(s) => Py::new(py, crate::metadata::Shard { inner: s.clone() }).map(Some),
+        }
+    }
+
     /// Transpose view — **not yet implemented**.
     ///
     /// Raises `NotImplementedError`; lands in a future pass.
@@ -1660,6 +1764,168 @@ pub(crate) mod tests {
             assert!(err
                 .to_string()
                 .contains("expected a quantization descriptor"));
+        });
+    }
+
+    // ── Descriptor inspection (ADR-030 Pass 3) ───────────────────────────────
+
+    #[test]
+    fn quantization_getter_returns_the_scheme_that_was_authored() {
+        init();
+        Python::attach(|py| {
+            let tensor = per_channel_int8(py).unwrap();
+            let bound = Py::new(py, tensor).unwrap();
+            let got = bound
+                .borrow(py)
+                .quantization(py)
+                .unwrap()
+                .expect("quantized tensor must report its scheme");
+
+            // Comes back as the same class the constructor accepts.
+            let q = got.bind(py);
+            assert_eq!(q.getattr("axis").unwrap().extract::<u32>().unwrap(), 0);
+            assert_eq!(
+                q.getattr("scale_buffer_index")
+                    .unwrap()
+                    .extract::<u32>()
+                    .unwrap(),
+                1
+            );
+            assert!(q.getattr("zero_point_buffer_index").unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn an_unquantized_tensor_reports_none() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            let buf = PyBytes::new(py, &[0u8; 16]);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Float32,
+                },
+            )
+            .unwrap();
+            let tensor = Tensor::new(
+                py,
+                buf.as_any(),
+                dtype.bind(py),
+                vec![4],
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            assert!(tensor.quantization(py).unwrap().is_none());
+            assert!(tensor.statistics(py).unwrap().is_none());
+            assert!(tensor.shard(py).unwrap().is_none());
+            assert_eq!(tensor.py_buffer_count(), 1);
+        });
+    }
+
+    #[test]
+    fn statistics_and_shard_getters_report_what_was_set() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            let buf = PyBytes::new(py, &[0u8; 24]);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Float32,
+                },
+            )
+            .unwrap();
+            let stats = Py::new(
+                py,
+                crate::metadata::Statistics::new(
+                    Some(6),
+                    None,
+                    Some(-1.0),
+                    Some(1.0),
+                    Some(1.0),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            let shard = Py::new(
+                py,
+                crate::metadata::Shard::new(vec![4, 3], vec![2, 0]).unwrap(),
+            )
+            .unwrap();
+            let tensor = Tensor::new(
+                py,
+                buf.as_any(),
+                dtype.bind(py),
+                vec![2, 3],
+                None,
+                None,
+                None,
+                Some(stats.bind(py)),
+                Some(shard.bind(py)),
+            )
+            .unwrap();
+
+            let s = tensor.statistics(py).unwrap().unwrap();
+            let s = s.borrow(py);
+            assert_eq!(s.nnz(), Some(6));
+            assert_eq!(s.value_abs_max(), Some(1.0));
+            // Never supplied, so still not claimed after the round trip.
+            assert_eq!(s.value_mean(), None);
+
+            let sh = tensor.shard(py).unwrap().unwrap();
+            let sh = sh.borrow(py);
+            assert_eq!(
+                sh.parent_shape(py).unwrap().extract::<Vec<u64>>().unwrap(),
+                vec![4, 3]
+            );
+        });
+    }
+
+    #[test]
+    fn an_inspected_scheme_can_rebuild_an_equivalent_tensor() {
+        init();
+        Python::attach(|py| {
+            let original = per_channel_int8(py).unwrap();
+            let descriptor = original.descriptor.clone();
+            let bound = Py::new(py, original).unwrap();
+            let scheme = bound.borrow(py).quantization(py).unwrap().unwrap();
+
+            // The getter's return value is accepted by the constructor unchanged,
+            // which is the point of returning the same classes.
+            let data = PyBytes::new(py, &[0u8; 8]);
+            let scales = PyBytes::new(py, &[0u8; 8]);
+            let dtype = Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Int8,
+                },
+            )
+            .unwrap();
+            let rebuilt = Tensor::new(
+                py,
+                data.as_any(),
+                dtype.bind(py),
+                vec![2, 4],
+                None,
+                Some(vec![scales.into_any().unbind()]),
+                Some(scheme.bind(py)),
+                None,
+                None,
+            )
+            .unwrap();
+
+            assert_eq!(rebuilt.descriptor.quantization, descriptor.quantization);
         });
     }
 

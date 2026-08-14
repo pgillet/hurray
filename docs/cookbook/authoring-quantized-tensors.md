@@ -155,6 +155,75 @@ shard = hurray.Shard(parent_shape=[1024, 512], shard_offset=[512, 0])
 piece = hurray.Tensor(bytes(8), hurray.int8, [2, 4], shard=shard)
 ```
 
+## Reading it back
+
+A consumer that receives a tensor — off disk, off the wire, or over the native
+protocol — can ask what it is holding. The getters return the same classes the
+constructor accepts, so an inspected scheme can be passed straight back to build
+another tensor.
+
+<div class="lang-tabs">
+
+```rust
+use hurray_core::{QuantizationDescriptor, TensorDescriptor};
+
+fn describe(desc: &TensorDescriptor) -> Result<(), Box<dyn std::error::Error>> {
+    match desc.quantization.as_ref() {
+        None => println!("not quantized"),
+        Some(bytes) => {
+            let (scheme, _read) = QuantizationDescriptor::decode(bytes)?;
+            match scheme {
+                QuantizationDescriptor::PerChannelAffine(q) => println!(
+                    "per-channel: axis {}, scales in buffer {}",
+                    q.axis(),
+                    q.scale_buffer_index()
+                ),
+                other => println!("scheme: {other:?}"),
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+```python
+import hurray
+
+loaded = hurray.load("weights.hrry")["w"]
+
+q = loaded.quantization
+if q is None:
+    print("not quantized")
+else:
+    print(f"per-channel: axis {q.axis}, scales in buffer {q.scale_buffer_index}")
+
+print(f"buffers: {loaded.buffer_count}")
+```
+
+</div>
+
+`statistics` and `shard` read back the same way, and every section is `None` when
+absent:
+
+```python
+t = hurray.Tensor(bytes(16), hurray.float32, [4])
+
+assert t.quantization is None
+assert t.statistics is None
+assert t.shard is None
+```
+
+A statistic that was never supplied stays unclaimed after the round trip — the
+validity mask travels with the values:
+
+```python
+s = hurray.Statistics(nnz=6)
+t = hurray.Tensor(bytes(24), hurray.float32, [2, 3], statistics=s)
+
+assert t.statistics.nnz == 6
+assert t.statistics.value_mean is None
+```
+
 ## Checking what you built
 
 `save()` writes every buffer, so the scales travel with the weights:

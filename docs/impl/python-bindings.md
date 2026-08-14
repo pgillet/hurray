@@ -269,6 +269,11 @@ buffer in a single capsule (ADR-030).
 - A producer MUST NOT emit a capsule whose list length differs from the
   descriptor's buffer count, and a consumer MUST reject such a capsule rather
   than construct a tensor whose buffer indices do not resolve.
+- `hurray.Tensor` MUST expose the descriptor's optional sections for reading:
+  `quantization` (returning the scheme class, or `None`), `statistics`, `shard`,
+  and `buffer_count`. The quantization getter MUST return an object of the same
+  class the constructor accepts, so an inspected scheme can be reused to build
+  another tensor without conversion.
 - `hurray.SparseTensor` MUST implement `__hurray_buffer__` using this protocol,
   with its values and index buffers in descriptor order. A separate
   `__hurray_sparse_buffer__` protocol MUST NOT be introduced: sparse is the
