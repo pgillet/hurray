@@ -20,5 +20,9 @@ tour of the format, from element types to the C FFI:
 
 ## Task-focused tutorials
 
+- [Integrating a Python Library with Hurray](python-interop-paths.md) — the four
+  interop paths available to a library with its own array type, and how to choose
+  between them.
+
 More tutorials will be added here over time. To propose or contribute one, open an issue or
 pull request on [GitHub](https://github.com/pgillet/hurray).
