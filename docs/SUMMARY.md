@@ -73,6 +73,7 @@
 # Tutorials
 
 - [Overview](tutorials/README.md)
+- [Integrating a Python Library](tutorials/python-interop-paths.md)
 
 # Appendix
 
