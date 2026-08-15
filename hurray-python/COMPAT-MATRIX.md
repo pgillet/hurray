@@ -10,7 +10,7 @@ Update this file whenever a release adds or drops support for any of these.
 
 | hurray-python | DLPack (producer) | DLPack (consumer) | Native buffer protocol | Min `HURRAY_C_ABI_VERSION` | CPython |
 |---|---|---|---|---|---|
-| 0.1.x | v1.0 (`dltensor_versioned`) | v0.8 + v1.0 | yes (Layer 8c) | 2 | ≥ 3.10 |
+| 0.1.x | v1.0 (`dltensor_versioned`) | v0.8 + v1.0 | yes, multi-buffer | 3 | ≥ 3.10 |
 
 ## Notes
 
@@ -27,8 +27,13 @@ the legacy `"dltensor"` (DLPack v0.8) and the versioned `"dltensor_versioned"`
 
 ### Native buffer protocol
 
-The `__hurray_buffer__` / `hurray.from_hurray_buffer` protocol is implemented in
-Layer 8c (shipped in 0.1.x). The minimum `HURRAY_C_ABI_VERSION` required by the
-capsule payload format is **2** (the version at Layer 8c ship time). Consumers MUST
-verify the version before dereferencing the handle; a mismatch raises
-`hurray.UnsupportedError`. See ADR-023 for the full protocol specification.
+The `__hurray_buffer__` / `hurray.from_hurray_buffer` protocol is shipped in 0.1.x.
+The `HURRAY_C_ABI_VERSION` required by the capsule payload format is **3**: ADR-030
+changed the capsule pointer from a single `HurrayBuffer` to a `HurrayBufferList`
+carrying every buffer of the tensor, and raised the ABI version so a version-2
+consumer is told rather than misreading a list as a buffer.
+
+Consumers MUST verify the version before dereferencing the pointer; a mismatch
+raises `hurray.UnsupportedError`. The check is exact equality, so version 3 is both
+the minimum and the maximum this release accepts. See ADR-023 for the protocol and
+ADR-030 for the multi-buffer change.
