@@ -74,9 +74,8 @@ except hurray.FileError as e:
 
 ## Limitations in this release
 
-- `hurray.save()` accepts only `hurray.Tensor` values. `hurray.SparseTensor`
-  file I/O is not yet implemented.
-- `hurray.load()` raises `hurray.UnsupportedError` for multi-buffer (sparse)
-  tensor entries in the file.
 - Loaded tensors hold an owned copy of the buffer data. Zero-copy
   memory-mapped loading will be added in a future release.
+
+Sparse and other multi-buffer tensors round-trip through `save()` and `load()`:
+every buffer is written in descriptor order and read back with the layout intact.

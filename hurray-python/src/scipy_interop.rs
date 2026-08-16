@@ -20,13 +20,12 @@ use hurray_core::{ElementType, Shape};
 
 use crate::buffer::BufferStore;
 use crate::errors::{InvalidDescriptorError, UnsupportedError};
-use crate::sparse::{
-    build_csc_descriptor, build_csr_descriptor, make_sparse_tensor, SparseFormat, SparseTensor,
-};
+use crate::sparse::{build_csc_descriptor, build_csr_descriptor, make_sparse_tensor};
+use crate::tensor::Tensor;
 
 // ── hurray.from_scipy ─────────────────────────────────────────────────────────
 
-/// Wrap a `scipy.sparse` matrix as a `hurray.SparseTensor` without copying.
+/// Wrap a `scipy.sparse` matrix as a `hurray.Tensor` without copying.
 ///
 /// ## Supported formats
 ///
@@ -43,7 +42,7 @@ use crate::sparse::{
 /// indices = np.stack([m.row, m.col], axis=1).astype(np.uint64)
 /// ```
 ///
-/// Then construct `hurray.SparseTensor` directly from the component buffers.
+/// Then construct the `hurray.Tensor` directly from the component buffers.
 ///
 /// ## Index dtype requirement (D16)
 ///
@@ -76,7 +75,7 @@ use crate::sparse::{
 /// assert sparse.nnz == 2
 /// ```
 #[pyfunction]
-pub fn from_scipy(py: Python<'_>, matrix: &Bound<'_, PyAny>) -> PyResult<SparseTensor> {
+pub fn from_scipy(py: Python<'_>, matrix: &Bound<'_, PyAny>) -> PyResult<Tensor> {
     // D7-pattern: import scipy lazily — hurray must not require scipy at module load.
     py.import("scipy.sparse").map_err(|_| {
         pyo3::exceptions::PyImportError::new_err(
@@ -189,19 +188,7 @@ pub fn from_scipy(py: Python<'_>, matrix: &Bound<'_, PyAny>) -> PyResult<SparseT
     let aux_buf_0 = unsafe { BufferStore::borrowed(aux0_ptr, aux0_len, base.clone_ref(py)) };
     let aux_buf_1 = unsafe { BufferStore::borrowed(aux1_ptr, aux1_len, base) };
 
-    let sparse_format = match fmt.as_str() {
-        "csr" => SparseFormat::Csr,
-        _ => SparseFormat::Csc,
-    };
-
-    make_sparse_tensor(
-        py,
-        descriptor,
-        sparse_format,
-        values_buf,
-        aux_buf_0,
-        Some(aux_buf_1),
-    )
+    make_sparse_tensor(py, descriptor, values_buf, aux_buf_0, Some(aux_buf_1))
 }
 
 // ── Registration ──────────────────────────────────────────────────────────────
@@ -342,8 +329,8 @@ m
                 .unwrap();
             let sparse =
                 from_scipy(py, &m).expect("from_scipy should succeed for CSR with uint64 indices");
-            assert_eq!(sparse.format(), "csr");
-            assert_eq!(sparse.nnz(), 2);
+            assert_eq!(sparse.layout(), "csr");
+            assert_eq!(sparse.nnz().unwrap(), 2);
         });
     }
 }

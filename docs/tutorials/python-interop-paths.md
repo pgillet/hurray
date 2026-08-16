@@ -46,20 +46,21 @@ and uses `hurray` for file I/O.
 
 For `sparselib`, whose arrays are already SciPy-compatible, conversion is nearly
 free — `hurray.from_scipy` wraps CSR/CSC/COO component arrays without copying, and
-`SparseTensor.to_scipy()` converts back:
+`Tensor.to_scipy()` converts back:
 
 ```python
 import hurray
 
 sparse = hurray.from_scipy(matrix)     # zero-copy over the component arrays
-assert sparse.format == "csr"
+assert sparse.layout == "csr"
 assert sparse.nnz == matrix.nnz
 
 matrix_again = sparse.to_scipy()       # back to scipy.sparse
 ```
 
-Dense arrays go through `hurray.from_numpy` and `numpy.asarray`, and those *do*
-have file I/O today:
+Dense arrays go through `hurray.from_numpy` and `numpy.asarray`. Either kind
+persists the same way — `save()` writes every buffer a tensor has, so a sparse
+tensor's index arrays travel with its values:
 
 ```python
 tensor = hurray.from_numpy(dense_array)
@@ -71,12 +72,6 @@ loaded = hurray.load("out.hrry")["a"]
 **What you get.** The full descriptor — quantization, statistics, shard — and the
 file format. (The streaming format has no Python API yet; it is `hurray-io`, Rust
 only, so a Python producer writes files rather than streams.)
-
-**One current limitation to plan around.** `hurray.save()` accepts `hurray.Tensor`
-only — passing a `SparseTensor` raises `hurray.UnsupportedError`. Sparse tensors
-convert and interchange in memory, but do not yet have a file path of their own. For
-`sparselib` that is the sharpest edge on this route, so check it against the current
-release before building on it.
 
 **What it costs.** A hard dependency on `hurray`, and your users install a compiled
 extension. For a library whose Hurray support is one feature among many, that is the

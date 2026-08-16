@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-15)
+Proposed (2026-08-15). § 2 amended 2026-08-16: inapplicable accessors raise `AttributeError`, not `UnsupportedError` — see the reasoning in that section.
 
 Amends the **Sparse Tensor Support** section of `docs/impl/python-bindings.md`, which
 currently requires COO / CSR / CSC tensors to be exposed as a distinct
@@ -94,17 +94,34 @@ string: `"row_major"`, `"col_major"`, `"strided"`, `"tiled"`, `"morton"`, `"hilb
 
 This replaces `SparseTensor.format`, which reported only the three sparse cases.
 
-### 2. Layout-specific accessors live on the one class and raise when inapplicable
+### 2. Layout-specific accessors live on the one class and raise `AttributeError`
 
 `values`, `indices`, `col_indices`, `row_ptr`, `row_indices`, `col_ptr`, and `nnz`
-MUST be available on `hurray.Tensor` and MUST raise `hurray.UnsupportedError` when the
-tensor's layout does not define them — the same discipline PyTorch applies to
-`.values()` on a dense tensor.
+MUST be available on `hurray.Tensor` and MUST raise **`AttributeError`** when the
+tensor's layout does not define them.
 
-> **Note (non-normative):** Raising is the deliberate trade. A unified class means
-> `dense.row_ptr` type-checks and fails at runtime, where today it fails at attribute
-> lookup. That is the cost of matching the format's own model, and it is the cost
-> PyTorch accepted for the same reason.
+This extends design decision **D10** — already applied within `SparseTensor`, where a
+CSR tensor raises `AttributeError` for `.indices` — from the three sparse formats to
+every layout.
+
+`AttributeError` rather than `hurray.UnsupportedError`, because it is the only choice
+that keeps `hasattr` honest:
+
+```python
+hasattr(coo_tensor, "row_ptr")     # False — genuinely not available
+hasattr(csr_tensor, "row_ptr")     # True
+```
+
+`UnsupportedError` subclasses `NotImplementedError`, so it is raised *after* attribute
+lookup succeeds; `hasattr` would return `True` for every accessor on every tensor and
+callers would be forced to switch on `layout` instead. Feature detection matters more
+under a unified class, not less: once the type no longer tells you what a tensor
+supports, `hasattr` is what remains.
+
+> **Note (non-normative):** PyTorch raises `RuntimeError` here, so it is not a model
+> to follow on this point — its users check `.layout`. The cost of the unified class
+> is that `dense.row_ptr` fails at call time rather than being absent from the type;
+> `AttributeError` recovers as much of the "absent" behaviour as Python allows.
 
 ### 3. Dense-only protocols reject non-dense layouts by layout, not by type
 
@@ -166,9 +183,10 @@ encode a boundary the format does not have.
   hurray.SparseTensor)` and `x.format` stop working. Pre-1.0 this carries no
   compatibility guarantee (see `docs/spec/versioning.md`), but it is a real change for
   anyone already using the sparse API.
-- **Errors move from lookup time to call time.** `dense.row_ptr` becomes a runtime
-  `UnsupportedError` rather than an `AttributeError`. Static analysers and IDE
-  completion lose the ability to tell the two cases apart.
+- **Static analysis loses a signal.** `dense.row_ptr` still raises `AttributeError`,
+  so `hasattr` and `getattr` behave as before, but a type checker or IDE can no longer
+  tell from the class alone which accessors a given tensor supports — every accessor
+  exists on every `Tensor`.
 - **A wider class surface.** One class carries every layout's accessors, most of which
   raise for any given instance. Documentation must be explicit about which apply where.
 

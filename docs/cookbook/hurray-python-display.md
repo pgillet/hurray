@@ -1,6 +1,6 @@
 # Tensor Display: `__repr__` and `__str__`
 
-`hurray.Tensor` and `hurray.SparseTensor` implement `__repr__` and `__str__`
+`hurray.Tensor` implements `__repr__` and `__str__`
 following NumPy/PyTorch display conventions.
 
 ## `hurray.Tensor`
@@ -59,7 +59,7 @@ print(t2)
 
 Falls back to `repr()` when NumPy is unavailable or for Tier 2 types.
 
-## `hurray.SparseTensor`
+## Sparse-layout tensors
 
 Both `repr()` and `str()` show format, shape, nnz, and dtype:
 
@@ -71,10 +71,10 @@ m = sp.csr_matrix(([1.0, 2.0], ([0, 1], [1, 0])), shape=(2, 2))
 t = hurray.from_scipy(m)
 
 repr(t)
-# hurray.SparseTensor(format='csr', shape=(2, 2), nnz=2, dtype=float64)
+# hurray.Tensor(layout='csr', shape=(2, 2), nnz=2, dtype=float64)
 
 print(t)
-# hurray.SparseTensor(format='csr', shape=(2, 2), nnz=2, dtype=float64)
+# hurray.Tensor(layout='csr', shape=(2, 2), nnz=2, dtype=float64)
 ```
 
 `str()` is identical to `repr()` for sparse tensors. By default the display is
@@ -82,7 +82,7 @@ print(t)
 
 ### Display options: metadata vs. content
 
-Switch `SparseTensor` display to a **PyTorch-style content** form that also shows
+Switch sparse display to a **PyTorch-style content** form that also shows
 the per-format buffer arrays. Use `hurray.set_print_options` to set it globally, or
 `hurray.print_options(...)` as a context manager for a scoped change (auto-reverts
 on exit). The default is `"metadata"`, so existing behavior is unchanged.
@@ -96,12 +96,12 @@ t = hurray.from_scipy(m)
 
 # Default — metadata only:
 repr(t)
-# hurray.SparseTensor(format='csr', shape=(3, 3), nnz=4, dtype=float64)
+# hurray.Tensor(layout='csr', shape=(3, 3), nnz=4, dtype=float64)
 
 # Global switch to content:
 hurray.set_print_options(sparse_display="content")
 repr(t)
-# hurray.SparseTensor(format='csr', shape=(3, 3), nnz=4, dtype=float64,
+# hurray.Tensor(layout='csr', shape=(3, 3), nnz=4, dtype=float64,
 #   values=[1. 2. 3. 4.], col_indices=[0 2 1 0], row_ptr=[0 2 3 4])
 hurray.get_print_options()
 # {'sparse_display': 'content'}
@@ -121,9 +121,10 @@ The per-format arrays shown in content mode are:
 | CSR | `values`, `col_indices`, `row_ptr` |
 | CSC | `values`, `row_indices`, `col_ptr` |
 
-> **Note:** `hurray.SparseTensor` supports only the rank-2, SciPy-interop formats COO,
+> **Note:** the sparse component accessors cover only the rank-2, SciPy-interop layouts COO,
 > CSR, and CSC. The CSF (Compressed Sparse Fiber) layout exists in `hurray-core`
-> (`docs/spec/layouts/csf.md`) but is **not** exposed as a `hurray.SparseTensor`, so it
+> (`docs/spec/layouts/csf.md`); a CSF tensor loads as a `hurray.Tensor` with
+> `layout == "csf"`, but has no component accessors yet, so it
 > has no Python display form. Exposing rank-N CSF in the Python bindings is future work.
 
 Content mode formats the arrays via NumPy (honoring your active `numpy` print

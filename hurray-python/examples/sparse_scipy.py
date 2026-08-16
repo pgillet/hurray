@@ -2,7 +2,7 @@
 Sparse tensor interop with SciPy.
 
 Demonstrates:
-- Constructing a CSR SparseTensor from SciPy without copying
+- Constructing a CSR tensor from SciPy without copying
 - Accessing component buffer views (.values, .col_indices, .row_ptr)
 - Converting back to a SciPy matrix via .to_scipy()
 - The uint64 index requirement and how to satisfy it
@@ -38,7 +38,7 @@ def demo_csr_round_trip():
 
     # Zero-copy wrap.
     sparse = hurray.from_scipy(m)
-    print(f"format : {sparse.format}")
+    print(f"layout : {sparse.layout}")
     print(f"shape  : {sparse.shape}")
     print(f"nnz    : {sparse.nnz}")
     print(f"dtype  : {sparse.dtype}")
@@ -71,7 +71,7 @@ def demo_csc():
     m.indptr = m.indptr.astype(np.uint64)
 
     sparse = hurray.from_scipy(m)
-    assert sparse.format == "csc"
+    assert sparse.layout == "csc"
     assert sparse.nnz == 2
 
     row_idx = sparse.row_indices
@@ -99,16 +99,16 @@ def demo_coo_rejection():
     # Preferred: repack row/col into [nnz, rank] uint64 and use hurray.sparse_coo.
     indices = np.stack([m_coo.row, m_coo.col], axis=1).astype(np.uint64)
     t = hurray.sparse_coo(m_coo.data, indices, m_coo.shape)
-    assert t.format == "coo"
+    assert t.layout == "coo"
     assert t.nnz == 3
-    print(f"sparse_coo OK: format={t.format}, nnz={t.nnz}, shape={t.shape}")
+    print(f"sparse_coo OK: layout={t.layout}, nnz={t.nnz}, shape={t.shape}")
 
     # Alternative: convert to CSR first, then from_scipy.
     m_csr = m_coo.tocsr()
     m_csr.indices = m_csr.indices.astype(np.uint64)
     m_csr.indptr = m_csr.indptr.astype(np.uint64)
     sparse = hurray.from_scipy(m_csr)
-    assert sparse.format == "csr"
+    assert sparse.layout == "csr"
     print("COO→CSR alternative OK")
 
 

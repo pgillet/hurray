@@ -1,21 +1,23 @@
-//! Python bindings for the Hurray sparse tensor type.
+//! Sparse layout support for `hurray.Tensor`.
 //!
-//! Exposes [`SparseTensor`] as `hurray.SparseTensor`: a Python class that wraps
-//! a sparse tensor descriptor and its component buffers (values + index arrays).
+//! Since ADR-031 there is no separate `SparseTensor` class: a sparse tensor is a
+//! `hurray.Tensor` whose layout happens to be COO, CSR, or CSC. This module holds
+//! the constructors, the component-buffer layout rules, and the sparse
+//! representation used by `Tensor.__repr__`.
 //!
-//! ## Supported formats (D10)
+//! ## Supported layouts
 //!
-//! | Format | `SparseFormat` | Buffers |
-//! |--------|---------------|---------|
-//! | COO | `Coo` | values, indices `[nnz, rank]` uint64 |
-//! | CSR | `Csr` | values, col_indices `[nnz]` uint64, row_ptr `[nrows+1]` uint64 |
-//! | CSC | `Csc` | values, row_indices `[nnz]` uint64, col_ptr `[ncols+1]` uint64 |
+//! | Layout | Buffers, in descriptor order |
+//! |--------|------------------------------|
+//! | COO | values, indices `[nnz, rank]` uint64 |
+//! | CSR | values, col_indices `[nnz]` uint64, row_ptr `[nrows+1]` uint64 |
+//! | CSC | values, row_indices `[nnz]` uint64, col_ptr `[ncols+1]` uint64 |
 //!
-//! Attributes that don't apply to the active format raise `AttributeError` (D10).
+//! Accessors that don't apply to a tensor's layout raise `AttributeError`, so
+//! `hasattr` reports the truth — design decision D10, extended from the sparse
+//! formats to every layout by ADR-031 § 2.
 
 use pyo3::prelude::*;
-use pyo3::types::PyTuple;
-use pyo3::IntoPyObjectExt;
 
 use hurray_core::{
     layout::{CooLayout, CscLayout, CsrLayout},
@@ -27,32 +29,9 @@ use crate::buffer::BufferStore;
 use crate::device::Device;
 use crate::dtype::Dtype;
 use crate::errors::{BufferError, InvalidDescriptorError, UnsupportedError};
-use crate::tensor::{is_tier1, Tensor};
+use crate::tensor::Tensor;
 
 // ── SparseFormat ──────────────────────────────────────────────────────────────
-
-/// Which sparse storage format a [`SparseTensor`] uses.
-///
-/// D10: a single `SparseTensor` pyclass covers all three formats; format-specific
-/// attributes raise `AttributeError` when accessed on a tensor of a different format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SparseFormat {
-    Coo,
-    Csr,
-    Csc,
-}
-
-impl SparseFormat {
-    fn as_str(self) -> &'static str {
-        match self {
-            SparseFormat::Coo => "coo",
-            SparseFormat::Csr => "csr",
-            SparseFormat::Csc => "csc",
-        }
-    }
-}
-
-// ── SparseTensor pyclass ──────────────────────────────────────────────────────
 
 /// A Hurray sparse tensor: COO, CSR, or CSC format with zero-copy buffer access.
 ///
@@ -87,610 +66,35 @@ impl SparseFormat {
 ///
 /// # (Use hurray.from_scipy for zero-copy from SciPy matrices.)
 /// ```
-#[pyclass(name = "SparseTensor")]
-#[derive(Debug)]
-pub struct SparseTensor {
-    /// Tensor descriptor carrying element type, shape, layout, and buffer metadata.
-    pub descriptor: TensorDescriptor,
-    /// Which sparse storage format this tensor uses.
-    pub format: SparseFormat,
-    /// Buffer for the non-zero values array.
-    pub values_buf: BufferStore,
-    /// Buffer for the primary index array:
-    /// - COO: `indices` `[nnz * rank]` uint64
-    /// - CSR: `col_indices` `[nnz]` uint64
-    /// - CSC: `row_indices` `[nnz]` uint64
-    pub aux_buf_0: BufferStore,
-    /// Buffer for the secondary index array (CSR/CSC only):
-    /// - CSR: `row_ptr` `[nrows + 1]` uint64
-    /// - CSC: `col_ptr` `[ncols + 1]` uint64
-    /// - COO: `None`
-    pub aux_buf_1: Option<BufferStore>,
-    /// Python-side dtype handle for the values element type.
-    pub dtype_py: Py<Dtype>,
-    /// Python-side device handle.
-    pub device_py: Py<Device>,
-}
+/// Render a sparse `Tensor` as a string, honouring the `sparse_display` print option.
+///
+/// Lives here rather than in `tensor.rs` because it is entirely about the sparse
+/// component arrays; `Tensor::__repr__` dispatches to it for COO/CSR/CSC layouts.
+pub(crate) fn sparse_repr(slf: &Bound<'_, Tensor>) -> PyResult<String> {
+    let py = slf.py();
+    let t = slf.borrow();
+    let shape_tuple = t.shape(py)?;
+    let shape_str = shape_tuple.bind(py).repr()?.to_str()?.to_owned();
+    let dtype_name = crate::dtype::element_type_name(t.descriptor.element_type);
+    let layout = crate::tensor::layout_name(&t.descriptor.layout);
+    let nnz = t.nnz()?;
+    drop(t);
 
-#[pymethods]
-impl SparseTensor {
-    // ── Properties ────────────────────────────────────────────────────────────
+    // Build the invariant metadata prefix that both modes share.
+    let metadata = format!(
+        "hurray.Tensor(layout='{layout}', shape={shape_str}, nnz={nnz}, dtype={dtype_name}"
+    );
 
-    /// The sparse storage format string: `"coo"`, `"csr"`, or `"csc"`.
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// assert sparse.format == "csr"
-    /// ```
-    #[getter]
-    pub fn format(&self) -> &str {
-        self.format.as_str()
+    // Check the ContextVar. Falls back to false (metadata) on any Python error.
+    if !crate::print_options::sparse_display_is_content(py) {
+        return Ok(format!("{metadata})"));
     }
 
-    /// The logical shape of this sparse tensor as a tuple of `int`.
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// assert sparse.shape == (1000, 1000)
-    /// ```
-    #[getter]
-    pub fn shape(&self, py: Python<'_>) -> PyResult<Py<PyTuple>> {
-        use hurray_core::DYNAMIC;
-        let items: Vec<Py<PyAny>> = self
-            .descriptor
-            .shape
-            .dims()
-            .iter()
-            .map(|&dim| -> PyResult<Py<PyAny>> {
-                if dim == DYNAMIC {
-                    Ok(py.None())
-                } else {
-                    dim.into_py_any(py)
-                }
-            })
-            .collect::<PyResult<_>>()?;
-        Ok(PyTuple::new(py, items)?.unbind())
-    }
-
-    /// Number of dimensions (rank) of this sparse tensor.
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// assert sparse.ndim == 2
-    /// ```
-    #[getter]
-    pub fn ndim(&self) -> usize {
-        self.descriptor.shape.rank()
-    }
-
-    /// Number of explicitly stored (non-zero) elements.
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// assert sparse.nnz == 42
-    /// ```
-    #[getter]
-    pub fn nnz(&self) -> u64 {
-        match &self.descriptor.layout {
-            LayoutDescriptor::Coo(l) => l.nnz,
-            LayoutDescriptor::Csr(l) => l.nnz,
-            LayoutDescriptor::Csc(l) => l.nnz,
-            // Unreachable: SparseTensor is only constructed with COO/CSR/CSC layouts.
-            _ => 0,
-        }
-    }
-
-    /// The element type of the non-zero values.
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// assert sparse.dtype == hurray.float32
-    /// ```
-    #[getter]
-    pub fn dtype(&self, py: Python<'_>) -> Py<Dtype> {
-        self.dtype_py.clone_ref(py)
-    }
-
-    /// The device this tensor's buffers reside on.
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// assert sparse.device.kind == "cpu"
-    /// ```
-    #[getter]
-    pub fn device(&self, py: Python<'_>) -> Py<Device> {
-        self.device_py.clone_ref(py)
-    }
-
-    // ── Component buffer accessors ────────────────────────────────────────────
-
-    /// A `hurray.Tensor` view over the non-zero values buffer.
-    ///
-    /// Shape: `[nnz]`, dtype: same as `self.dtype`. Zero-copy — the view borrows
-    /// this `SparseTensor`'s buffer.
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// vals = sparse.values
-    /// assert vals.shape == (sparse.nnz,)
-    /// ```
-    #[getter]
-    pub fn values(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let py = slf.py();
-        let s = slf.borrow();
-        let nnz = s.nnz();
-        let element_type = s.descriptor.element_type;
-        let device_tag = s.device_py.borrow(py).tag;
-        let memory_class = s.device_py.borrow(py).memory_class;
-        let ptr = s.values_buf.as_ptr() as *mut u8;
-        let len = s.values_buf.len();
-        drop(s);
-
-        let shape = Shape::new(vec![nnz])
-            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
-        // Keep this SparseTensor alive as the base for the borrowed Tensor view.
-        let base: Py<PyAny> = slf.clone().into_any().unbind();
-        let tensor = Tensor::new_borrowed_view(
-            py,
-            element_type,
-            shape,
-            device_tag,
-            memory_class,
-            base,
-            ptr,
-            len,
-        )?;
-        Ok(Py::new(py, tensor)?.into_any())
-    }
-
-    /// A `hurray.Tensor` view over the COO index buffer (shape `[nnz, rank]`, dtype `uint64`).
-    ///
-    /// Raises `AttributeError` for non-COO tensors (D10).
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// idx = sparse.indices  # only valid for COO
-    /// assert idx.shape == (sparse.nnz, sparse.ndim)
-    /// ```
-    #[getter]
-    pub fn indices(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let py = slf.py();
-        let s = slf.borrow();
-        // D10: attributes that don't apply to the current format raise AttributeError.
-        if s.format != SparseFormat::Coo {
-            return Err(pyo3::exceptions::PyAttributeError::new_err(format!(
-                "'SparseTensor' object has no attribute 'indices'; this is a {} tensor",
-                s.format.as_str()
-            )));
-        }
-        let nnz = s.nnz();
-        let rank = s.descriptor.shape.rank() as u64;
-        let ptr = s.aux_buf_0.as_ptr() as *mut u8;
-        let len = s.aux_buf_0.len();
-        drop(s);
-
-        let shape = Shape::new(vec![nnz, rank])
-            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
-        let base: Py<PyAny> = slf.clone().into_any().unbind();
-        build_uint64_view(py, base, ptr, len, shape)
-    }
-
-    /// A `hurray.Tensor` view over the CSR column-index buffer (shape `[nnz]`, dtype `uint64`).
-    ///
-    /// Raises `AttributeError` for non-CSR tensors (D10).
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// col_idx = sparse.col_indices  # only valid for CSR
-    /// assert col_idx.shape == (sparse.nnz,)
-    /// ```
-    #[getter]
-    pub fn col_indices(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let py = slf.py();
-        let s = slf.borrow();
-        // D10: attributes that don't apply to the current format raise AttributeError.
-        if s.format != SparseFormat::Csr {
-            return Err(pyo3::exceptions::PyAttributeError::new_err(format!(
-                "'SparseTensor' object has no attribute 'col_indices'; this is a {} tensor",
-                s.format.as_str()
-            )));
-        }
-        let nnz = s.nnz();
-        let ptr = s.aux_buf_0.as_ptr() as *mut u8;
-        let len = s.aux_buf_0.len();
-        drop(s);
-
-        let shape = Shape::new(vec![nnz])
-            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
-        let base: Py<PyAny> = slf.clone().into_any().unbind();
-        build_uint64_view(py, base, ptr, len, shape)
-    }
-
-    /// A `hurray.Tensor` view over the CSR row-pointer buffer (shape `[nrows+1]`, dtype `uint64`).
-    ///
-    /// Raises `AttributeError` for non-CSR tensors (D10).
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// rp = sparse.row_ptr  # only valid for CSR
-    /// assert rp.shape == (sparse.shape[0] + 1,)
-    /// ```
-    #[getter]
-    pub fn row_ptr(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let py = slf.py();
-        let s = slf.borrow();
-        // D10: attributes that don't apply to the current format raise AttributeError.
-        if s.format != SparseFormat::Csr {
-            return Err(pyo3::exceptions::PyAttributeError::new_err(format!(
-                "'SparseTensor' object has no attribute 'row_ptr'; this is a {} tensor",
-                s.format.as_str()
-            )));
-        }
-        let nrows = s.descriptor.shape.dims().first().copied().ok_or_else(|| {
-            InvalidDescriptorError::new_err("CSR tensor shape must have at least 1 dimension")
-        })?;
-        let buf = s
-            .aux_buf_1
-            .as_ref()
-            .ok_or_else(|| InvalidDescriptorError::new_err("CSR tensor missing row_ptr buffer"))?;
-        let ptr = buf.as_ptr() as *mut u8;
-        let len = buf.len();
-        drop(s);
-
-        let shape = Shape::new(vec![nrows + 1])
-            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
-        let base: Py<PyAny> = slf.clone().into_any().unbind();
-        build_uint64_view(py, base, ptr, len, shape)
-    }
-
-    /// A `hurray.Tensor` view over the CSC row-index buffer (shape `[nnz]`, dtype `uint64`).
-    ///
-    /// Raises `AttributeError` for non-CSC tensors (D10).
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// row_idx = sparse.row_indices  # only valid for CSC
-    /// assert row_idx.shape == (sparse.nnz,)
-    /// ```
-    #[getter]
-    pub fn row_indices(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let py = slf.py();
-        let s = slf.borrow();
-        // D10: attributes that don't apply to the current format raise AttributeError.
-        if s.format != SparseFormat::Csc {
-            return Err(pyo3::exceptions::PyAttributeError::new_err(format!(
-                "'SparseTensor' object has no attribute 'row_indices'; this is a {} tensor",
-                s.format.as_str()
-            )));
-        }
-        let nnz = s.nnz();
-        let ptr = s.aux_buf_0.as_ptr() as *mut u8;
-        let len = s.aux_buf_0.len();
-        drop(s);
-
-        let shape = Shape::new(vec![nnz])
-            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
-        let base: Py<PyAny> = slf.clone().into_any().unbind();
-        build_uint64_view(py, base, ptr, len, shape)
-    }
-
-    /// A `hurray.Tensor` view over the CSC column-pointer buffer (shape `[ncols+1]`, dtype `uint64`).
-    ///
-    /// Raises `AttributeError` for non-CSC tensors (D10).
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// cp = sparse.col_ptr  # only valid for CSC
-    /// assert cp.shape == (sparse.shape[1] + 1,)
-    /// ```
-    #[getter]
-    pub fn col_ptr(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let py = slf.py();
-        let s = slf.borrow();
-        // D10: attributes that don't apply to the current format raise AttributeError.
-        if s.format != SparseFormat::Csc {
-            return Err(pyo3::exceptions::PyAttributeError::new_err(format!(
-                "'SparseTensor' object has no attribute 'col_ptr'; this is a {} tensor",
-                s.format.as_str()
-            )));
-        }
-        let ncols = s.descriptor.shape.dims().get(1).copied().ok_or_else(|| {
-            InvalidDescriptorError::new_err("CSC tensor shape must have at least 2 dimensions")
-        })?;
-        let buf = s
-            .aux_buf_1
-            .as_ref()
-            .ok_or_else(|| InvalidDescriptorError::new_err("CSC tensor missing col_ptr buffer"))?;
-        let ptr = buf.as_ptr() as *mut u8;
-        let len = buf.len();
-        drop(s);
-
-        let shape = Shape::new(vec![ncols + 1])
-            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
-        let base: Py<PyAny> = slf.clone().into_any().unbind();
-        build_uint64_view(py, base, ptr, len, shape)
-    }
-
-    // ── SciPy interop ─────────────────────────────────────────────────────────
-
-    /// Convert this sparse tensor to a `scipy.sparse` matrix (zero-copy where possible).
-    ///
-    /// `copy=False` is passed to the SciPy constructor. SciPy may copy internally
-    /// if it does not accept the `uint64` index dtype — this is outside Hurray's
-    /// control and is documented here so callers can plan accordingly.
-    ///
-    /// ## Raises
-    ///
-    /// - `ImportError` — SciPy is not installed.
-    /// - `hurray.UnsupportedError` — values dtype is Tier 2 / quantized (SciPy has
-    ///   no equivalent) (D17).
-    /// - `hurray.UnsupportedError` — COO tensors: use `.values` / `.indices` directly
-    ///   and construct `scipy.sparse.coo_matrix` manually.
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// import scipy.sparse, hurray
-    ///
-    /// # (Assuming `sparse` is a hurray.SparseTensor with format="csr")
-    /// m = sparse.to_scipy()
-    /// assert isinstance(m, scipy.sparse.csr_matrix)
-    /// ```
-    pub fn to_scipy(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
-        let py = slf.py();
-        {
-            let s = slf.borrow();
-            // D17: reject Tier 2 / quantized dtypes — SciPy has no equivalent.
-            if !is_tier1(s.descriptor.element_type) {
-                return Err(UnsupportedError::new_err(format!(
-                    "to_scipy is not supported for '{}'; SciPy has no equivalent dtype",
-                    crate::dtype::element_type_name(s.descriptor.element_type),
-                )));
-            }
-            if s.format == SparseFormat::Coo {
-                return Err(UnsupportedError::new_err(
-                    "to_scipy is not supported for COO tensors; access .values and .indices \
-                     directly and construct scipy.sparse.coo_matrix manually",
-                ));
-            }
-        }
-
-        // D7-pattern: import scipy lazily — hurray must not require scipy at module load.
-        let sp = py.import("scipy.sparse").map_err(|_| {
-            pyo3::exceptions::PyImportError::new_err(
-                "scipy is not installed; install with: pip install scipy",
-            )
-        })?;
-
-        // Build numpy view of values via __array__ (goes through DLPack; Tier 1 is safe).
-        let values_py = SparseTensor::values(slf)?;
-        let values_arr = values_py.bind(py).call_method0("__array__")?;
-
-        let (nrows, ncols, nnz, fmt, aux1_len_elems) = {
-            let s = slf.borrow();
-            let dims = s.descriptor.shape.dims().to_vec();
-            let nrows = dims[0];
-            let ncols = dims[1];
-            let nnz = s.nnz();
-            let fmt = s.format;
-            let aux1_len = match fmt {
-                SparseFormat::Csr => nrows + 1,
-                SparseFormat::Csc => ncols + 1,
-                SparseFormat::Coo => unreachable!(),
-            };
-            (nrows, ncols, nnz, fmt, aux1_len)
-        };
-
-        // Build numpy views of index arrays directly from aux buffers.
-        let aux0_shape = Shape::new(vec![nnz])
-            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
-        let aux0_py = {
-            let s = slf.borrow();
-            let ptr = s.aux_buf_0.as_ptr() as *mut u8;
-            let len = s.aux_buf_0.len();
-            drop(s);
-            let base: Py<PyAny> = slf.clone().into_any().unbind();
-            build_uint64_view(py, base, ptr, len, aux0_shape)?
-        };
-        let aux0_arr = aux0_py.bind(py).call_method0("__array__")?;
-
-        let aux1_shape = Shape::new(vec![aux1_len_elems])
-            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
-        let aux1_py = {
-            let s = slf.borrow();
-            let buf = s.aux_buf_1.as_ref().ok_or_else(|| {
-                InvalidDescriptorError::new_err("CSR/CSC tensor missing secondary index buffer")
-            })?;
-            let ptr = buf.as_ptr() as *mut u8;
-            let len = buf.len();
-            drop(s);
-            let base: Py<PyAny> = slf.clone().into_any().unbind();
-            build_uint64_view(py, base, ptr, len, aux1_shape)?
-        };
-        let aux1_arr = aux1_py.bind(py).call_method0("__array__")?;
-
-        let kwargs = pyo3::types::PyDict::new(py);
-        kwargs.set_item("shape", PyTuple::new(py, [nrows, ncols])?)?;
-        kwargs.set_item("copy", false)?;
-
-        // csr_matrix((data, indices, indptr), shape=..., copy=False)
-        let args = PyTuple::new(py, [&values_arr, &aux0_arr, &aux1_arr])?;
-        let constructor_name = match fmt {
-            SparseFormat::Csr => "csr_matrix",
-            SparseFormat::Csc => "csc_matrix",
-            SparseFormat::Coo => unreachable!(),
-        };
-        let matrix = sp.getattr(constructor_name)?.call((args,), Some(&kwargs))?;
-        Ok(matrix.into())
-    }
-
-    // ── Native buffer protocol ────────────────────────────────────────────────
-
-    /// Return a `"hurray_buffer"` PyCapsule carrying **every** buffer of this
-    /// sparse tensor, for zero-copy sharing with Hurray-aware extensions.
-    ///
-    /// ADR-030 § 5 retired the separate `__hurray_sparse_buffer__` protocol that
-    /// ADR-023 had floated: sparse is just the multi-buffer case, so consumers
-    /// probe for one protocol and get values plus index arrays in descriptor
-    /// buffer-table order — values, then the primary index array, then the
-    /// secondary one for CSR/CSC.
-    ///
-    /// ## Errors
-    ///
-    /// - `hurray.BufferError` — the descriptor carries no buffer handles.
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// import hurray
-    ///
-    /// t = hurray.sparse_coo([[0, 1]], [1.0], [2, 2], dtype=hurray.float32)
-    /// cap = t.__hurray_buffer__()
-    /// assert cap is not None
-    /// ```
-    #[pyo3(signature = (stream = None))]
-    pub fn __hurray_buffer__(
-        slf: &Bound<'_, Self>,
-        // ProducerSynced: stream hint accepted for API parity; not acted on here.
-        stream: Option<Py<PyAny>>,
-    ) -> PyResult<Py<PyAny>> {
-        let _ = stream;
-        let py = slf.py();
-        let t = slf.borrow();
-
-        if t.descriptor.buffers.is_empty() {
-            return Err(BufferError::new_err(
-                "sparse tensor has no buffer handles; cannot produce a native buffer capsule",
-            ));
-        }
-
-        // Descriptor order for every sparse format is values, aux0, aux1 — the same
-        // order build_coo/csr/csc_descriptor push their handles in.
-        let stores = std::iter::once(&t.values_buf)
-            .chain(std::iter::once(&t.aux_buf_0))
-            .chain(t.aux_buf_1.iter());
-
-        let capsule_buffers: Vec<crate::native_buffer::CapsuleBuffer> = stores
-            .zip(t.descriptor.buffers.iter())
-            .map(|(store, handle)| {
-                let byte_size = store.len() as u64;
-                crate::native_buffer::CapsuleBuffer {
-                    data_ptr: store.as_ptr() as *mut std::ffi::c_void,
-                    byte_size,
-                    alignment: if byte_size == 0 {
-                        1
-                    } else {
-                        handle.alignment()
-                    },
-                    device_tag: handle.device_tag(),
-                    sync_mode: handle.sync_mode(),
-                    memory_class: handle.memory_class(),
-                }
-            })
-            .collect();
-
-        let descriptor = &t.descriptor;
-        let tensor_obj: Py<PyAny> = slf.clone().into_any().unbind();
-
-        crate::native_buffer::build_capsule(py, tensor_obj, descriptor, &capsule_buffers)
-    }
-
-    // ── Dunders ───────────────────────────────────────────────────────────────
-
-    /// Sparse tensors are unhashable — mutable objects must not be used as dict keys.
-    pub fn __hash__(&self) -> PyResult<isize> {
-        Err(pyo3::exceptions::PyTypeError::new_err(
-            "unhashable type: 'SparseTensor'",
-        ))
-    }
-
-    /// Return a developer-friendly string representation.
-    ///
-    /// The output format is controlled by [`hurray.set_print_options`] /
-    /// [`hurray.print_options`]:
-    ///
-    /// - `sparse_display="metadata"` *(default)*: compact SciPy-style summary:
-    ///
-    ///   ```text
-    ///   hurray.SparseTensor(format='csr', shape=(3, 3), nnz=4, dtype=float32)
-    ///   ```
-    ///
-    /// - `sparse_display="content"`: includes the per-format buffer arrays,
-    ///   formatted via NumPy's own string representation:
-    ///
-    ///   ```text
-    ///   hurray.SparseTensor(format='csr', shape=(3, 3), nnz=4, dtype=float32,
-    ///       values=[1. 2. 3. 4.], col_indices=[0 2 1 2], row_ptr=[0 1 3 4])
-    ///   ```
-    ///
-    ///   If NumPy is unavailable or array formatting fails, falls back silently
-    ///   to the `"metadata"` string — `__repr__` never raises.
-    ///
-    /// ## Examples
-    ///
-    /// ```python
-    /// import hurray
-    /// import scipy.sparse as sp
-    /// m = sp.csr_matrix(([1.0, 2.0], ([0, 1], [1, 0])), shape=(2, 2))
-    /// t = hurray.from_scipy(m)
-    /// print(repr(t))
-    /// # hurray.SparseTensor(format='csr', shape=(2, 2), nnz=2, dtype=float64)
-    ///
-    /// with hurray.print_options(sparse_display="content"):
-    ///     print(repr(t))
-    /// # hurray.SparseTensor(format='csr', shape=(2, 2), nnz=2, dtype=float64,
-    /// #     values=[1. 2.], col_indices=[1 0], row_ptr=[0 1 2])
-    /// ```
-    pub fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {
-        let py = slf.py();
-        let s = slf.borrow();
-        let shape_tuple = s.shape(py)?;
-        let shape_str = shape_tuple.bind(py).repr()?.to_str()?.to_owned();
-        let dtype_name = crate::dtype::element_type_name(s.descriptor.element_type);
-        let fmt = s.format;
-        let nnz = s.nnz();
-        drop(s);
-
-        // Build the invariant metadata prefix that both modes share.
-        let metadata = format!(
-            "hurray.SparseTensor(format='{}', shape={}, nnz={}, dtype={}",
-            fmt.as_str(),
-            shape_str,
-            nnz,
-            dtype_name,
-        );
-
-        // Check the ContextVar. Falls back to false (metadata) on any Python error.
-        if !crate::print_options::sparse_display_is_content(py) {
-            return Ok(format!("{metadata})"));
-        }
-
-        // Content mode: append per-format buffer arrays using NumPy formatting.
-        // On any failure, fall back to the metadata string — __repr__ must not raise.
-        match format_content_arrays(slf) {
-            Ok(array_part) => Ok(format!("{metadata}, {array_part})")),
-            Err(_) => Ok(format!("{metadata})")),
-        }
-    }
-
-    /// Return the same string as `__repr__`.
-    ///
-    /// Respects the current `sparse_display` print option. See [`__repr__`] for
-    /// full documentation.
-    pub fn __str__(slf: &Bound<'_, Self>) -> PyResult<String> {
-        SparseTensor::__repr__(slf)
+    // Content mode: append per-layout buffer arrays using NumPy formatting.
+    // On any failure, fall back to the metadata string — __repr__ must not raise.
+    match format_content_arrays(slf) {
+        Ok(array_part) => Ok(format!("{metadata}, {array_part})")),
+        Err(_) => Ok(format!("{metadata})")),
     }
 }
 
@@ -710,13 +114,13 @@ impl SparseTensor {
 ///
 /// Returns a `PyErr` if NumPy cannot be imported or any array conversion fails.
 /// The caller (`__repr__`) silently falls back to `"metadata"` on error.
-fn format_content_arrays(slf: &Bound<'_, SparseTensor>) -> PyResult<String> {
+fn format_content_arrays(slf: &Bound<'_, Tensor>) -> PyResult<String> {
     let py = slf.py();
     // Content rendering needs numpy (the Tensor views format through it). If numpy is
     // absent, bail here so __repr__ falls back cleanly to the metadata string.
     py.import("numpy")?;
 
-    let fmt = slf.borrow().format;
+    let layout = crate::tensor::layout_name(&slf.borrow().descriptor.layout);
 
     /// Render a `hurray.Tensor` buffer view as its bare NumPy array string.
     ///
@@ -728,68 +132,48 @@ fn format_content_arrays(slf: &Bound<'_, SparseTensor>) -> PyResult<String> {
         tensor_obj.bind(py).str()?.extract::<String>()
     }
 
-    let values_str = tensor_to_str(py, SparseTensor::values(slf)?)?;
+    let values_str = tensor_to_str(py, Tensor::values(slf)?)?;
 
-    let array_part = match fmt {
-        SparseFormat::Coo => {
-            let indices_str = tensor_to_str(py, SparseTensor::indices(slf)?)?;
+    let array_part = match layout {
+        "coo" => {
+            let indices_str = tensor_to_str(py, Tensor::indices(slf)?)?;
             format!("indices={indices_str}, values={values_str}")
         }
-        SparseFormat::Csr => {
-            let col_indices_str = tensor_to_str(py, SparseTensor::col_indices(slf)?)?;
-            let row_ptr_str = tensor_to_str(py, SparseTensor::row_ptr(slf)?)?;
+        "csr" => {
+            let col_indices_str = tensor_to_str(py, Tensor::col_indices(slf)?)?;
+            let row_ptr_str = tensor_to_str(py, Tensor::row_ptr(slf)?)?;
             format!("values={values_str}, col_indices={col_indices_str}, row_ptr={row_ptr_str}")
         }
-        SparseFormat::Csc => {
-            let row_indices_str = tensor_to_str(py, SparseTensor::row_indices(slf)?)?;
-            let col_ptr_str = tensor_to_str(py, SparseTensor::col_ptr(slf)?)?;
+        "csc" => {
+            let row_indices_str = tensor_to_str(py, Tensor::row_indices(slf)?)?;
+            let col_ptr_str = tensor_to_str(py, Tensor::col_ptr(slf)?)?;
             format!("values={values_str}, row_indices={row_indices_str}, col_ptr={col_ptr_str}")
+        }
+        // sparse_repr only calls this for the three sparse layouts.
+        other => {
+            return Err(UnsupportedError::new_err(format!(
+                "no component display for a {other} tensor"
+            )))
         }
     };
 
     Ok(array_part)
 }
 
-/// Build a uint64 `hurray.Tensor` view over a raw buffer pointer.
+/// Build a sparse `Tensor` from pre-validated component buffers and a descriptor.
 ///
-/// `base` is kept alive by the resulting Tensor's `BufferStore`, ensuring `ptr`
-/// remains valid for the view's lifetime.
+/// Since ADR-031 there is one tensor class: the component buffers become the
+/// tensor's buffer table in descriptor order — values at index 0, then the index
+/// arrays — exactly as the layout's buffer-count rule requires.
 ///
-/// # Safety
-///
-/// `ptr` must be valid for `len` bytes for as long as `base` is alive.
-pub(crate) fn build_uint64_view(
-    py: Python<'_>,
-    base: Py<PyAny>,
-    ptr: *mut u8,
-    len: usize,
-    shape: Shape,
-) -> PyResult<Py<PyAny>> {
-    let tensor = Tensor::new_borrowed_view(
-        py,
-        ElementType::Uint64,
-        shape,
-        hurray_core::DeviceTag::Cpu,
-        MemoryClass::Standard,
-        base,
-        ptr,
-        len,
-    )?;
-    Ok(Py::new(py, tensor)?.into_any())
-}
-
-/// Build a `SparseTensor` from three pre-validated component buffers and a descriptor.
-///
-/// Caller is responsible for ensuring `values_buf`, `aux_buf_0`, `aux_buf_1` are
-/// consistent with `descriptor` and `format`.
+/// Caller is responsible for ensuring the buffers are consistent with `descriptor`.
 pub(crate) fn make_sparse_tensor(
     py: Python<'_>,
     descriptor: TensorDescriptor,
-    format: SparseFormat,
     values_buf: BufferStore,
     aux_buf_0: BufferStore,
     aux_buf_1: Option<BufferStore>,
-) -> PyResult<SparseTensor> {
+) -> PyResult<Tensor> {
     let element_type = descriptor.element_type;
     let dtype_py = Py::new(
         py,
@@ -805,12 +189,12 @@ pub(crate) fn make_sparse_tensor(
             device_id: 0,
         },
     )?;
-    Ok(SparseTensor {
+    let mut aux_buffers = vec![aux_buf_0];
+    aux_buffers.extend(aux_buf_1);
+    Ok(Tensor {
         descriptor,
-        format,
-        values_buf,
-        aux_buf_0,
-        aux_buf_1,
+        buffer: values_buf,
+        aux_buffers,
         dtype_py,
         device_py,
     })
@@ -883,7 +267,7 @@ fn array_shape(arr: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
     Ok(dims.iter().map(|&d| d.max(0) as u64).collect())
 }
 
-/// Construct a COO [`SparseTensor`] from packed component arrays, zero-copy.
+/// Construct a COO [`Tensor`] from packed component arrays, zero-copy.
 ///
 /// `values` is a 1-D array of `nnz` elements. `indices` is a 2-D `uint64` array of shape
 /// `[nnz, rank]` giving each non-zero's coordinates in row-major (C-contiguous) order —
@@ -913,7 +297,7 @@ pub fn sparse_coo(
     values: &Bound<'_, PyAny>,
     indices: &Bound<'_, PyAny>,
     shape: Vec<i64>,
-) -> PyResult<SparseTensor> {
+) -> PyResult<Tensor> {
     if shape.iter().any(|&d| d < 0) {
         return Err(InvalidDescriptorError::new_err(
             "shape must have non-negative dimensions",
@@ -973,14 +357,7 @@ pub fn sparse_coo(
     let values_buf = unsafe { BufferStore::borrowed(val_ptr, val_len, values_base) };
     let indices_buf = unsafe { BufferStore::borrowed(idx_ptr, idx_len, indices_base) };
 
-    make_sparse_tensor(
-        py,
-        descriptor,
-        SparseFormat::Coo,
-        values_buf,
-        indices_buf,
-        None,
-    )
+    make_sparse_tensor(py, descriptor, values_buf, indices_buf, None)
 }
 
 /// Build a COO `TensorDescriptor`. Used by [`sparse_coo`].
@@ -1076,9 +453,8 @@ pub(crate) fn build_csc_descriptor(
 
 // ── Registration ──────────────────────────────────────────────────────────────
 
-/// Register `SparseTensor` on the `hurray` module.
+/// Register the sparse constructors on the `hurray` module.
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    m.add_class::<SparseTensor>()?;
     m.add_function(wrap_pyfunction!(sparse_coo, m)?)?;
     Ok(())
 }
@@ -1086,7 +462,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use hurray_core::ElementType;
     use pyo3::Python;
@@ -1109,8 +485,8 @@ mod tests {
         m
     }
 
-    /// Build a minimal COO SparseTensor for tests.
-    fn make_coo(py: Python<'_>) -> SparseTensor {
+    /// Build a minimal COO tensor for tests.
+    fn make_coo(py: Python<'_>) -> Tensor {
         // 2×2 matrix, 2 non-zeros, float32 values
         let values: Vec<u8> = [5.0f32, 7.0].iter().flat_map(|f| f.to_le_bytes()).collect();
         // indices: [[0,0],[1,1]] stored row-major as [0,0,1,1]
@@ -1167,19 +543,17 @@ mod tests {
             },
         )
         .unwrap();
-        SparseTensor {
+        Tensor {
             descriptor,
-            format: SparseFormat::Coo,
-            values_buf: BufferStore::from_slice(&values),
-            aux_buf_0: BufferStore::from_slice(&indices),
-            aux_buf_1: None,
+            buffer: BufferStore::from_slice(&values),
+            aux_buffers: vec![BufferStore::from_slice(&indices)],
             dtype_py,
             device_py,
         }
     }
 
-    /// Build a minimal CSC SparseTensor for tests.
-    fn make_csc(py: Python<'_>) -> SparseTensor {
+    /// Build a minimal CSC tensor for tests.
+    fn make_csc(py: Python<'_>) -> Tensor {
         // 2×2 matrix, 2 non-zeros, float32 values
         let values: Vec<u8> = [3.0f32, 6.0].iter().flat_map(|f| f.to_le_bytes()).collect();
         let row_indices: Vec<u8> = [0u64, 1].iter().flat_map(|v| v.to_le_bytes()).collect();
@@ -1212,12 +586,13 @@ mod tests {
             },
         )
         .unwrap();
-        SparseTensor {
+        Tensor {
             descriptor,
-            format: SparseFormat::Csc,
-            values_buf: BufferStore::from_slice(&values),
-            aux_buf_0: BufferStore::from_slice(&row_indices),
-            aux_buf_1: Some(BufferStore::from_slice(&col_ptr)),
+            buffer: BufferStore::from_slice(&values),
+            aux_buffers: vec![
+                BufferStore::from_slice(&row_indices),
+                BufferStore::from_slice(&col_ptr),
+            ],
             dtype_py,
             device_py,
         }
@@ -1230,7 +605,7 @@ mod tests {
         crate::print_options::set_print_options(py, Some("metadata")).unwrap();
     }
 
-    fn make_csr(py: Python<'_>) -> SparseTensor {
+    pub(crate) fn make_csr(py: Python<'_>) -> Tensor {
         // 3×3 matrix, 4 non-zeros, float32 values
         let values: Vec<u8> = [1.0f32, 2.0, 3.0, 4.0]
             .iter()
@@ -1273,12 +648,13 @@ mod tests {
         )
         .unwrap();
 
-        SparseTensor {
+        Tensor {
             descriptor,
-            format: SparseFormat::Csr,
-            values_buf: BufferStore::from_slice(&values),
-            aux_buf_0: BufferStore::from_slice(&col_idx),
-            aux_buf_1: Some(BufferStore::from_slice(&row_ptr)),
+            buffer: BufferStore::from_slice(&values),
+            aux_buffers: vec![
+                BufferStore::from_slice(&col_idx),
+                BufferStore::from_slice(&row_ptr),
+            ],
             dtype_py,
             device_py,
         }
@@ -1290,9 +666,9 @@ mod tests {
         Python::attach(|py| {
             let _m = build_module(py);
             let sparse = make_csr(py);
-            assert_eq!(sparse.format(), "csr");
+            assert_eq!(sparse.layout(), "csr");
             assert_eq!(sparse.ndim(), 2);
-            assert_eq!(sparse.nnz(), 4);
+            assert_eq!(sparse.nnz().unwrap(), 4);
         });
     }
 
@@ -1317,9 +693,9 @@ mod tests {
                 .unwrap();
 
             let t = sparse_coo(py, &values, &indices, vec![2, 2]).unwrap();
-            assert_eq!(t.format(), "coo");
+            assert_eq!(t.layout(), "coo");
             assert_eq!(t.ndim(), 2);
-            assert_eq!(t.nnz(), 2);
+            assert_eq!(t.nnz().unwrap(), 2);
         });
     }
 
@@ -1364,7 +740,7 @@ mod tests {
             // __repr__ now takes &Bound<Self>; wrap the bare struct first.
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
-            let r = SparseTensor::__repr__(bound).unwrap();
+            let r = crate::sparse::sparse_repr(bound).unwrap();
             assert!(r.contains("csr"), "repr should contain format");
             assert!(r.contains("float32"), "repr should contain dtype");
             assert!(r.contains("nnz=4"), "repr should contain nnz");
@@ -1382,9 +758,9 @@ mod tests {
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
             assert_eq!(
-                SparseTensor::__repr__(bound).unwrap(),
-                SparseTensor::__str__(bound).unwrap(),
-                "__str__ and __repr__ must be identical for SparseTensor"
+                crate::sparse::sparse_repr(bound).unwrap(),
+                Tensor::__str__(bound).unwrap(),
+                "__str__ and __repr__ must be identical for a sparse tensor"
             );
         });
     }
@@ -1407,7 +783,7 @@ mod tests {
             let _m = build_module(py);
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
-            let result = SparseTensor::indices(bound);
+            let result = Tensor::indices(bound);
             assert!(result.is_err());
             assert!(result
                 .unwrap_err()
@@ -1455,12 +831,13 @@ mod tests {
 
             let sparse = Py::new(
                 py,
-                SparseTensor {
+                Tensor {
                     descriptor,
-                    format: SparseFormat::Csc,
-                    values_buf: BufferStore::from_slice(&values),
-                    aux_buf_0: BufferStore::from_slice(&row_idx),
-                    aux_buf_1: Some(BufferStore::from_slice(&col_ptr)),
+                    buffer: BufferStore::from_slice(&values),
+                    aux_buffers: vec![
+                        BufferStore::from_slice(&row_idx),
+                        BufferStore::from_slice(&col_ptr),
+                    ],
                     dtype_py,
                     device_py,
                 },
@@ -1468,7 +845,7 @@ mod tests {
             .unwrap();
             let bound = sparse.bind(py);
             // col_indices is a CSR attribute — should raise AttributeError for CSC.
-            let result = SparseTensor::col_indices(bound);
+            let result = Tensor::col_indices(bound);
             assert!(result.is_err());
             assert!(result
                 .unwrap_err()
@@ -1483,7 +860,7 @@ mod tests {
             let _m = build_module(py);
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
-            let vals_obj = SparseTensor::values(bound).unwrap();
+            let vals_obj = Tensor::values(bound).unwrap();
             let vals = vals_obj.bind(py);
             // shape should be (nnz,) = (4,)
             let shape = vals.getattr("shape").unwrap();
@@ -1504,7 +881,7 @@ mod tests {
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
             // row_ptr for 3×3 matrix → shape (nrows+1,) = (4,)
-            let rp_obj = SparseTensor::row_ptr(bound).unwrap();
+            let rp_obj = Tensor::row_ptr(bound).unwrap();
             let rp = rp_obj.bind(py);
             let shape = rp.getattr("shape").unwrap();
             let shape_repr = shape.repr().unwrap().to_str().unwrap().to_owned();
@@ -1522,7 +899,7 @@ mod tests {
             let _m = build_module(py);
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
-            let ci_obj = SparseTensor::col_indices(bound).unwrap();
+            let ci_obj = Tensor::col_indices(bound).unwrap();
             let ci = ci_obj.bind(py);
             let shape = ci.getattr("shape").unwrap();
             let shape_repr = shape.repr().unwrap().to_str().unwrap().to_owned();
@@ -1535,7 +912,7 @@ mod tests {
         init();
         Python::attach(|py| {
             let _m = build_module(py);
-            // Build a COO SparseTensor
+            // Build a COO tensor
             let values: Vec<u8> = [1.0f32].iter().flat_map(|f| f.to_le_bytes()).collect();
             let indices: Vec<u8> = [0u64, 0u64].iter().flat_map(|v| v.to_le_bytes()).collect();
             let shape = Shape::new(vec![2, 2]).unwrap();
@@ -1585,19 +962,17 @@ mod tests {
             .unwrap();
             let sparse = Py::new(
                 py,
-                SparseTensor {
+                Tensor {
                     descriptor,
-                    format: SparseFormat::Coo,
-                    values_buf: BufferStore::from_slice(&values),
-                    aux_buf_0: BufferStore::from_slice(&indices),
-                    aux_buf_1: None,
+                    buffer: BufferStore::from_slice(&values),
+                    aux_buffers: vec![BufferStore::from_slice(&indices)],
                     dtype_py,
                     device_py,
                 },
             )
             .unwrap();
             let bound = sparse.bind(py);
-            let result = SparseTensor::to_scipy(bound);
+            let result = Tensor::to_scipy(bound);
             assert!(result.is_err());
             assert!(result.unwrap_err().is_instance_of::<UnsupportedError>(py));
         });
@@ -1615,13 +990,13 @@ mod tests {
             reset_sparse_display(py);
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
-            let r = SparseTensor::__repr__(bound).unwrap();
+            let r = crate::sparse::sparse_repr(bound).unwrap();
             // Metadata mode: compact summary only.
             assert!(
-                r.starts_with("hurray.SparseTensor("),
+                r.starts_with("hurray.Tensor("),
                 "repr must start with type name"
             );
-            assert!(r.contains("format='csr'"), "repr must contain format");
+            assert!(r.contains("layout='csr'"), "repr must contain layout");
             assert!(r.contains("nnz=4"), "repr must contain nnz");
             assert!(r.contains("dtype=float32"), "repr must contain dtype");
             // Must NOT contain any array labels in default mode.
@@ -1648,8 +1023,8 @@ mod tests {
             reset_sparse_display(py);
             let sparse = Py::new(py, make_coo(py)).unwrap();
             let bound = sparse.bind(py);
-            let r = SparseTensor::__repr__(bound).unwrap();
-            assert!(r.contains("format='coo'"));
+            let r = crate::sparse::sparse_repr(bound).unwrap();
+            assert!(r.contains("layout='coo'"));
             assert!(
                 !r.contains("indices="),
                 "default COO repr must not contain indices="
@@ -1669,8 +1044,8 @@ mod tests {
             reset_sparse_display(py);
             let sparse = Py::new(py, make_csc(py)).unwrap();
             let bound = sparse.bind(py);
-            let r = SparseTensor::__repr__(bound).unwrap();
-            assert!(r.contains("format='csc'"));
+            let r = crate::sparse::sparse_repr(bound).unwrap();
+            assert!(r.contains("layout='csc'"));
             assert!(
                 !r.contains("values="),
                 "default CSC repr must not contain values="
@@ -1710,10 +1085,10 @@ mod tests {
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
             // __repr__ must never raise, regardless of whether NumPy is present.
-            let r = SparseTensor::__repr__(bound).unwrap();
+            let r = crate::sparse::sparse_repr(bound).unwrap();
             // The repr must at minimum contain the invariant metadata fields.
             assert!(
-                r.contains("format='csr'"),
+                r.contains("layout='csr'"),
                 "repr must contain format (got: {r})"
             );
             assert!(r.contains("nnz=4"), "repr must contain nnz (got: {r})");
@@ -1761,9 +1136,9 @@ mod tests {
 
             let sparse = Py::new(py, make_coo(py)).unwrap();
             let bound = sparse.bind(py);
-            let r = SparseTensor::__repr__(bound).unwrap();
+            let r = crate::sparse::sparse_repr(bound).unwrap();
             assert!(
-                r.contains("format='coo'"),
+                r.contains("layout='coo'"),
                 "repr must contain format (got: {r})"
             );
 
@@ -1800,9 +1175,9 @@ mod tests {
 
             let sparse = Py::new(py, make_csc(py)).unwrap();
             let bound = sparse.bind(py);
-            let r = SparseTensor::__repr__(bound).unwrap();
+            let r = crate::sparse::sparse_repr(bound).unwrap();
             assert!(
-                r.contains("format='csc'"),
+                r.contains("layout='csc'"),
                 "repr must contain format (got: {r})"
             );
 
@@ -1853,15 +1228,15 @@ mod tests {
             assert!(crate::print_options::sparse_display_is_content(py));
 
             let sparse = Py::new(py, make_csr(py)).unwrap();
-            let r = SparseTensor::__repr__(sparse.bind(py)).unwrap();
+            let r = crate::sparse::sparse_repr(sparse.bind(py)).unwrap();
 
             // Spec: __repr__ never raises; falls back to the metadata string.
             assert!(
-                r.starts_with("hurray.SparseTensor("),
+                r.starts_with("hurray.Tensor("),
                 "fallback repr must be a valid metadata string (got: {r})"
             );
             assert!(
-                r.contains("format='csr'"),
+                r.contains("layout='csr'"),
                 "fallback repr must contain format (got: {r})"
             );
             assert!(
@@ -1890,8 +1265,8 @@ mod tests {
             let sparse = Py::new(py, make_csr(py)).unwrap();
             let bound = sparse.bind(py);
             assert_eq!(
-                SparseTensor::__repr__(bound).unwrap(),
-                SparseTensor::__str__(bound).unwrap(),
+                crate::sparse::sparse_repr(bound).unwrap(),
+                Tensor::__str__(bound).unwrap(),
                 "__str__ must equal __repr__ in content mode"
             );
 
@@ -1967,9 +1342,9 @@ mod tests {
             // When NumPy is present the array labels appear; when absent __repr__
             // falls back silently to the metadata string (spec: __repr__ never raises).
             let sparse = Py::new(py, make_csr(py)).unwrap();
-            let r = SparseTensor::__repr__(sparse.bind(py)).unwrap();
+            let r = crate::sparse::sparse_repr(sparse.bind(py)).unwrap();
             assert!(
-                r.starts_with("hurray.SparseTensor("),
+                r.starts_with("hurray.Tensor("),
                 "repr inside ctx must be well-formed (got: {r})"
             );
             if py.import("numpy").is_ok() {

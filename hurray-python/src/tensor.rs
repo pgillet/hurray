@@ -376,6 +376,231 @@ impl Tensor {
         self.buffer_count()
     }
 
+    /// The memory layout of this tensor, as a string.
+    ///
+    /// One of `"row_major"`, `"col_major"`, `"strided"`, `"tiled"`, `"morton"`,
+    /// `"hilbert"`, `"coo"`, `"csr"`, `"csc"`, `"csf"`, `"block_paged"`,
+    /// `"composite"`, or `"extension"` for a private or unrecognised layout tag.
+    ///
+    /// Layout is a property of a tensor, not a different kind of object
+    /// (ADR-031): a COO tensor and a row-major tensor are both `hurray.Tensor`.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.Tensor(bytes(16), hurray.float32, [4]).layout == "row_major"
+    /// ```
+    #[getter]
+    pub fn layout(&self) -> &'static str {
+        layout_name(&self.descriptor.layout)
+    }
+
+    /// Number of stored non-zero elements, for layouts that track it.
+    ///
+    /// ## Errors
+    ///
+    /// - `AttributeError` — the layout has no notion of `nnz` (D10 discipline:
+    ///   inapplicable attributes behave as absent, so `hasattr` reports the truth).
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import numpy as np, hurray
+    ///
+    /// t = hurray.sparse_coo(
+    ///     np.array([5.0, 7.0], dtype=np.float32),
+    ///     np.array([[0, 0], [1, 1]], dtype=np.uint64),
+    ///     [2, 2],
+    /// )
+    /// assert t.nnz == 2
+    /// assert not hasattr(hurray.Tensor(bytes(16), hurray.float32, [4]), "nnz")
+    /// ```
+    #[getter]
+    pub fn nnz(&self) -> PyResult<u64> {
+        match &self.descriptor.layout {
+            LayoutDescriptor::Coo(l) => Ok(l.nnz),
+            LayoutDescriptor::Csr(l) => Ok(l.nnz),
+            LayoutDescriptor::Csc(l) => Ok(l.nnz),
+            other => Err(no_such_attribute("nnz", layout_name(other))),
+        }
+    }
+
+    /// A `hurray.Tensor` view over the stored values, for layouts that store them
+    /// separately from their index structure.
+    ///
+    /// The view borrows this tensor's buffer — no copy — and keeps it alive.
+    ///
+    /// ## Errors
+    ///
+    /// - `AttributeError` — the layout has no separate values buffer.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import numpy as np, hurray
+    ///
+    /// t = hurray.sparse_coo(
+    ///     np.array([5.0, 7.0], dtype=np.float32),
+    ///     np.array([[0, 0], [1, 1]], dtype=np.uint64),
+    ///     [2, 2],
+    /// )
+    /// assert t.values.shape == (2,)
+    /// ```
+    #[getter]
+    pub fn values(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let (nnz, element_type) = {
+            let t = slf.borrow();
+            match &t.descriptor.layout {
+                LayoutDescriptor::Coo(l) => (l.nnz, t.descriptor.element_type),
+                LayoutDescriptor::Csr(l) => (l.nnz, t.descriptor.element_type),
+                LayoutDescriptor::Csc(l) => (l.nnz, t.descriptor.element_type),
+                other => return Err(no_such_attribute("values", layout_name(other))),
+            }
+        };
+        let shape = Shape::new(vec![nnz])
+            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
+        Self::component_view(slf, 0, shape, element_type)
+    }
+
+    /// A `hurray.Tensor` view over the COO index buffer, shape `[nnz, rank]`, `uint64`.
+    ///
+    /// ## Errors
+    ///
+    /// - `AttributeError` — this is not a COO tensor.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// assert t.indices.shape == (t.nnz, t.ndim)   # COO only
+    /// ```
+    #[getter]
+    pub fn indices(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let (nnz, rank) = {
+            let t = slf.borrow();
+            match &t.descriptor.layout {
+                LayoutDescriptor::Coo(l) => (l.nnz, t.descriptor.shape.rank() as u64),
+                other => return Err(no_such_attribute("indices", layout_name(other))),
+            }
+        };
+        let shape = Shape::new(vec![nnz, rank])
+            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
+        Self::uint64_component_view(slf, 1, shape)
+    }
+
+    /// A `hurray.Tensor` view over the CSR column-index buffer, shape `[nnz]`, `uint64`.
+    ///
+    /// ## Errors
+    ///
+    /// - `AttributeError` — this is not a CSR tensor.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// assert t.col_indices.shape == (t.nnz,)      # CSR only
+    /// ```
+    #[getter]
+    pub fn col_indices(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let nnz = {
+            let t = slf.borrow();
+            match &t.descriptor.layout {
+                LayoutDescriptor::Csr(l) => l.nnz,
+                other => return Err(no_such_attribute("col_indices", layout_name(other))),
+            }
+        };
+        let shape = Shape::new(vec![nnz])
+            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
+        Self::uint64_component_view(slf, 1, shape)
+    }
+
+    /// A `hurray.Tensor` view over the CSR row-pointer buffer, shape `[nrows + 1]`, `uint64`.
+    ///
+    /// ## Errors
+    ///
+    /// - `AttributeError` — this is not a CSR tensor.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// assert t.row_ptr.shape == (t.shape[0] + 1,)  # CSR only
+    /// ```
+    #[getter]
+    pub fn row_ptr(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let nrows = {
+            let t = slf.borrow();
+            match &t.descriptor.layout {
+                LayoutDescriptor::Csr(_) => {
+                    t.descriptor.shape.dims().first().copied().ok_or_else(|| {
+                        InvalidDescriptorError::new_err(
+                            "CSR tensor shape must have at least 1 dimension",
+                        )
+                    })?
+                }
+                other => return Err(no_such_attribute("row_ptr", layout_name(other))),
+            }
+        };
+        let shape = Shape::new(vec![nrows + 1])
+            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
+        Self::uint64_component_view(slf, 2, shape)
+    }
+
+    /// A `hurray.Tensor` view over the CSC row-index buffer, shape `[nnz]`, `uint64`.
+    ///
+    /// ## Errors
+    ///
+    /// - `AttributeError` — this is not a CSC tensor.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// assert t.row_indices.shape == (t.nnz,)      # CSC only
+    /// ```
+    #[getter]
+    pub fn row_indices(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let nnz = {
+            let t = slf.borrow();
+            match &t.descriptor.layout {
+                LayoutDescriptor::Csc(l) => l.nnz,
+                other => return Err(no_such_attribute("row_indices", layout_name(other))),
+            }
+        };
+        let shape = Shape::new(vec![nnz])
+            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
+        Self::uint64_component_view(slf, 1, shape)
+    }
+
+    /// A `hurray.Tensor` view over the CSC column-pointer buffer, shape `[ncols + 1]`, `uint64`.
+    ///
+    /// ## Errors
+    ///
+    /// - `AttributeError` — this is not a CSC tensor.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// assert t.col_ptr.shape == (t.shape[1] + 1,)  # CSC only
+    /// ```
+    #[getter]
+    pub fn col_ptr(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let ncols = {
+            let t = slf.borrow();
+            match &t.descriptor.layout {
+                LayoutDescriptor::Csc(_) => {
+                    t.descriptor.shape.dims().get(1).copied().ok_or_else(|| {
+                        InvalidDescriptorError::new_err(
+                            "CSC tensor shape must have at least 2 dimensions",
+                        )
+                    })?
+                }
+                other => return Err(no_such_attribute("col_ptr", layout_name(other))),
+            }
+        };
+        let shape = Shape::new(vec![ncols + 1])
+            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
+        Self::uint64_component_view(slf, 2, shape)
+    }
+
     /// The quantization scheme, or `None` if the tensor is not quantized.
     ///
     /// Returns the same class you would pass to the constructor —
@@ -516,6 +741,15 @@ impl Tensor {
         let _ = (stream, max_version, dl_device, copy);
         let py = slf.py();
         let t = slf.borrow();
+        // DLPack describes one densely-addressable buffer; a sparse or block-paged
+        // tensor has no such single representation (ADR-031 § 3).
+        if !is_dense(&t.descriptor.layout) {
+            return Err(BufferError::new_err(format!(
+                "cannot export a {} tensor via DLPack; it has no single dense buffer — \
+                 use __hurray_buffer__, or export the component views individually",
+                layout_name(&t.descriptor.layout)
+            )));
+        }
 
         let (dev_tag, mem_class, dev_id) = {
             let dev = t.device_py.borrow(py);
@@ -633,6 +867,101 @@ impl Tensor {
         crate::native_buffer::build_capsule(py, tensor_obj, descriptor, &capsule_buffers)
     }
 
+    // ── SciPy interop ─────────────────────────────────────────────────────────
+
+    /// Convert a CSR or CSC tensor to the matching `scipy.sparse` matrix
+    /// (zero-copy where possible).
+    ///
+    /// `copy=False` is passed to the SciPy constructor. SciPy may copy internally
+    /// if it does not accept the `uint64` index dtype — this is outside Hurray's
+    /// control and is documented here so callers can plan accordingly.
+    ///
+    /// ## Raises
+    ///
+    /// - `ImportError` — SciPy is not installed.
+    /// - `hurray.UnsupportedError` — values dtype is Tier 2 / quantized (SciPy has
+    ///   no equivalent) (D17).
+    /// - `hurray.UnsupportedError` — any layout other than CSR or CSC. For COO, use
+    ///   `.values` / `.indices` directly and construct `scipy.sparse.coo_matrix`.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import scipy.sparse, hurray
+    ///
+    /// # (Assuming `sparse` is a hurray.Tensor with layout == "csr")
+    /// m = sparse.to_scipy()
+    /// assert isinstance(m, scipy.sparse.csr_matrix)
+    /// ```
+    pub fn to_scipy(slf: &Bound<'_, Self>) -> PyResult<Py<PyAny>> {
+        let py = slf.py();
+        let is_csr =
+            {
+                let t = slf.borrow();
+                // D17: reject Tier 2 / quantized dtypes — SciPy has no equivalent.
+                if !is_tier1(t.descriptor.element_type) {
+                    return Err(UnsupportedError::new_err(format!(
+                        "to_scipy is not supported for '{}'; SciPy has no equivalent dtype",
+                        crate::dtype::element_type_name(t.descriptor.element_type),
+                    )));
+                }
+                match &t.descriptor.layout {
+                    LayoutDescriptor::Csr(_) => true,
+                    LayoutDescriptor::Csc(_) => false,
+                    LayoutDescriptor::Coo(_) => return Err(UnsupportedError::new_err(
+                        "to_scipy is not supported for COO tensors; access .values and .indices \
+                         directly and construct scipy.sparse.coo_matrix manually",
+                    )),
+                    other => {
+                        return Err(UnsupportedError::new_err(format!(
+                            "to_scipy is not supported for a {} tensor; only csr and csc map to \
+                         scipy.sparse matrix types",
+                            crate::tensor::layout_name(other)
+                        )))
+                    }
+                }
+            };
+
+        // D7-pattern: import scipy lazily — hurray must not require scipy at module load.
+        let sp = py.import("scipy.sparse").map_err(|_| {
+            pyo3::exceptions::PyImportError::new_err(
+                "scipy is not installed; install with: pip install scipy",
+            )
+        })?;
+
+        // The component accessors already build borrowed views in descriptor order,
+        // so to_scipy reuses them rather than reaching into the buffer table again.
+        let values_arr = Tensor::values(slf)?.bind(py).call_method0("__array__")?;
+        let aux0_arr = if is_csr {
+            Tensor::col_indices(slf)?
+        } else {
+            Tensor::row_indices(slf)?
+        };
+        let aux0_arr = aux0_arr.bind(py).call_method0("__array__")?;
+        let aux1_arr = if is_csr {
+            Tensor::row_ptr(slf)?
+        } else {
+            Tensor::col_ptr(slf)?
+        };
+        let aux1_arr = aux1_arr.bind(py).call_method0("__array__")?;
+
+        let (nrows, ncols) = {
+            let t = slf.borrow();
+            let dims = t.descriptor.shape.dims().to_vec();
+            (dims[0], dims[1])
+        };
+
+        let kwargs = pyo3::types::PyDict::new(py);
+        kwargs.set_item("shape", PyTuple::new(py, [nrows, ncols])?)?;
+        kwargs.set_item("copy", false)?;
+
+        // csr_matrix((data, indices, indptr), shape=..., copy=False)
+        let args = PyTuple::new(py, [&values_arr, &aux0_arr, &aux1_arr])?;
+        let constructor_name = if is_csr { "csr_matrix" } else { "csc_matrix" };
+        let matrix = sp.getattr(constructor_name)?.call((args,), Some(&kwargs))?;
+        Ok(matrix.into())
+    }
+
     // ── NumPy interop ─────────────────────────────────────────────────────────
 
     /// Return a NumPy `ndarray` backed by this tensor's buffer (zero-copy via DLPack).
@@ -672,6 +1001,16 @@ impl Tensor {
     ) -> PyResult<Py<PyAny>> {
         let py = slf.py();
         let t = slf.borrow();
+
+        // NumPy's ndarray is dense; a sparse or block-paged buffer is not an array
+        // of elements in index order (ADR-031 § 3).
+        if !is_dense(&t.descriptor.layout) {
+            return Err(UnsupportedError::new_err(format!(
+                "cannot convert a {} tensor to a NumPy array; it has no dense element \
+                 buffer — use .values / .indices, or .to_scipy() for a sparse matrix",
+                layout_name(&t.descriptor.layout)
+            )));
+        }
 
         // Only CPU tensors — non-CPU would require device→host copy which NumPy can't do.
         {
@@ -765,7 +1104,7 @@ impl Tensor {
     // ── Dunders ───────────────────────────────────────────────────────────────
 
     /// Tensors are unhashable — mutable objects must not be used as dict keys.
-    fn __hash__(&self) -> PyResult<isize> {
+    pub fn __hash__(&self) -> PyResult<isize> {
         Err(pyo3::exceptions::PyTypeError::new_err(
             "unhashable type: 'Tensor'",
         ))
@@ -784,22 +1123,32 @@ impl Tensor {
     /// # hurray.Tensor([[1. 1. 1.]
     /// #  [1. 1. 1.]], dtype=float32)
     /// ```
-    fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
-        let et = self.descriptor.element_type;
+    pub fn __repr__(slf: &Bound<'_, Self>) -> PyResult<String> {
+        let py = slf.py();
+        // Sparse layouts have their own representation — component arrays rather
+        // than a dense element grid — and their own print option.
+        if matches!(
+            slf.borrow().descriptor.layout,
+            LayoutDescriptor::Coo(_) | LayoutDescriptor::Csr(_) | LayoutDescriptor::Csc(_)
+        ) {
+            return crate::sparse::sparse_repr(slf);
+        }
+        let this = slf.borrow();
+        let et = this.descriptor.element_type;
         let dtype_name = crate::dtype::element_type_name(et);
-        let dev = self.device_py.borrow(py);
+        let dev = this.device_py.borrow(py);
         let is_cpu = dev.tag == hurray_core::DeviceTag::Cpu;
 
         // Show data values for Tier 1 CPU tensors; fall back on any error (e.g.
         // bfloat16 has no numpy dtype; non-CPU requires a device copy).
         if is_tier1(et) && is_cpu {
-            if let Ok(data_str) = self.numpy_data_string(py) {
+            if let Ok(data_str) = this.numpy_data_string(py) {
                 return Ok(format!("hurray.Tensor({data_str}, dtype={dtype_name})"));
             }
         }
 
         // Fallback: metadata only.
-        let shape_tuple = self.shape(py)?;
+        let shape_tuple = this.shape(py)?;
         let shape_str = shape_tuple.bind(py).repr()?.to_str()?.to_owned();
         let device_str = crate::device::device_repr(&dev);
         Ok(format!(
@@ -818,17 +1167,134 @@ impl Tensor {
     /// t = hurray.arange(4, dtype=hurray.float32)
     /// print(str(t))   # [0. 1. 2. 3.]
     /// ```
-    fn __str__(&self, py: Python<'_>) -> PyResult<String> {
-        let et = self.descriptor.element_type;
-        let dev = self.device_py.borrow(py);
-        if is_tier1(et) && dev.tag == hurray_core::DeviceTag::Cpu {
-            if let Ok(s) = self.numpy_data_string(py) {
-                return Ok(s);
+    pub fn __str__(slf: &Bound<'_, Self>) -> PyResult<String> {
+        let py = slf.py();
+        {
+            let this = slf.borrow();
+            let et = this.descriptor.element_type;
+            let dev = this.device_py.borrow(py);
+            if is_dense(&this.descriptor.layout)
+                && is_tier1(et)
+                && dev.tag == hurray_core::DeviceTag::Cpu
+            {
+                if let Ok(s) = this.numpy_data_string(py) {
+                    return Ok(s);
+                }
             }
         }
-        drop(dev);
-        self.__repr__(py)
+        Self::__repr__(slf)
     }
+}
+
+impl Tensor {
+    /// Build a borrowed `Tensor` view over one of this tensor's buffers.
+    ///
+    /// `buffer_index` is the descriptor buffer-table index (ADR-030 § 3): 0 is the
+    /// data buffer, 1..N the auxiliary ones. The view holds a strong reference to
+    /// `slf`, so the borrowed pointer stays valid for the view's lifetime.
+    fn component_view(
+        slf: &Bound<'_, Self>,
+        buffer_index: usize,
+        shape: Shape,
+        element_type: hurray_core::ElementType,
+    ) -> PyResult<Py<PyAny>> {
+        let py = slf.py();
+        let (ptr, len, device_tag, memory_class) = {
+            let t = slf.borrow();
+            let store = match buffer_index {
+                0 => &t.buffer,
+                n => t.aux_buffers.get(n - 1).ok_or_else(|| {
+                    InvalidDescriptorError::new_err(format!(
+                        "tensor has no buffer at index {n}; it has {}",
+                        t.buffer_count()
+                    ))
+                })?,
+            };
+            let dev = t.device_py.borrow(py);
+            (
+                store.as_ptr() as *mut u8,
+                store.len(),
+                dev.tag,
+                dev.memory_class,
+            )
+        };
+
+        // Keep this tensor alive as the base of the borrowed view.
+        let base: Py<PyAny> = slf.clone().into_any().unbind();
+        let view = Tensor::new_borrowed_view(
+            py,
+            element_type,
+            shape,
+            device_tag,
+            memory_class,
+            base,
+            ptr,
+            len,
+        )?;
+        Ok(Py::new(py, view)?.into_any())
+    }
+
+    /// [`Tensor::component_view`] for an index buffer, which is always `uint64`.
+    fn uint64_component_view(
+        slf: &Bound<'_, Self>,
+        buffer_index: usize,
+        shape: Shape,
+    ) -> PyResult<Py<PyAny>> {
+        Self::component_view(slf, buffer_index, shape, hurray_core::ElementType::Uint64)
+    }
+}
+
+// ── Layout helpers ────────────────────────────────────────────────────────────
+
+/// The Python-visible name of a layout.
+///
+/// Private and unrecognised tags collapse to `"extension"`: their tag byte is
+/// meaningful only to whoever defined it, so naming them individually would imply
+/// a support they do not have.
+pub(crate) fn layout_name(layout: &LayoutDescriptor) -> &'static str {
+    match layout {
+        LayoutDescriptor::RowMajor => "row_major",
+        LayoutDescriptor::ColMajor => "col_major",
+        LayoutDescriptor::Strided(_) => "strided",
+        LayoutDescriptor::Tiled(_) => "tiled",
+        LayoutDescriptor::Morton(_) => "morton",
+        LayoutDescriptor::Hilbert(_) => "hilbert",
+        LayoutDescriptor::Coo(_) => "coo",
+        LayoutDescriptor::Csr(_) => "csr",
+        LayoutDescriptor::Csc(_) => "csc",
+        LayoutDescriptor::Csf(_) => "csf",
+        LayoutDescriptor::BlockPaged(_) => "block_paged",
+        LayoutDescriptor::Composite(_) => "composite",
+        // LayoutDescriptor is #[non_exhaustive]; a layout added to core but not yet
+        // named here reads as an extension rather than failing to compile downstream.
+        _ => "extension",
+    }
+}
+
+/// `true` for layouts whose single buffer holds elements in a directly addressable
+/// order — the ones DLPack, NumPy and PyTorch can consume.
+pub(crate) fn is_dense(layout: &LayoutDescriptor) -> bool {
+    matches!(
+        layout,
+        LayoutDescriptor::RowMajor
+            | LayoutDescriptor::ColMajor
+            | LayoutDescriptor::Strided(_)
+            | LayoutDescriptor::Tiled(_)
+            | LayoutDescriptor::Morton(_)
+            | LayoutDescriptor::Hilbert(_)
+    )
+}
+
+/// The error for an accessor that does not apply to this tensor's layout.
+///
+/// `AttributeError`, not `UnsupportedError`, so that `hasattr` tells the truth
+/// (ADR-031 § 2 as amended; extends design decision D10 from the sparse formats to
+/// every layout). With one class covering all layouts, feature detection is how
+/// callers discover what a tensor supports.
+pub(crate) fn no_such_attribute(attr: &str, layout: &str) -> PyErr {
+    pyo3::exceptions::PyAttributeError::new_err(format!(
+        "'Tensor' object has no attribute '{attr}'; this is a {layout} tensor"
+    ))
 }
 
 // ── Buffer access ─────────────────────────────────────────────────────────────
@@ -1332,7 +1798,8 @@ pub(crate) mod tests {
                 None,
             )
             .unwrap();
-            let r = tensor.__repr__(py).unwrap();
+            let bound = Py::new(py, tensor).unwrap().into_bound(py);
+            let r = Tensor::__repr__(&bound).unwrap();
             assert!(
                 r.starts_with("hurray.Tensor("),
                 "repr should have hurray.Tensor prefix"
@@ -1370,7 +1837,8 @@ pub(crate) mod tests {
                 None,
             )
             .unwrap();
-            let r = tensor.__repr__(py).unwrap();
+            let bound = Py::new(py, tensor).unwrap().into_bound(py);
+            let r = Tensor::__repr__(&bound).unwrap();
             assert!(r.contains("shape="), "fallback repr should include shape=");
             assert!(r.contains("int4"), "fallback repr should include dtype");
             assert!(!r.contains("0x"), "fallback repr should not show raw bytes");
@@ -1406,7 +1874,8 @@ pub(crate) mod tests {
                 None,
             )
             .unwrap();
-            let s = tensor.__str__(py).unwrap();
+            let bound = Py::new(py, tensor).unwrap().into_bound(py);
+            let s = Tensor::__str__(&bound).unwrap();
             assert!(!s.is_empty(), "__str__ must not be empty");
             assert!(
                 s.contains("float32") || s.contains("1."),

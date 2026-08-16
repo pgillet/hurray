@@ -1,14 +1,16 @@
 # Sparse Tensors and SciPy Interop
 
-Hurray exposes COO, CSR, and CSC sparse tensors via `hurray.SparseTensor`.
+Hurray exposes COO, CSR, and CSC sparse tensors as ordinary `hurray.Tensor`
+objects whose `.layout` is `"coo"`, `"csr"`, or `"csc"` (ADR-031). There is no
+separate sparse class — sparse is a layout, not a different kind of object.
 For CSR and CSC, buffers are shared zero-copy with SciPy sparse matrices via
-`hurray.from_scipy` and `SparseTensor.to_scipy()`.
+`hurray.from_scipy` and `Tensor.to_scipy()`.
 
-## Constructing a CSR SparseTensor from SciPy
+## Constructing a CSR tensor from SciPy
 
 SciPy's `csr_matrix` stores three NumPy arrays: `.data` (values), `.indices`
 (column indices), and `.indptr` (row pointers). `hurray.from_scipy` wraps all
-three without copying — the resulting `SparseTensor` holds a strong reference
+three without copying — the resulting `Tensor` holds a strong reference
 to the original SciPy matrix so the buffers remain valid.
 
 **Index dtype requirement:** Hurray's wire format requires `uint64` index
@@ -33,13 +35,13 @@ m.indptr  = m.indptr.astype(np.uint64)
 
 sparse = hurray.from_scipy(m)
 print(sparse)
-# hurray.SparseTensor(format='csr', shape=(3, 3), nnz=4, dtype=hurray.Dtype('float32'))
+# hurray.Tensor(layout='csr', shape=(3, 3), nnz=4, dtype=hurray.Dtype('float32'))
 ```
 
 ## Accessing component views
 
 Each component buffer is accessible as a zero-copy `hurray.Tensor` view.
-The view borrows the `SparseTensor`'s buffer — the parent is kept alive for
+The view borrows the parent tensor's buffer — the parent is kept alive for
 as long as any view is alive.
 
 | Format | Attribute | Shape | dtype |
@@ -56,7 +58,7 @@ as long as any view is alive.
 Accessing a format-specific attribute on the wrong format raises `AttributeError`:
 
 ```python
-sparse.indices   # AttributeError: 'SparseTensor' object has no attribute 'indices';
+sparse.indices   # AttributeError: 'Tensor' object has no attribute 'indices';
                  # this is a csr tensor
 ```
 
@@ -70,7 +72,7 @@ row_ptr_np = np.array(sparse.row_ptr)
 
 ## SciPy zero-copy export
 
-`SparseTensor.to_scipy()` returns the matching `scipy.sparse` matrix type.
+`Tensor.to_scipy()` returns the matching `scipy.sparse` matrix type.
 `copy=False` is passed to the SciPy constructor; SciPy may copy internally if
 it cannot accept `uint64` index arrays (version-dependent).
 
@@ -103,7 +105,7 @@ sparse = hurray.from_scipy(m_csr)
 
 **Preferred — `hurray.sparse_coo` from packed arrays (zero-copy):**
 
-`hurray.sparse_coo(values, indices, shape)` builds a COO `SparseTensor` directly and
+`hurray.sparse_coo(values, indices, shape)` builds a COO `Tensor` directly and
 shares both arrays without copying. `indices` is a 2-D `uint64` array of shape
 `[nnz, rank]` (Hurray's packed layout); `values` is 1-D of length `nnz`.
 
@@ -114,7 +116,7 @@ import numpy as np, hurray
 values = np.array([5.0, 7.0], dtype=np.float32)
 indices = np.array([[0, 0], [1, 1]], dtype=np.uint64)   # [nnz, rank]
 t = hurray.sparse_coo(values, indices, [2, 2])
-assert t.format == "coo" and t.nnz == 2
+assert t.layout == "coo" and t.nnz == 2
 
 # Repacking a SciPy coo_matrix (one copy to interleave row/col, then zero-copy):
 indices = np.stack([m_coo.row, m_coo.col], axis=1).astype(np.uint64)
@@ -124,7 +126,7 @@ t = hurray.sparse_coo(m_coo.data, indices, m_coo.shape)
 Only the `np.stack` interleave copies; `sparse_coo` itself borrows both arrays and holds
 strong references so the buffers stay alive for the tensor's lifetime.
 
-`SparseTensor.to_scipy()` on a COO tensor raises `hurray.UnsupportedError`.
+`Tensor.to_scipy()` on a COO tensor raises `hurray.UnsupportedError`.
 Access `.values` and `.indices` directly and construct `scipy.sparse.coo_matrix`
 manually if needed.
 

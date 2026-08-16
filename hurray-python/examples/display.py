@@ -5,8 +5,8 @@ Demonstrates:
 - hurray.Tensor repr with data values (Tier 1 CPU tensors)
 - hurray.Tensor repr fallback for Tier 2 types
 - hurray.Tensor __str__ (bare NumPy-style array string)
-- hurray.SparseTensor repr and str (metadata by default)
-- switching SparseTensor display to PyTorch-style content via print options
+- sparse-layout tensor repr and str (metadata by default)
+- switching sparse display to PyTorch-style content via print options
 """
 
 import scipy.sparse as sp
@@ -54,21 +54,21 @@ def demo_large_tensor():
 
 
 def demo_sparse_repr():
-    """SparseTensor __repr__ / __str__ show format, shape, nnz, dtype."""
+    """A sparse tensor's __repr__ / __str__ show layout, shape, nnz, dtype."""
     m = sp.csr_matrix(
         ([1.0, 2.0, 3.0, 4.0], ([0, 0, 1, 2], [0, 2, 1, 0])), shape=(3, 3)
     )
     t = hurray.from_scipy(m)
-    print("repr(SparseTensor csr):")
+    print("repr(csr tensor):")
     print(repr(t))
     print()
-    print("str(SparseTensor csr)  [same as repr]:")
+    print("str(csr tensor)  [same as repr]:")
     print(str(t))
     print()
 
 
 def demo_sparse_print_options():
-    """Switch SparseTensor display between metadata (default) and PyTorch-style content."""
+    """Switch sparse display between metadata (default) and PyTorch-style content."""
     m = sp.csr_matrix(
         ([1.0, 2.0, 3.0, 4.0], ([0, 0, 1, 2], [0, 2, 1, 0])), shape=(3, 3)
     )
@@ -103,7 +103,7 @@ if __name__ == "__main__":
     demo_tensor_str()
     print("=== Large tensor ===")
     demo_large_tensor()
-    print("=== SparseTensor ===")
+    print("=== Sparse-layout tensors ===")
     demo_sparse_repr()
-    print("=== SparseTensor print options ===")
+    print("=== Tensor print options ===")
     demo_sparse_print_options()

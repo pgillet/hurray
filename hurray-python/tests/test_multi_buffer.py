@@ -43,7 +43,7 @@ def test_sparse_capsule_carries_values_and_indices():
     """The consumer receives the sparse descriptor with every buffer attached."""
     t = _coo()
     back = hurray.from_hurray_buffer(t)
-    # Reconstructed as a Tensor carrying the COO descriptor, not a SparseTensor.
+    # One class for every layout (ADR-031): a COO tensor is a Tensor.
     assert back.shape == (2, 2)
     assert back.dtype == hurray.float32
 
