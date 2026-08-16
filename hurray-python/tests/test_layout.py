@@ -19,9 +19,10 @@ def _coo():
 
 
 def _csr():
-    import scipy.sparse
+    """A CSR tensor. Requires scipy — hurray has no from-scratch CSR constructor."""
+    scipy_sparse = pytest.importorskip("scipy.sparse")
 
-    m = scipy.sparse.csr_matrix(np.array([[1.0, 0.0], [0.0, 2.0]], dtype=np.float32))
+    m = scipy_sparse.csr_matrix(np.array([[1.0, 0.0], [0.0, 2.0]], dtype=np.float32))
     m.indices = m.indices.astype(np.uint64)
     m.indptr = m.indptr.astype(np.uint64)
     return hurray.from_scipy(m)
@@ -101,7 +102,7 @@ def test_array_rejects_a_sparse_layout():
 
 def test_native_protocol_accepts_every_layout():
     """__hurray_buffer__ is the full-fidelity path, so it must not discriminate."""
-    for t in (hurray.Tensor(bytes(16), hurray.float32, [4]), _coo(), _csr()):
+    for t in (hurray.Tensor(bytes(16), hurray.float32, [4]), _coo()):
         assert t.__hurray_buffer__() is not None
 
 
@@ -110,6 +111,17 @@ def test_native_protocol_accepts_every_layout():
 
 def test_sparse_tensor_round_trips_through_a_file(tmp_path):
     path = tmp_path / "m.hrry"
+    original = _coo()
+    hurray.save(str(path), {"m": original})
+
+    back = hurray.load(str(path))["m"]
+    assert back.layout == "coo"
+    assert back.nnz == original.nnz
+    assert back.buffer_count == 2
+
+
+def test_csr_tensor_round_trips_through_a_file(tmp_path):
+    path = tmp_path / "csr.hrry"
     original = _csr()
     hurray.save(str(path), {"m": original})
 
@@ -135,6 +147,6 @@ def test_a_file_can_mix_dense_and_sparse(tmp_path):
 
 
 def test_sparse_repr_names_the_layout():
-    r = repr(_csr())
+    r = repr(_coo())
     assert r.startswith("hurray.Tensor(")
-    assert "layout='csr'" in r
+    assert "layout='coo'" in r

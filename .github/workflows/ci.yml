@@ -89,7 +89,8 @@ jobs:
       - name: Create venv + install tooling
         run: |
           python -m venv .venv
-          .venv/bin/python -m pip install --upgrade pip maturin numpy pytest
+          # scipy: the sparse interop paths (from_scipy / to_scipy) are untestable without it.
+          .venv/bin/python -m pip install --upgrade pip maturin numpy scipy pytest
       - name: Build hurray extension (editable)
         run: .venv/bin/maturin develop -m hurray-python/Cargo.toml
         env:
