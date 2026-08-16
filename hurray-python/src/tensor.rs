@@ -744,7 +744,10 @@ impl Tensor {
         // DLPack describes one densely-addressable buffer; a sparse or block-paged
         // tensor has no such single representation (ADR-031 § 3).
         if !is_dense(&t.descriptor.layout) {
-            return Err(BufferError::new_err(format!(
+            // builtins.BufferError, not hurray.BufferError: docs/impl/python-bindings.md
+            // requires the built-in for __dlpack__, because that is what NumPy and
+            // PyTorch catch when a producer cannot satisfy the protocol.
+            return Err(pyo3::exceptions::PyBufferError::new_err(format!(
                 "cannot export a {} tensor via DLPack; it has no single dense buffer — \
                  use __hurray_buffer__, or export the component views individually",
                 layout_name(&t.descriptor.layout)
