@@ -167,8 +167,9 @@ fn py_dict_to_kv(kv_dict: &Bound<'_, PyDict>) -> PyResult<Vec<(String, KvValue)>
 ///   invalid magic, CRC mismatch, etc.
 /// - `hurray.InvalidDescriptorError` — a tensor descriptor failed to decode.
 /// Multi-buffer tensors load as a `hurray.Tensor` carrying every buffer in
-/// descriptor order (ADR-030). A sparse tensor therefore round-trips its values
-/// and index arrays, though it is returned as a `Tensor`, not a `SparseTensor`.
+/// descriptor order (ADR-030). A sparse tensor round-trips its values and index
+/// arrays and comes back with its layout intact — since ADR-031 there is one
+/// tensor class, so no reconstruction into a different type is needed.
 ///
 /// # Examples
 ///
@@ -241,8 +242,7 @@ pub fn load(
 ///
 /// - `hurray.FileError` — path not writable, I/O failure, duplicate tensor name,
 ///   invalid KV keys, etc.
-/// - `hurray.UnsupportedError` — a value in `tensors` is not a `hurray.Tensor`
-///   (e.g. `hurray.SparseTensor`).
+/// - `hurray.UnsupportedError` — a value in `tensors` is not a `hurray.Tensor`.
 ///
 /// # Examples
 ///
@@ -269,11 +269,11 @@ pub fn save(
         Vec::with_capacity(tensors.len());
     for (key, val) in tensors {
         let name: String = key.extract()?;
+        // Every layout goes down this path: since ADR-031 a sparse tensor is a
+        // Tensor whose layout is COO/CSR/CSC, and its component buffers are just
+        // its buffer table (#156).
         let tensor = val.extract::<PyRef<Tensor>>().map_err(|_| {
-            UnsupportedError::new_err(
-                "hurray.save() only accepts hurray.Tensor values; \
-                 SparseTensor file I/O is not yet supported",
-            )
+            UnsupportedError::new_err("hurray.save() only accepts hurray.Tensor values")
         })?;
         // Every buffer in descriptor order (ADR-030 § 3), so quantization scale
         // and sparse index buffers reach the file alongside the data.
@@ -603,6 +603,44 @@ mod tests {
                 }
                 other => panic!("expected per-channel affine, got {other:?}"),
             }
+
+            std::fs::remove_file(&path).ok();
+        });
+    }
+
+    #[test]
+    fn sparse_tensor_round_trips_through_save_and_load() {
+        use pyo3::types::PyDict;
+
+        init_python();
+        Python::attach(|py| {
+            // #156: save() used to reject sparse outright. With one tensor class
+            // (ADR-031) its component buffers are just its buffer table.
+            let tensor = crate::sparse::tests::make_csr(py);
+            let nnz = tensor.nnz().unwrap();
+            let layout = tensor.layout();
+
+            let dir = std::env::temp_dir().join("hurray_sparse_roundtrip");
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("m.hrry");
+
+            let tensors = PyDict::new(py);
+            tensors.set_item("m", Py::new(py, tensor).unwrap()).unwrap();
+            save(py, path.to_string_lossy().into_owned(), &tensors, None).unwrap();
+
+            let loaded = load(py, path.to_string_lossy().into_owned(), None).unwrap();
+            let got: Py<Tensor> = loaded
+                .get_item("m")
+                .unwrap()
+                .expect("tensor 'm' must be present")
+                .extract()
+                .unwrap();
+            let got = got.borrow(py);
+
+            // Layout, nnz and all three component buffers survive.
+            assert_eq!(got.layout(), layout);
+            assert_eq!(got.nnz().unwrap(), nnz);
+            assert_eq!(got.buffer_count(), 3);
 
             std::fs::remove_file(&path).ok();
         });

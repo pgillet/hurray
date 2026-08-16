@@ -9,7 +9,7 @@
 //!
 //! | Key | Values | Default | Effect |
 //! |-----|--------|---------|--------|
-//! | `sparse_display` | `"metadata"` \| `"content"` | `"metadata"` | Controls `SparseTensor.__repr__` |
+//! | `sparse_display` | `"metadata"` \| `"content"` | `"metadata"` | Controls `Tensor.__repr__` for sparse layouts |
 //!
 //! ## Thread-safety note
 //!
@@ -76,12 +76,12 @@ fn validate_sparse_display(value: &str) -> PyResult<()> {
 ///
 /// ## Arguments
 ///
-/// - `sparse_display` — controls how `SparseTensor.__repr__` renders:
+/// - `sparse_display` — controls how `Tensor.__repr__` renders a sparse-layout tensor:
 ///   - `"metadata"` *(default)* — SciPy-style compact summary:
-///     `hurray.SparseTensor(format='csr', shape=(3, 3), nnz=4, dtype=float32)`
+///     `hurray.Tensor(layout='csr', shape=(3, 3), nnz=4, dtype=float32)`
 ///   - `"content"` — PyTorch-style, appending per-format buffer arrays after the
 ///     dtype field:
-///     `hurray.SparseTensor(format='csr', …, values=[…], col_indices=[…], row_ptr=[…])`
+///     `hurray.Tensor(layout='csr', …, values=[…], col_indices=[…], row_ptr=[…])`
 ///
 /// ## Raises
 ///

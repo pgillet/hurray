@@ -43,7 +43,6 @@ mod tensor;
 /// | `hurray.Device` | class | 8a.2 |
 /// | `hurray.device` | submodule | 8a.2 |
 /// | `hurray.Tensor` | class | 8a.2 |
-/// | `hurray.SparseTensor` | class | 8a.4 |
 /// | `hurray.from_scipy` | function | 8a.4 |
 /// | `hurray.sparse_coo` | function | 8a.4 |
 /// | `hurray.from_hurray_buffer` | function | 8c |

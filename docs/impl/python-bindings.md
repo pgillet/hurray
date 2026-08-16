@@ -274,7 +274,7 @@ buffer in a single capsule (ADR-030).
   and `buffer_count`. The quantization getter MUST return an object of the same
   class the constructor accepts, so an inspected scheme can be reused to build
   another tensor without conversion.
-- `hurray.SparseTensor` MUST implement `__hurray_buffer__` using this protocol,
+- A sparse-layout `hurray.Tensor` MUST carry its component buffers through this protocol,
   with its values and index buffers in descriptor order. A separate
   `__hurray_sparse_buffer__` protocol MUST NOT be introduced: sparse is the
   multi-buffer case, not a distinct one.
@@ -338,7 +338,7 @@ enforce the following rules:
   This ensures the `Tensor` (and therefore its buffer) is not freed while a
   DLPack consumer holds the capsule.
 
-The same rules apply to `hurray.SparseTensor` and its component `Tensor` views.
+The same rules apply to the component `Tensor` views a sparse-layout tensor hands out.
 
 ## NumPy Interoperability
 
@@ -367,19 +367,35 @@ DLPack:
 - `hurray.Tensor.to_torch()` — MUST call `self.__dlpack__()` and construct a
   `torch.Tensor` via `torch.utils.dlpack.from_dlpack` without copying.
 
-## Sparse Tensor Support
+## Layouts and Sparse Tensor Support
 
-`hurray-python` MUST expose COO, CSR, and CSC sparse tensors as `hurray.SparseTensor`
-objects with:
+`hurray-python` MUST expose exactly **one** tensor class, `hurray.Tensor`, for every
+layout (ADR-031). There MUST NOT be a separate class per layout family: a sparse
+tensor is a `hurray.Tensor` whose layout happens to be COO, CSR, or CSC, matching the
+format, where sparse is a `layout_tag` inside the ordinary tensor descriptor.
 
+- `.layout` — MUST report the descriptor's layout as a string: `"row_major"`,
+  `"col_major"`, `"strided"`, `"tiled"`, `"morton"`, `"hilbert"`, `"coo"`, `"csr"`,
+  `"csc"`, `"csf"`, `"block_paged"`, `"composite"`, or `"extension"` for a private or
+  unrecognised tag.
 - `.values` — a `hurray.Tensor` view over the values buffer.
 - `.indices` (COO) or `.col_indices` / `.row_ptr` (CSR) or `.row_indices` / `.col_ptr`
   (CSC) — `hurray.Tensor` views over the index buffers.
-- `.to_scipy()` — MUST convert to the corresponding `scipy.sparse` matrix type
-  (`coo_matrix`, `csr_matrix`, `csc_matrix`) without copying where scipy's memory
-  layout is compatible.
-- `.from_scipy(matrix)` — MUST wrap a `scipy.sparse` matrix as a `hurray.SparseTensor`
-  without copying.
+- `.nnz` — the stored non-zero count, for layouts that track one.
+- `.to_scipy()` — MUST convert a CSR or CSC tensor to the corresponding
+  `scipy.sparse` matrix type without copying where scipy's memory layout is
+  compatible.
+- `hurray.from_scipy(matrix)` — MUST wrap a `scipy.sparse` matrix as a
+  `hurray.Tensor` without copying.
+
+Accessors that do not apply to a tensor's layout MUST raise `AttributeError`, so that
+`hasattr` reports whether a tensor actually supports them (ADR-031 § 2, extending
+design decision D10). They MUST NOT raise `hurray.UnsupportedError`, which would make
+`hasattr` return `True` for every accessor on every tensor.
+
+Protocols that require a densely addressable element buffer — `__dlpack__`,
+`__array__`, `__array_interface__`, `to_torch` — MUST reject non-dense layouts, naming
+the layout in the error message.
 
 ## Error Handling
 
@@ -453,7 +469,7 @@ The suite SHOULD cover the following categories:
 | **Construction** | `zeros`, `ones`, `full`, `arange`, `linspace` for representative shapes and dtypes. |
 | **Serialization** | `save`/`load` and streaming read/write throughput (GiB/s) for representative tensors. |
 | **Memory lifecycle** | `Tensor` allocation + deallocation throughput; large-tensor zero-copy overhead (GiB-scale). |
-| **SparseTensor** | COO/CSR/CSC construction; SciPy round-trip. |
+| **Sparse layouts** | COO/CSR/CSC construction; SciPy round-trip; file round-trip. |
 
 ### Tooling
 

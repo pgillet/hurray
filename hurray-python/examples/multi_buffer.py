@@ -39,7 +39,7 @@ indices = np.array([[0, 0], [1, 1]], dtype=np.uint64)  # [nnz, rank]
 sparse = hurray.sparse_coo(values, indices, [2, 2])
 
 print("\n=== Multi-buffer tensor (COO sparse) ===")
-print(f"  format={sparse.format} nnz={sparse.nnz} shape={sparse.shape}")
+print(f"  layout={sparse.layout} nnz={sparse.nnz} shape={sparse.shape}")
 
 # One protocol for every tensor kind — probe for it exactly as for a dense tensor.
 print(f"  has __hurray_buffer__:        {hasattr(sparse, '__hurray_buffer__')}")
@@ -57,7 +57,7 @@ back = hurray.from_hurray_buffer(sparse)
 print("\n=== After the hop ===")
 print(f"  shape={back.shape} dtype={back.dtype}")
 print("  values and index buffers both travelled; the COO descriptor is intact")
-print("  (returned as a Tensor carrying the sparse descriptor, not a SparseTensor)")
+print("  (one class for every layout: a COO tensor is a hurray.Tensor)")
 
 # ── What this unblocks ────────────────────────────────────────────────────────
 #
