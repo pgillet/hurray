@@ -287,7 +287,7 @@ fn array_shape(arr: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
 /// values = np.array([5.0, 7.0], dtype=np.float32)
 /// indices = np.array([[0, 0], [1, 1]], dtype=np.uint64)  # [nnz, rank]
 /// t = hurray.sparse_coo(values, indices, [2, 2])
-/// assert t.format == "coo"
+/// assert t.layout == "coo"
 /// assert t.nnz == 2
 /// ```
 #[pyfunction]
