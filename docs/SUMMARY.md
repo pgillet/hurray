@@ -112,3 +112,4 @@
     - [ADR-029: hurray-python is Interchange-First](adr/ADR-029-hurray-python-interchange-first-drop-array-api-claim.md)
     - [ADR-030: Multi-Buffer Native Buffer Protocol](adr/ADR-030-multi-buffer-native-buffer-protocol.md)
     - [ADR-031: Unified Python Tensor Class](adr/ADR-031-unified-python-tensor-class.md)
+    - [ADR-032: Python Layout Descriptor Hierarchy](adr/ADR-032-python-layout-descriptor-hierarchy.md)
