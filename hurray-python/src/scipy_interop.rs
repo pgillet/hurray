@@ -71,7 +71,7 @@ use crate::tensor::Tensor;
 /// m.indptr  = m.indptr.astype(np.uint64)
 ///
 /// sparse = hurray.from_scipy(m)
-/// assert sparse.format == "csr"
+/// assert sparse.layout == "csr"
 /// assert sparse.nnz == 2
 /// ```
 #[pyfunction]
