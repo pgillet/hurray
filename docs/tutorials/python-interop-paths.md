@@ -52,7 +52,7 @@ free — `hurray.from_scipy` wraps CSR/CSC/COO component arrays without copying,
 import hurray
 
 sparse = hurray.from_scipy(matrix)     # zero-copy over the component arrays
-assert sparse.layout == "csr"
+assert sparse.layout.name == "csr"
 assert sparse.nnz == matrix.nnz
 
 matrix_again = sparse.to_scipy()       # back to scipy.sparse

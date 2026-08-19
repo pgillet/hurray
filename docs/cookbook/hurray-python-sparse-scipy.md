@@ -1,7 +1,8 @@
 # Sparse Tensors and SciPy Interop
 
 Hurray exposes COO, CSR, and CSC sparse tensors as ordinary `hurray.Tensor`
-objects whose `.layout` is `"coo"`, `"csr"`, or `"csc"` (ADR-031). There is no
+objects whose `.layout` is a `CooLayout`, `CsrLayout`, or `CscLayout` (ADR-031,
+ADR-032). There is no
 separate sparse class — sparse is a layout, not a different kind of object.
 For CSR and CSC, buffers are shared zero-copy with SciPy sparse matrices via
 `hurray.from_scipy` and `Tensor.to_scipy()`.
@@ -116,7 +117,7 @@ import numpy as np, hurray
 values = np.array([5.0, 7.0], dtype=np.float32)
 indices = np.array([[0, 0], [1, 1]], dtype=np.uint64)   # [nnz, rank]
 t = hurray.sparse_coo(values, indices, [2, 2])
-assert t.layout == "coo" and t.nnz == 2
+assert t.layout == hurray.CooLayout(nnz=2) and t.nnz == 2
 
 # Repacking a SciPy coo_matrix (one copy to interleave row/col, then zero-copy):
 indices = np.stack([m_coo.row, m_coo.col], axis=1).astype(np.uint64)
