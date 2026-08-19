@@ -71,6 +71,9 @@ struct NativeBufferContext {
 ///
 /// Called by CPython with a valid `Py<PyAny>*` pointing to a live PyCapsule.
 /// The GIL is always held when Python finalizers run.
+///
+/// A finalizer may also run *during interpreter finalization*, which is why this
+/// function must never take a `Python` token — see [`release_context`].
 unsafe extern "C" fn hurray_buffer_capsule_destructor(capsule: *mut pyo3::ffi::PyObject) {
     let name_ptr = pyo3::ffi::PyCapsule_GetName(capsule);
     if name_ptr.is_null() {
@@ -88,16 +91,36 @@ unsafe extern "C" fn hurray_buffer_capsule_destructor(capsule: *mut pyo3::ffi::P
         }
 
         // Free context, releasing tensor_ref (DECREF on source Tensor).
-        // PyCapsule finalizers always run with the GIL held.
         let ctx_ptr = pyo3::ffi::PyCapsule_GetContext(capsule) as *mut NativeBufferContext;
         if !ctx_ptr.is_null() {
-            // SAFETY: ctx_ptr was created by Box::into_raw; GIL is held for Py<PyAny> drop.
-            Python::attach(|_py| {
-                let _ = Box::from_raw(ctx_ptr);
-            });
+            // SAFETY: ctx_ptr was created by Box::into_raw and is freed exactly once —
+            // either here or by the consumer, which renames the capsule first.
+            release_context(ctx_ptr);
         }
     }
     // "used_hurray_buffer": consumer already destroyed the list and freed the context.
+}
+
+/// Drop a capsule context, releasing its strong reference to the source tensor.
+///
+/// Deliberately does **not** go through `Python::attach`. A capsule finalizer can run
+/// while the interpreter is being torn down, where `Python::attach` asserts that the
+/// interpreter is initialized — and that panic cannot unwind across the `extern "C"`
+/// boundary, so it aborts the process instead of exiting cleanly. The raw C API needs
+/// no token, and once the interpreter is gone there is no refcount left to maintain:
+/// the object's memory is released with the interpreter itself.
+///
+/// # Safety
+///
+/// `ctx_ptr` must come from `Box::into_raw` and must not have been reclaimed. The GIL
+/// must be held, which CPython guarantees for capsule finalizers.
+unsafe fn release_context(ctx_ptr: *mut NativeBufferContext) {
+    let NativeBufferContext { tensor_ref, .. } = *Box::from_raw(ctx_ptr);
+    // Consumes the strong reference without a token; we now owe exactly one DECREF.
+    let obj = tensor_ref.into_ptr();
+    if pyo3::ffi::Py_IsInitialized() != 0 {
+        pyo3::ffi::Py_DECREF(obj);
+    }
 }
 
 // ── Producer ─────────────────────────────────────────────────────────────────
