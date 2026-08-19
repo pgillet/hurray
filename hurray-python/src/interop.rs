@@ -177,23 +177,23 @@ pub fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Tensor>
         )
     })?;
 
-    // Use DLPack v1.0 as the bridge: consume torch's capsule into a hurray Tensor.
-    let capsule = tensor.call_method0("__dlpack__")?;
-    from_dlpack_capsule(py, capsule.unbind())
+    // Use DLPack v1.0 as the bridge: hand torch's tensor straight to the consumer.
+    from_dlpack_object(py, tensor)
 }
 
-// ── Internal: DLPack capsule consumer ────────────────────────────────────────
+// ── Internal: DLPack consumer ────────────────────────────────────────────────
 
-/// Consume a DLPack v1.0 capsule and construct a `Tensor` that borrows the buffer.
+/// Construct a `Tensor` borrowing the buffer of any object implementing `__dlpack__`.
 ///
-/// Renames the capsule from `"dltensor_versioned"` to `"used_dltensor_versioned"`
-/// (taking ownership) and registers a Python finalizer that calls the DLPack
-/// `deleter` when the resulting `Tensor` is garbage collected.
-pub(crate) fn from_dlpack_capsule(py: Python<'_>, capsule: Py<PyAny>) -> PyResult<Tensor> {
+/// Takes the **object**, not a capsule pulled off it: `numpy.from_dlpack` requires an
+/// object exposing `__dlpack__` / `__dlpack_device__` — NumPy 2.1 dropped raw-capsule
+/// support — and letting NumPy make the call means it negotiates the device and stream
+/// arguments with the producer itself, as the DLPack exchange protocol intends.
+pub(crate) fn from_dlpack_object(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
     // Use numpy.from_dlpack to do the heavy lifting: it handles capsule ownership,
     // producer synchronisation, and produces a CPU ndarray we can then wrap.
     let np = py.import("numpy")?;
-    let arr = np.call_method1("from_dlpack", (&capsule,))?;
+    let arr = np.call_method1("from_dlpack", (obj,))?;
     // Recursively wrap the resulting ndarray via from_numpy.
     from_numpy(py, &arr)
 }

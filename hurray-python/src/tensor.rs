@@ -1154,15 +1154,27 @@ impl Tensor {
             )));
         }
 
+        // Reject a type DLPack cannot carry before handing the tensor over, so the
+        // error names the element type instead of surfacing from inside NumPy.
+        if crate::dlpack::element_type_to_dlpack(t.descriptor.element_type).is_none() {
+            return Err(pyo3::exceptions::PyBufferError::new_err(format!(
+                "element type '{}' cannot be represented in DLPack v1.0; \
+                 use __hurray_buffer__ instead",
+                crate::dtype::element_type_name(t.descriptor.element_type),
+            )));
+        }
+
         // Use DLPack as the bridge to NumPy — numpy.from_dlpack creates a zero-copy
         // view and registers its own finaliser that calls the DLPack deleter, which
         // holds a strong ref back to this Tensor. The memory chain is:
         //   ndarray → DLPack capsule → deleter → Tensor → BufferStore
-        drop(t); // release borrow before calling __dlpack__
-        let capsule = Tensor::__dlpack__(slf, None, None, None, None)?;
-
+        //
+        // Hand NumPy the tensor, not a capsule: from_dlpack takes an object
+        // implementing __dlpack__ — NumPy 2.1 dropped raw-capsule support — and this
+        // way NumPy negotiates the stream and device arguments itself.
+        drop(t); // release borrow before NumPy calls back into __dlpack__
         let np = py.import("numpy")?;
-        let arr = np.call_method1("from_dlpack", (capsule,))?;
+        let arr = np.call_method1("from_dlpack", (slf,))?;
 
         // Handle dtype cast request (D4).
         if let Some(target_dtype) = dtype {
