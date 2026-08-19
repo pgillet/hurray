@@ -569,6 +569,7 @@ mod tests {
                 vec![2, 4],
                 None,
                 Some(vec![scales.into_any().unbind()]),
+                None,
                 Some(quant.bind(py).as_any()),
                 None,
                 None,
@@ -618,7 +619,7 @@ mod tests {
             // (ADR-031) its component buffers are just its buffer table.
             let tensor = crate::sparse::tests::make_csr(py);
             let nnz = tensor.nnz().unwrap();
-            let layout = tensor.layout();
+            let layout = crate::layout::layout_name(&tensor.descriptor.layout);
 
             let dir = std::env::temp_dir().join("hurray_sparse_roundtrip");
             std::fs::create_dir_all(&dir).unwrap();
@@ -638,7 +639,7 @@ mod tests {
             let got = got.borrow(py);
 
             // Layout, nnz and all three component buffers survive.
-            assert_eq!(got.layout(), layout);
+            assert_eq!(crate::layout::layout_name(&got.descriptor.layout), layout);
             assert_eq!(got.nnz().unwrap(), nnz);
             assert_eq!(got.buffer_count(), 3);
 

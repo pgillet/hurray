@@ -28,6 +28,7 @@ use crate::device::Device;
 use crate::dlpack;
 use crate::dtype::Dtype;
 use crate::errors::{BufferError, CopyRequiredError, InvalidDescriptorError, UnsupportedError};
+use crate::layout::{is_dense, layout_name, layout_to_py};
 
 /// A Hurray tensor: element type, shape, device, and a data buffer.
 ///
@@ -93,11 +94,29 @@ impl Tensor {
 
     /// Construct a `Tensor` from a bytes-like object, dtype, shape, and optional device.
     ///
+    /// ## Layout
+    ///
+    /// `layout` takes a `hurray.Layout` object and defaults to row-major. It is a
+    /// declaration about the buffers supplied alongside it, and the two must agree:
+    /// the rank constraints, the buffer count, and each buffer's size are all checked
+    /// here. A layout is never inferred from the buffers and the buffers are never
+    /// reinterpreted to fit the layout — `hurray.CooLayout(nnz=4)` with a
+    /// two-element values buffer raises rather than quietly becoming `nnz=2`.
+    ///
+    /// A layout **string** is not accepted: it could not carry `nnz` or `strides`,
+    /// so it can only produce a descriptor that is wrong.
+    ///
     /// ## Errors
     ///
     /// - `hurray.InvalidDescriptorError` — negative dimension in `shape`.
     /// - `hurray.BufferError` — buffer smaller than required by `dtype` + `shape`.
     /// - `hurray.BufferError` — `buffer` is not a `bytes` / `bytearray` object.
+    /// - `TypeError` — `layout` is not a `hurray.Layout`.
+    /// - `hurray.InvalidDescriptorError` — the layout contradicts the shape, or too
+    ///   few buffers were supplied for it.
+    /// - `hurray.BufferError` — a buffer is smaller than the layout implies.
+    /// - `hurray.UnsupportedError` — a composite layout, which owns no buffers and
+    ///   so cannot be expressed as a `hurray.Tensor`.
     ///
     /// ## Examples
     ///
@@ -107,6 +126,14 @@ impl Tensor {
     /// buf = struct.pack("6f", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
     /// t = hurray.Tensor(buf, hurray.float32, [2, 3])
     /// assert t.size == 6
+    ///
+    /// # A CSR tensor: values, column indices, row pointers.
+    /// csr = hurray.Tensor(
+    ///     struct.pack("2f", 5.0, 7.0), hurray.float32, [2, 2],
+    ///     aux_buffers=[struct.pack("2Q", 0, 1), struct.pack("3Q", 0, 1, 2)],
+    ///     layout=hurray.CsrLayout(nnz=2),
+    /// )
+    /// assert csr.layout == hurray.CsrLayout(nnz=2)
     /// ```
     #[new]
     #[pyo3(signature = (
@@ -116,6 +143,7 @@ impl Tensor {
         device = None,
         *,
         aux_buffers = None,
+        layout = None,
         quantization = None,
         statistics = None,
         shard = None,
@@ -128,6 +156,7 @@ impl Tensor {
         shape: Vec<i64>,
         device: Option<Py<Device>>,
         aux_buffers: Option<Vec<Py<PyAny>>>,
+        layout: Option<&Bound<'_, PyAny>>,
         quantization: Option<&Bound<'_, PyAny>>,
         statistics: Option<&Bound<'_, crate::metadata::Statistics>>,
         shard: Option<&Bound<'_, crate::metadata::Shard>>,
@@ -167,6 +196,22 @@ impl Tensor {
         let hurray_shape = Shape::new(dims)
             .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
 
+        // ── 2b. Resolve the layout ───────────────────────────────────────────
+        let layout_desc = match layout {
+            Some(obj) => crate::layout::extract_layout(obj)?,
+            None => LayoutDescriptor::RowMajor,
+        };
+
+        // A composite head owns no buffers at all, and this class is built around
+        // holding one. Rejected here rather than allowed to fail deeper, where the
+        // error would name a buffer table the caller never meant to supply.
+        if layout_desc.is_virtual() {
+            return Err(UnsupportedError::new_err(
+                "a composite layout cannot be given to hurray.Tensor: a composite head \
+                 owns no buffers, which this class cannot represent",
+            ));
+        }
+
         // ── 3. Extract buffer bytes ──────────────────────────────────────────
         let buf_bytes: &[u8] = if let Ok(b) = buffer.extract::<&[u8]>() {
             b
@@ -179,16 +224,21 @@ impl Tensor {
         };
 
         // ── 4. Validate buffer size ──────────────────────────────────────────
-        let element_count = hurray_shape.element_count().unwrap_or(0);
-        let expected = buffer_size_bytes(dtype.get().inner, element_count);
-        if (buf_bytes.len() as u64) < expected {
-            return Err(BufferError::new_err(format!(
-                "buffer too small: need at least {expected} bytes for {} elements of {}, \
-                 got {}",
-                element_count,
-                dtype.get().name(),
-                buf_bytes.len(),
-            )));
+        // Only a dense layout stores one element per logical index. A sparse or
+        // indirect layout's buffer 0 holds nnz values or a page pool instead, and its
+        // sizes come from the layout's own parameters in step 6b.
+        if is_dense(&layout_desc) {
+            let element_count = hurray_shape.element_count().unwrap_or(0);
+            let expected = buffer_size_bytes(dtype.get().inner, element_count);
+            if (buf_bytes.len() as u64) < expected {
+                return Err(BufferError::new_err(format!(
+                    "buffer too small: need at least {expected} bytes for {} elements of {}, \
+                     got {}",
+                    element_count,
+                    dtype.get().name(),
+                    buf_bytes.len(),
+                )));
+            }
         }
 
         // ── 5. Build the TensorDescriptor ────────────────────────────────────
@@ -239,6 +289,17 @@ impl Tensor {
             }
         }
 
+        // ── 6b. The layout must agree with the buffers it describes ──────────
+        let buffer_lens: Vec<usize> = std::iter::once(buf_bytes.len())
+            .chain(aux_stores.iter().map(|s| s.len()))
+            .collect();
+        crate::layout::validate_layout(
+            &layout_desc,
+            &hurray_shape,
+            dtype.get().inner,
+            &buffer_lens,
+        )?;
+
         // ── 7. Optional descriptor sections ──────────────────────────────────
         let quant_desc = quantization
             .map(crate::quantization::extract_quantization)
@@ -252,6 +313,7 @@ impl Tensor {
             hurray_core::validate_buffer_placement(q, &handles, 0).map_err(|e| {
                 InvalidDescriptorError::new_err(format!("invalid quantization: {e}"))
             })?;
+            crate::layout::validate_quantization_indices(&layout_desc, q)?;
         }
 
         let descriptor = TensorDescriptor::new(
@@ -260,7 +322,7 @@ impl Tensor {
             dtype.get().inner,
             hurray_shape,
             0, // byte_offset: element [0,…,0] is at the start of the buffer
-            LayoutDescriptor::RowMajor,
+            layout_desc,
             handles,
             quant_desc.map(|q| q.encode_to_vec()),
             shard.map(|s| s.get().inner.clone()),
@@ -376,25 +438,34 @@ impl Tensor {
         self.buffer_count()
     }
 
-    /// The memory layout of this tensor, as a string.
+    /// The memory layout of this tensor, as a `hurray.Layout` object.
     ///
-    /// One of `"row_major"`, `"col_major"`, `"strided"`, `"tiled"`, `"morton"`,
+    /// The object carries that layout's parameters — `nnz`, `strides`, `page_size`,
+    /// and so on — which a string could not. Its name is `layout.name`: one of
+    /// `"row_major"`, `"col_major"`, `"strided"`, `"tiled"`, `"morton"`,
     /// `"hilbert"`, `"coo"`, `"csr"`, `"csc"`, `"csf"`, `"block_paged"`,
     /// `"composite"`, or `"extension"` for a private or unrecognised layout tag.
     ///
     /// Layout is a property of a tensor, not a different kind of object
     /// (ADR-031): a COO tensor and a row-major tensor are both `hurray.Tensor`.
     ///
+    /// Read-only, and a fresh object each access: assigning a layout would silently
+    /// reinterpret the existing buffers, and the object holds no reference back to
+    /// this tensor, so `t.layout is t.layout` is `False` while `==` holds.
+    ///
     /// ## Examples
     ///
     /// ```python
     /// import hurray
     ///
-    /// assert hurray.Tensor(bytes(16), hurray.float32, [4]).layout == "row_major"
+    /// t = hurray.Tensor(bytes(16), hurray.float32, [4])
+    /// assert t.layout.name == "row_major"
+    /// assert isinstance(t.layout, hurray.RowMajorLayout)
+    /// assert t.layout == hurray.RowMajorLayout()
     /// ```
     #[getter]
-    pub fn layout(&self) -> &'static str {
-        layout_name(&self.descriptor.layout)
+    pub fn layout(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+        layout_to_py(py, &self.descriptor.layout)
     }
 
     /// Number of stored non-zero elements, for layouts that track it.
@@ -543,6 +614,55 @@ impl Tensor {
         let shape = Shape::new(vec![nrows + 1])
             .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
         Self::uint64_component_view(slf, 2, shape)
+    }
+
+    /// A 1-D `uint8` view over the buffer at descriptor index `index`.
+    ///
+    /// The generic way to reach any buffer, including the ones with no named
+    /// accessor: CSF has `2 * rank + 1` buffers and block-paged has three. Ask the
+    /// tensor's `layout` what each index holds.
+    ///
+    /// `uint8` is the only honest element type here — the buffers of one tensor
+    /// differ, with values taking the tensor's dtype, index buffers `uint64`, and
+    /// MXFP scales `e8m0` — and it cannot misreport any of them. The view covers
+    /// exactly the buffer's declared byte size.
+    ///
+    /// ## Errors
+    ///
+    /// - `IndexError` — no buffer at that index.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import struct, hurray
+    ///
+    /// csr = hurray.Tensor(
+    ///     struct.pack("2f", 5.0, 7.0), hurray.float32, [2, 2],
+    ///     aux_buffers=[struct.pack("2Q", 0, 1), struct.pack("3Q", 0, 1, 2)],
+    ///     layout=hurray.CsrLayout(nnz=2),
+    /// )
+    /// assert csr.buffer(2).shape == (24,)      # row_ptr: 3 uint64 entries
+    /// assert csr.buffer(2).dtype == hurray.uint8
+    /// ```
+    pub fn buffer(slf: &Bound<'_, Self>, index: usize) -> PyResult<Py<PyAny>> {
+        let byte_size = {
+            let t = slf.borrow();
+            // The *declared* size, from the descriptor's buffer table — the same
+            // number a consumer reading this descriptor off the wire would see.
+            t.descriptor
+                .buffers
+                .get(index)
+                .ok_or_else(|| {
+                    pyo3::exceptions::PyIndexError::new_err(format!(
+                        "no buffer at index {index}; this tensor has {}",
+                        t.buffer_count()
+                    ))
+                })?
+                .byte_size()
+        };
+        let shape = Shape::new(vec![byte_size])
+            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
+        Self::component_view(slf, index, shape, hurray_core::ElementType::Uint8)
     }
 
     /// A `hurray.Tensor` view over the CSC row-index buffer, shape `[nnz]`, `uint64`.
@@ -919,7 +1039,7 @@ impl Tensor {
                         return Err(UnsupportedError::new_err(format!(
                             "to_scipy is not supported for a {} tensor; only csr and csc map to \
                          scipy.sparse matrix types",
-                            crate::tensor::layout_name(other)
+                            crate::layout::layout_name(other)
                         )))
                     }
                 }
@@ -1249,45 +1369,6 @@ impl Tensor {
 
 // ── Layout helpers ────────────────────────────────────────────────────────────
 
-/// The Python-visible name of a layout.
-///
-/// Private and unrecognised tags collapse to `"extension"`: their tag byte is
-/// meaningful only to whoever defined it, so naming them individually would imply
-/// a support they do not have.
-pub(crate) fn layout_name(layout: &LayoutDescriptor) -> &'static str {
-    match layout {
-        LayoutDescriptor::RowMajor => "row_major",
-        LayoutDescriptor::ColMajor => "col_major",
-        LayoutDescriptor::Strided(_) => "strided",
-        LayoutDescriptor::Tiled(_) => "tiled",
-        LayoutDescriptor::Morton(_) => "morton",
-        LayoutDescriptor::Hilbert(_) => "hilbert",
-        LayoutDescriptor::Coo(_) => "coo",
-        LayoutDescriptor::Csr(_) => "csr",
-        LayoutDescriptor::Csc(_) => "csc",
-        LayoutDescriptor::Csf(_) => "csf",
-        LayoutDescriptor::BlockPaged(_) => "block_paged",
-        LayoutDescriptor::Composite(_) => "composite",
-        // LayoutDescriptor is #[non_exhaustive]; a layout added to core but not yet
-        // named here reads as an extension rather than failing to compile downstream.
-        _ => "extension",
-    }
-}
-
-/// `true` for layouts whose single buffer holds elements in a directly addressable
-/// order — the ones DLPack, NumPy and PyTorch can consume.
-pub(crate) fn is_dense(layout: &LayoutDescriptor) -> bool {
-    matches!(
-        layout,
-        LayoutDescriptor::RowMajor
-            | LayoutDescriptor::ColMajor
-            | LayoutDescriptor::Strided(_)
-            | LayoutDescriptor::Tiled(_)
-            | LayoutDescriptor::Morton(_)
-            | LayoutDescriptor::Hilbert(_)
-    )
-}
-
 /// The error for an accessor that does not apply to this tensor's layout.
 ///
 /// `AttributeError`, not `UnsupportedError`, so that `hasattr` tells the truth
@@ -1540,6 +1621,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .expect("construction should succeed");
 
@@ -1583,6 +1665,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .expect("int4 construction should succeed");
             assert_eq!(tensor.size(), Some(8));
@@ -1614,6 +1697,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             );
             assert!(result.is_err());
             assert!(result.unwrap_err().is_instance_of::<BufferError>(py));
@@ -1639,6 +1723,7 @@ pub(crate) mod tests {
                 py_buf.as_any(),
                 dtype.bind(py),
                 vec![-1, 3],
+                None,
                 None,
                 None,
                 None,
@@ -1680,6 +1765,7 @@ pub(crate) mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .unwrap(),
             )
@@ -1712,6 +1798,7 @@ pub(crate) mod tests {
                     py_buf.as_any(),
                     dtype.bind(py),
                     vec![2, 3],
+                    None,
                     None,
                     None,
                     None,
@@ -1762,6 +1849,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             assert!(tensor.t().is_err());
@@ -1794,6 +1882,7 @@ pub(crate) mod tests {
                 py_buf.as_any(),
                 dtype.bind(py),
                 vec![2, 3],
+                None,
                 None,
                 None,
                 None,
@@ -1838,6 +1927,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             let bound = Py::new(py, tensor).unwrap().into_bound(py);
@@ -1870,6 +1960,7 @@ pub(crate) mod tests {
                 py_buf.as_any(),
                 dtype.bind(py),
                 vec![2, 3],
+                None,
                 None,
                 None,
                 None,
@@ -1911,6 +2002,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             assert_eq!(tensor.device_py.borrow(py).kind(), "cpu");
@@ -1946,6 +2038,7 @@ pub(crate) mod tests {
                 dtype.bind(py),
                 vec![2, 3],
                 Some(cuda_device),
+                None,
                 None,
                 None,
                 None,
@@ -2029,6 +2122,7 @@ pub(crate) mod tests {
             vec![2, 4],
             None,
             Some(vec![scales.into_any().unbind()]),
+            None,
             Some(quant.bind(py).as_any()),
             None,
             None,
@@ -2097,6 +2191,7 @@ pub(crate) mod tests {
                 vec![2, 4],
                 None,
                 None,
+                None,
                 Some(quant.bind(py).as_any()),
                 None,
                 None,
@@ -2154,6 +2249,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
                 Some(stats.bind(py)),
                 Some(shard.bind(py)),
             )
@@ -2196,6 +2292,7 @@ pub(crate) mod tests {
                 vec![2, 4],
                 None,
                 None,
+                None,
                 Some(quant.bind(py).as_any()),
                 None,
                 None,
@@ -2226,6 +2323,7 @@ pub(crate) mod tests {
                 data.as_any(),
                 dtype.bind(py),
                 vec![2, 4],
+                None,
                 None,
                 None,
                 Some(not_a_scheme.as_any()),
@@ -2290,6 +2388,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             assert!(tensor.quantization(py).unwrap().is_none());
@@ -2343,6 +2442,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
                 Some(stats.bind(py)),
                 Some(shard.bind(py)),
             )
@@ -2391,6 +2491,7 @@ pub(crate) mod tests {
                 vec![2, 4],
                 None,
                 Some(vec![scales.into_any().unbind()]),
+                None,
                 Some(scheme.bind(py)),
                 None,
                 None,
@@ -2425,6 +2526,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             let err = tensor.__hash__().unwrap_err();
@@ -2451,6 +2553,7 @@ pub(crate) mod tests {
                 py_buf.as_any(),
                 dtype.bind(py),
                 vec![2, 3],
+                None,
                 None,
                 None,
                 None,
@@ -2493,6 +2596,7 @@ pub(crate) mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .unwrap(),
             )
@@ -2527,6 +2631,7 @@ pub(crate) mod tests {
                     py_buf.as_any(),
                     dtype.bind(py),
                     vec![8],
+                    None,
                     None,
                     None,
                     None,
@@ -2572,6 +2677,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             );
         });
     }
@@ -2595,6 +2701,7 @@ pub(crate) mod tests {
                 py_buf.as_any(),
                 dtype.bind(py),
                 vec![2, 3],
+                None,
                 None,
                 None,
                 None,

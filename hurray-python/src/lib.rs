@@ -18,6 +18,7 @@ mod dtype;
 pub mod errors;
 mod file_io;
 mod interop;
+pub(crate) mod layout;
 mod metadata;
 mod native_buffer;
 mod print_options;
@@ -43,6 +44,7 @@ mod tensor;
 /// | `hurray.Device` | class | 8a.2 |
 /// | `hurray.device` | submodule | 8a.2 |
 /// | `hurray.Tensor` | class | 8a.2 |
+/// | `hurray.Layout` and its per-layout subclasses (e.g. `hurray.CsrLayout`) | classes | ADR-032 |
 /// | `hurray.from_scipy` | function | 8a.4 |
 /// | `hurray.sparse_coo` | function | 8a.4 |
 /// | `hurray.from_hurray_buffer` | function | 8c |
@@ -64,6 +66,7 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     device::register(m)?;
     tensor::register(m)?;
     interop::register(m)?;
+    layout::register(m)?;
     sparse::register(m)?;
     scipy_interop::register(m)?;
     native_buffer::register(m)?;

@@ -76,7 +76,7 @@ pub(crate) fn sparse_repr(slf: &Bound<'_, Tensor>) -> PyResult<String> {
     let shape_tuple = t.shape(py)?;
     let shape_str = shape_tuple.bind(py).repr()?.to_str()?.to_owned();
     let dtype_name = crate::dtype::element_type_name(t.descriptor.element_type);
-    let layout = crate::tensor::layout_name(&t.descriptor.layout);
+    let layout = crate::layout::layout_name(&t.descriptor.layout);
     let nnz = t.nnz()?;
     drop(t);
 
@@ -120,7 +120,7 @@ fn format_content_arrays(slf: &Bound<'_, Tensor>) -> PyResult<String> {
     // absent, bail here so __repr__ falls back cleanly to the metadata string.
     py.import("numpy")?;
 
-    let layout = crate::tensor::layout_name(&slf.borrow().descriptor.layout);
+    let layout = crate::layout::layout_name(&slf.borrow().descriptor.layout);
 
     /// Render a `hurray.Tensor` buffer view as its bare NumPy array string.
     ///
@@ -666,7 +666,7 @@ pub(crate) mod tests {
         Python::attach(|py| {
             let _m = build_module(py);
             let sparse = make_csr(py);
-            assert_eq!(sparse.layout(), "csr");
+            assert_eq!(crate::layout::layout_name(&sparse.descriptor.layout), "csr");
             assert_eq!(sparse.ndim(), 2);
             assert_eq!(sparse.nnz().unwrap(), 4);
         });
@@ -693,7 +693,7 @@ pub(crate) mod tests {
                 .unwrap();
 
             let t = sparse_coo(py, &values, &indices, vec![2, 2]).unwrap();
-            assert_eq!(t.layout(), "coo");
+            assert_eq!(crate::layout::layout_name(&t.descriptor.layout), "coo");
             assert_eq!(t.ndim(), 2);
             assert_eq!(t.nnz().unwrap(), 2);
         });
@@ -1486,6 +1486,7 @@ pub(crate) mod tests {
                     py_buf.as_any(),
                     dtype.bind(py),
                     vec![4],
+                    None,
                     None,
                     None,
                     None,

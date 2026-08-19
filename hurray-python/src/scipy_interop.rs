@@ -329,7 +329,7 @@ m
                 .unwrap();
             let sparse =
                 from_scipy(py, &m).expect("from_scipy should succeed for CSR with uint64 indices");
-            assert_eq!(sparse.layout(), "csr");
+            assert_eq!(crate::layout::layout_name(&sparse.descriptor.layout), "csr");
             assert_eq!(sparse.nnz().unwrap(), 2);
         });
     }
