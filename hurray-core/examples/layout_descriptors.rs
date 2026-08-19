@@ -171,7 +171,7 @@ fn main() {
     );
 
     // ── Unknown (permissive mode passthrough) ─────────────────────────────────
-    let unknown = LayoutDescriptor::Unknown(UnknownLayout::new(0x0B, vec![0xAB, 0xCD]).unwrap());
+    let unknown = LayoutDescriptor::Unknown(UnknownLayout::new(0x0C, vec![0xAB, 0xCD]).unwrap());
     println!(
         "Unknown:    tag=0x{:02X}  buffers={:?}  valid={}  (permissive mode — never dereference data)",
         unknown.tag(),
