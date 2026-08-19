@@ -663,6 +663,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             let bound = Py::new(py, tensor).unwrap().into_bound(py);
