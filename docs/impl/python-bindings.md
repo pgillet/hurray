@@ -374,10 +374,8 @@ layout (ADR-031). There MUST NOT be a separate class per layout family: a sparse
 tensor is a `hurray.Tensor` whose layout happens to be COO, CSR, or CSC, matching the
 format, where sparse is a `layout_tag` inside the ordinary tensor descriptor.
 
-- `.layout` — MUST report the descriptor's layout as a string: `"row_major"`,
-  `"col_major"`, `"strided"`, `"tiled"`, `"morton"`, `"hilbert"`, `"coo"`, `"csr"`,
-  `"csc"`, `"csf"`, `"block_paged"`, `"composite"`, or `"extension"` for a private or
-  unrecognised tag.
+- `.layout` — MUST return a `hurray.Layout` **object**, not a string (ADR-032). See
+  § Layout Descriptor Classes below.
 - `.values` — a `hurray.Tensor` view over the values buffer.
 - `.indices` (COO) or `.col_indices` / `.row_ptr` (CSR) or `.row_indices` / `.col_ptr`
   (CSC) — `hurray.Tensor` views over the index buffers.
@@ -396,6 +394,139 @@ design decision D10). They MUST NOT raise `hurray.UnsupportedError`, which would
 Protocols that require a densely addressable element buffer — `__dlpack__`,
 `__array__`, `__array_interface__`, `to_torch` — MUST reject non-dense layouts, naming
 the layout in the error message.
+
+`hurray.Tensor` MUST additionally expose `buffer(index)`, returning a 1-D `uint8` view
+of exactly the declared byte size of the buffer at that tensor-descriptor buffer index.
+CSF has `2 * rank + 1` buffers and block-paged has three, none of which have named
+accessors; without a generic accessor their parameters would be reachable while their
+buffers were not. `uint8` is the only honest element type for a generic view — the
+buffers within one tensor differ (values take the tensor's dtype, index buffers are
+`uint64`, MXFP scales are `e8m0`) — and it cannot misreport a dtype. The layout object
+tells the caller what each index means. An index with no buffer MUST raise
+`IndexError`.
+
+## Layout Descriptor Classes
+
+`hurray-python` MUST expose a class hierarchy of layout descriptors (ADR-032). A layout
+carries parameters — `nnz`, `strides`, `page_size` — that a string cannot.
+
+### The hierarchy
+
+```
+hurray.Layout                        # base: holds the core layout descriptor
+├── RowMajorLayout   ColMajorLayout
+├── StridedLayout    TiledLayout     MortonLayout    HilbertLayout
+├── CooLayout        CsrLayout       CscLayout       CsfLayout
+├── BlockPagedLayout
+├── CompositeLayout
+├── PrivateExtensionLayout
+└── UnknownLayout
+```
+
+The base MUST implement `tag`, `name`, `buffer_count`, `is_dense` and `is_virtual`
+once; subclasses are typed façades reading their own fields off the same descriptor.
+The base MUST NOT be constructible from Python.
+
+`buffer_count` MUST be `0` for a composite head — a *known* zero — and `None` for a
+private or unknown layout, whose count is genuinely not knowable.
+
+When the core layout enum gains a variant a build has not bound, `.layout` MUST return
+a bare `Layout` carrying `tag` and `name`. It MUST NOT be reported as `UnknownLayout`,
+which asserts that the tag was unrecognised rather than merely unbound.
+
+### Value semantics
+
+Layout objects MUST be immutable, MUST compare by value, and MUST hash consistently
+with that equality. `.layout` is read-only, and MAY return a fresh object per access:
+`t.layout is t.layout` is not guaranteed, `t.layout == t.layout` is.
+
+Layout classes MUST NOT define equality against strings. `repr` MUST take the form
+`CsrLayout(nnz=4)`.
+
+### Frozen name and enumeration strings
+
+`Layout.name` is one of: `"row_major"`, `"col_major"`, `"strided"`, `"tiled"`,
+`"morton"`, `"hilbert"`, `"coo"`, `"csr"`, `"csc"`, `"csf"`, `"block_paged"`,
+`"composite"`, or `"extension"` for a private **or** unrecognised tag. These MUST match
+the layout names in `docs/spec/memory-layout.md`. `PrivateExtensionLayout` and
+`UnknownLayout` therefore share a name; `isinstance` is what distinguishes them, and
+they MUST remain separate classes because "a private layout I can identify" and "a tag
+from a newer spec version I could not parse" are different facts a permissive relay
+depends on.
+
+A single internal helper MUST produce the name string, so that `.name` and the layout
+named in error messages (`__dlpack__`, `__array__`, `to_scipy`) cannot drift.
+
+Small closed enumerations are exposed as lowercase strings, not as Python enum classes:
+
+| Property | Values |
+|---|---|
+| `BlockPagedLayout.kv_role` | `"key"`, `"value"`, `"fused"` |
+| `BlockPagedLayout.block_table_index_type` | `"uint32"`, `"uint64"` |
+| `TiledLayout.outer_layout` | `"row_major"`, `"col_major"`, `"strided"` |
+| `TiledLayout.inner_layout` | the above plus `"tiled"` |
+| `CompositeLayout.composition_rule` | `"partition"`, `"overlay"`, `"group"` |
+| `CompositeLayout.combine_op` | `"replace"`, `"add"`, or `None` |
+
+`CompositeLayout` MUST expose the composition rule and the combine operation as **two**
+properties, with `combine` being `None` for non-overlay rules. They MUST NOT be
+flattened into one string, and the raw combine byte MUST NOT be exposed for rules where
+it means "not applicable".
+
+### Strides are in logical elements
+
+`StridedLayout.strides` and the tiled layouts' `outer_strides` and `inner_strides` are
+**in logical elements, signed, and may be negative or zero** — not in bytes as NumPy's
+are.
+
+### Authoring
+
+`hurray.Tensor` MUST accept a `layout` keyword holding a `hurray.Layout` instance,
+mirroring `quantization=`. Omitting it means row-major. A non-`Layout` value MUST raise
+`TypeError`.
+
+A layout **string** MUST NOT be accepted. A string cannot carry `nnz` or `strides`, so
+`layout="csr"` is a request that cannot be honoured; accepting it would create a second,
+lossy authoring path.
+
+The layout object is a declaration; the buffers are evidence. They MUST agree, and the
+constructor MUST check three tiers:
+
+| Tier | Check | Error |
+|---|---|---|
+| Shape | rank and shape constraints (CSR rank 2, CSF rank ≥ 3, `len(strides) == rank`, …) | `hurray.InvalidDescriptorError` |
+| Buffer count | supplied buffers ≥ the layout's required count; quantization buffer indices fall beyond them | `hurray.InvalidDescriptorError` |
+| Buffer size | each buffer at least as large as the layout's parameters imply | `hurray.BufferError` |
+
+A layout MUST NOT be inferred from the buffers, and the buffers MUST NOT be
+reinterpreted to fit the layout. `CooLayout(nnz=4)` supplied with a two-element values
+buffer MUST raise: the descriptor MUST NOT be silently corrected to `nnz=2`, and MUST
+NOT be accepted as given, since it would encode and decode cleanly and hand the
+consumer an out-of-bounds read. Over-sized buffers MUST be permitted; alignment and
+padding slack are legitimate.
+
+Consequently `nnz` MUST be a required argument on the sparse layout constructors.
+Inference belongs to the array-shaped constructors — `hurray.sparse_coo`,
+`hurray.from_scipy` — which are handed the arrays and can derive it.
+
+For every constructible layout, rebuilding a tensor from another tensor's `layout`,
+`quantization`, `statistics`, `shard` and buffers MUST produce an equal descriptor.
+
+### Composite, private, and unknown
+
+- `CompositeLayout` MUST be readable in full, so a composite head decoded from a stream
+  reports its own layout truthfully. Constructing a `hurray.Tensor` with a composite
+  layout MUST raise `hurray.UnsupportedError`: a composite head owns no buffers, which
+  the Python `Tensor` cannot represent.
+- `UnknownLayout` MUST be constructible, so a permissive relay can reconstruct a
+  descriptor it decoded and write it back out. Its constructor MUST reject any tag for
+  which a named variant exists — calling a known tag "unknown" would smuggle an
+  unvalidated descriptor past every rank and buffer check.
+- `PrivateExtensionLayout` exposes `tag`, `extension_layout_id`, and `extension_data`.
+
+**Known gap:** because the buffer count of a private or unknown layout is unknowable,
+the buffer-count and buffer-size tiers cannot run for them. Nothing in such a descriptor
+states how many buffers it needs or how large they should be.
 
 ## Error Handling
 

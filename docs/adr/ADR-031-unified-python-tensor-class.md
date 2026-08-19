@@ -88,6 +88,10 @@ layout.** `hurray.SparseTensor` is removed.
 
 ### 1. Layout becomes a property
 
+> **Amended by [ADR-032](ADR-032-python-layout-descriptor-hierarchy.md):** `layout`
+> returns a `hurray.Layout` instance, not a string. The string is `layout.name`, drawn
+> from the same set listed below. § 2 through § 5 are unchanged.
+
 `hurray.Tensor` MUST expose a `layout` property reporting the descriptor's layout as a
 string: `"row_major"`, `"col_major"`, `"strided"`, `"tiled"`, `"morton"`, `"hilbert"`,
 `"coo"`, `"csr"`, `"csc"`, `"csf"`, `"block_paged"`, `"composite"`.
