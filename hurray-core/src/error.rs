@@ -309,13 +309,23 @@ pub enum Error {
 
     /// Layout tag is in a range reserved for future specification versions.
     ///
-    /// Reserved ranges: `0x0B`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`.
-    /// (`0x0A` is block-paged, the last named layout tag in this crate. `0x0B`
-    /// is reserved by the spec for the future Composite layout (ADR-027), not
-    /// yet implemented in this crate.)
+    /// Reserved ranges: `0x0C`–`0x3F`, `0x41`–`0x7F`, `0x80`–`0xEF`.
+    /// (`0x0B` is the composite / virtual head (ADR-027) and `0x40` is Hilbert;
+    /// both are named tags in this crate.)
     /// Implementations MUST NOT assign semantics to these tags in strict mode.
     #[error("reserved layout tag: 0x{0:02X} is reserved for future specification versions")]
     ReservedLayoutTag(u8),
+
+    /// A tag with a named layout descriptor was passed to the permissive
+    /// [`UnknownLayout`](crate::layout::UnknownLayout) constructor.
+    ///
+    /// "Unknown" is what lets a permissive reader relay a tag it does not
+    /// understand. Applied to a tag this implementation *does* understand, it
+    /// becomes a bypass: `Unknown` has no buffer count and no shape constraints,
+    /// so such a descriptor would skip every check the named variant applies and
+    /// then encode to a wire tag a conforming reader parses as that named layout.
+    #[error("layout tag 0x{0:02X} has a named descriptor and must not be wrapped as unknown")]
+    NamedLayoutTag(u8),
 
     /// Layout tag is in the private-extension range `0xF0`–`0xFE`.
     ///

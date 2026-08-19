@@ -168,6 +168,10 @@ needs.
   cannot yet represent. ADR-031's deferral of *whether composites belong on the unified
   class* is unaffected; this answers only what `t.layout` reports.
 
+> **Resolved (2026-08-19, issue #162):** core now rejects named and private tags in
+> `UnknownLayout::new`, via a new `is_named_tag` helper shared with
+> `validate_layout_tag_strict`. The finding as originally written follows.
+>
 > **Finding for `hurray-core`:** `UnknownLayout::new` currently rejects only the
 > reserved tags `0x00` and `0xFF`, so a caller can construct an "unknown" layout on a
 > tag that has a named variant — smuggling an unvalidated descriptor past every rank

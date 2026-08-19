@@ -192,14 +192,15 @@ hilbert.validate_against_shape(&shape).unwrap();
 
 ```rust
 use hurray_core::layout::{
-    validate_layout_tag_strict, is_invalid_tag, is_reserved_tag, is_private_tag,
-    LayoutDescriptor, UnknownLayout,
+    validate_layout_tag_strict, is_invalid_tag, is_named_tag, is_reserved_tag,
+    is_private_tag, LayoutDescriptor, UnknownLayout,
 };
 use hurray_core::Error;
 
 // Check individual tag categories without constructing a descriptor.
 // 0x10 is a genuinely unassigned tag in the Tier-1 reserved range.
 assert!(is_invalid_tag(0x00));
+assert!(is_named_tag(0x07));      // CSR — this crate knows how to check it
 assert!(is_reserved_tag(0x10));
 assert!(is_private_tag(0xF3));
 
@@ -214,6 +215,12 @@ assert!(matches!(validate_layout_tag_strict(0xF0), Err(Error::PrivateLayoutTag(0
 let unknown = LayoutDescriptor::Unknown(UnknownLayout::new(0x10, vec![]).unwrap());
 assert_eq!(unknown.tag(), 0x10);
 assert!(unknown.buffer_count().is_none());
+
+// Only genuinely unrecognised tags: "unknown" is a claim, and it has to be true.
+// A named tag wrapped this way would skip every check its own variant applies
+// while still encoding to that tag on the wire.
+assert!(matches!(UnknownLayout::new(0x07, vec![]), Err(Error::NamedLayoutTag(0x07))));
+assert!(matches!(UnknownLayout::new(0xF0, vec![]), Err(Error::PrivateLayoutTag(0xF0))));
 ```
 
 ## Validating a descriptor against a tensor shape

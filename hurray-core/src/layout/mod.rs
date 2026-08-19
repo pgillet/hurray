@@ -155,6 +155,43 @@ pub fn is_private_tag(tag: u8) -> bool {
     matches!(tag, PRIVATE_LAYOUT_TAG_MIN..=PRIVATE_LAYOUT_TAG_MAX)
 }
 
+/// Returns `true` if `tag` has a named [`LayoutDescriptor`] variant in this crate.
+///
+/// The complement of "unknown": a named tag carries structure this implementation
+/// knows how to check, so it MUST NOT be wrapped in
+/// [`UnknownLayout`](UnknownLayout), which has neither a buffer count nor shape
+/// constraints.
+///
+/// # Examples
+///
+/// ```
+/// use hurray_core::layout::is_named_tag;
+///
+/// assert!(is_named_tag(0x01));  // row-major
+/// assert!(is_named_tag(0x0B));  // composite / virtual head
+/// assert!(is_named_tag(0x40));  // Hilbert
+/// assert!(!is_named_tag(0x0C)); // reserved for a future version
+/// assert!(!is_named_tag(0xF0)); // private extension
+/// ```
+#[inline]
+pub fn is_named_tag(tag: u8) -> bool {
+    matches!(
+        tag,
+        TAG_ROW_MAJOR
+            | TAG_COL_MAJOR
+            | TAG_STRIDED
+            | TAG_TILED
+            | TAG_MORTON
+            | TAG_COO
+            | TAG_CSR
+            | TAG_CSC
+            | TAG_CSF
+            | TAG_BLOCK_PAGED
+            | TAG_COMPOSITE
+            | TAG_HILBERT
+    )
+}
+
 /// Validates a layout tag in **strict mode**, returning the appropriate error
 /// for tags that are invalid, reserved, or private.
 ///
@@ -188,8 +225,9 @@ pub fn validate_layout_tag_strict(tag: u8) -> Result<()> {
         0x00 | 0xFF => Err(Error::InvalidLayoutTag(tag)),
         t if is_reserved_tag(t) => Err(Error::ReservedLayoutTag(tag)),
         t if is_private_tag(t) => Err(Error::PrivateLayoutTag(tag)),
-        TAG_ROW_MAJOR | TAG_COL_MAJOR | TAG_STRIDED | TAG_TILED | TAG_MORTON | TAG_COO
-        | TAG_CSR | TAG_CSC | TAG_CSF | TAG_BLOCK_PAGED | TAG_COMPOSITE | TAG_HILBERT => Ok(()),
+        // One list of named tags, in is_named_tag, so strict validation and the
+        // unknown-layout constructor cannot come to disagree about what is named.
+        t if is_named_tag(t) => Ok(()),
         _ => Err(Error::UnknownLayoutTag(tag)),
     }
 }
