@@ -40,9 +40,9 @@ def test_a_sparse_tensor_is_a_tensor():
 
 
 def test_layout_reports_the_descriptor_layout():
-    assert hurray.Tensor(bytes(16), hurray.float32, [4]).layout == "row_major"
-    assert _coo().layout == "coo"
-    assert _csr().layout == "csr"
+    assert hurray.Tensor(bytes(16), hurray.float32, [4]).layout.name == "row_major"
+    assert _coo().layout.name == "coo"
+    assert _csr().layout.name == "csr"
 
 
 # ── Inapplicable accessors are absent, not merely failing ─────────────────────
@@ -115,7 +115,7 @@ def test_sparse_tensor_round_trips_through_a_file(tmp_path):
     hurray.save(str(path), {"m": original})
 
     back = hurray.load(str(path))["m"]
-    assert back.layout == "coo"
+    assert back.layout.name == "coo"
     assert back.nnz == original.nnz
     assert back.buffer_count == 2
 
@@ -126,7 +126,7 @@ def test_csr_tensor_round_trips_through_a_file(tmp_path):
     hurray.save(str(path), {"m": original})
 
     back = hurray.load(str(path))["m"]
-    assert back.layout == "csr"
+    assert back.layout.name == "csr"
     assert back.nnz == original.nnz
     assert back.buffer_count == 3
 
@@ -139,8 +139,8 @@ def test_a_file_can_mix_dense_and_sparse(tmp_path):
     )
 
     loaded = hurray.load(str(path))
-    assert loaded["dense"].layout == "row_major"
-    assert loaded["sparse"].layout == "coo"
+    assert loaded["dense"].layout.name == "row_major"
+    assert loaded["sparse"].layout.name == "coo"
 
 
 # ── Repr ──────────────────────────────────────────────────────────────────────
