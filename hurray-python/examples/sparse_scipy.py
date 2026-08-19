@@ -71,7 +71,7 @@ def demo_csc():
     m.indptr = m.indptr.astype(np.uint64)
 
     sparse = hurray.from_scipy(m)
-    assert sparse.layout == "csc"
+    assert sparse.layout.name == "csc"
     assert sparse.nnz == 2
 
     row_idx = sparse.row_indices
@@ -99,7 +99,7 @@ def demo_coo_rejection():
     # Preferred: repack row/col into [nnz, rank] uint64 and use hurray.sparse_coo.
     indices = np.stack([m_coo.row, m_coo.col], axis=1).astype(np.uint64)
     t = hurray.sparse_coo(m_coo.data, indices, m_coo.shape)
-    assert t.layout == "coo"
+    assert t.layout.name == "coo"
     assert t.nnz == 3
     print(f"sparse_coo OK: layout={t.layout}, nnz={t.nnz}, shape={t.shape}")
 
@@ -108,7 +108,7 @@ def demo_coo_rejection():
     m_csr.indices = m_csr.indices.astype(np.uint64)
     m_csr.indptr = m_csr.indptr.astype(np.uint64)
     sparse = hurray.from_scipy(m_csr)
-    assert sparse.layout == "csr"
+    assert sparse.layout.name == "csr"
     print("COO→CSR alternative OK")
 
 

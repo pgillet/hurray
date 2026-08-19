@@ -939,8 +939,7 @@ pub fn asarray(
         drop(t); // Release borrow before calling into obj.
 
         if !needs_dtype_conv && copy != Some(true) {
-            let capsule = obj.call_method0("__dlpack__")?;
-            return crate::interop::from_dlpack_capsule(py, capsule.unbind());
+            return crate::interop::from_dlpack_object(py, obj);
         }
         // Fall through to numpy for dtype conversion or explicit copy.
     }
@@ -966,10 +965,11 @@ pub fn asarray(
 
 /// Construct a tensor from a DLPack capsule or an object with `__dlpack__`.
 ///
-/// The `from_dlpack` entry point. It calls `x.__dlpack__()` to obtain a DLPack v1.0
-/// capsule and wraps the result as a `hurray.Tensor` (zero-copy on CPU). The `device`
-/// and `copy` parameters are accepted for signature compatibility but only CPU is
-/// supported in this version.
+/// The `from_dlpack` entry point. `x` is any object implementing `__dlpack__`; the
+/// exchange is left to the DLPack consumer so that it negotiates device and stream
+/// with the producer. The result is wrapped as a `hurray.Tensor` (zero-copy on CPU).
+/// The `device` and `copy` parameters are accepted for signature compatibility but
+/// only CPU is supported in this version.
 ///
 /// ## Errors
 ///
@@ -996,8 +996,7 @@ pub fn from_dlpack(
     device: Option<&Bound<'_, PyAny>>,
     copy: Option<bool>,
 ) -> PyResult<Tensor> {
-    let capsule = x.call_method0("__dlpack__")?;
-    crate::interop::from_dlpack_capsule(py, capsule.unbind())
+    crate::interop::from_dlpack_object(py, x)
 }
 
 // ── Registration ──────────────────────────────────────────────────────────────
