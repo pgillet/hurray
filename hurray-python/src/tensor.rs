@@ -869,7 +869,7 @@ impl Tensor {
             // PyTorch catch when a producer cannot satisfy the protocol.
             return Err(pyo3::exceptions::PyBufferError::new_err(format!(
                 "cannot export a {} tensor via DLPack; it has no single dense buffer — \
-                 use __hurray_buffer__, or export the component views individually",
+                 use __hurray__, or export the component views individually",
                 layout_name(&t.descriptor.layout)
             )));
         }
@@ -913,9 +913,9 @@ impl Tensor {
         Ok(tup)
     }
 
-    // ── Native buffer protocol ────────────────────────────────────────────────
+    // ── Native protocol ───────────────────────────────────────────────────────
 
-    /// Return a `"hurray_buffer"` PyCapsule for zero-copy buffer sharing between
+    /// Return a `"hurray_tensor"` PyCapsule for zero-copy buffer sharing between
     /// Hurray-aware Python extensions (ADR-023, Layer 8c).
     ///
     /// Unlike `__dlpack__`, this protocol preserves the full Hurray descriptor
@@ -938,13 +938,13 @@ impl Tensor {
     /// import hurray
     ///
     /// t = hurray.Tensor(bytes(16), hurray.float32, [4])
-    /// cap = t.__hurray_buffer__()
-    /// t2 = hurray.from_hurray_buffer(t)
+    /// cap = t.__hurray__()
+    /// t2 = hurray.from_hurray(t)
     /// assert t2.shape == t.shape
     /// assert t2.dtype == t.dtype
     /// ```
     #[pyo3(signature = (stream = None))]
-    pub fn __hurray_buffer__(
+    pub fn __hurray__(
         slf: &Bound<'_, Self>,
         // ProducerSynced: stream hint accepted for API parity; not acted on in this pass.
         stream: Option<Py<PyAny>>,
@@ -955,18 +955,18 @@ impl Tensor {
 
         if t.descriptor.buffers.is_empty() {
             return Err(BufferError::new_err(
-                "tensor has no buffer handles; cannot produce a native buffer capsule",
+                "tensor has no buffer handles; cannot produce a native protocol capsule",
             ));
         }
 
         // Pair each buffer store with its declared handle, in descriptor order
         // (ADR-030 § 3): the store supplies the address, the handle the metadata.
-        let capsule_buffers: Vec<crate::native_buffer::CapsuleBuffer> = t
+        let capsule_buffers: Vec<crate::native_protocol::CapsuleBuffer> = t
             .buffers()
             .zip(t.descriptor.buffers.iter())
             .map(|(store, handle)| {
                 let byte_size = store.len() as u64;
-                crate::native_buffer::CapsuleBuffer {
+                crate::native_protocol::CapsuleBuffer {
                     data_ptr: store.as_ptr() as *mut c_void,
                     byte_size,
                     // alignment=1 for empty buffers, to satisfy the handle constructor.
@@ -987,7 +987,7 @@ impl Tensor {
         // Strong reference to the Tensor; kept alive via the capsule context.
         let tensor_obj: Py<PyAny> = slf.clone().into_any().unbind();
 
-        crate::native_buffer::build_capsule(py, tensor_obj, descriptor, &capsule_buffers)
+        crate::native_protocol::build_capsule(py, tensor_obj, descriptor, &capsule_buffers)
     }
 
     // ── SciPy interop ─────────────────────────────────────────────────────────
@@ -1159,7 +1159,7 @@ impl Tensor {
         if crate::dlpack::element_type_to_dlpack(t.descriptor.element_type).is_none() {
             return Err(pyo3::exceptions::PyBufferError::new_err(format!(
                 "element type '{}' cannot be represented in DLPack v1.0; \
-                 use __hurray_buffer__ instead",
+                 use __hurray__ instead",
                 crate::dtype::element_type_name(t.descriptor.element_type),
             )));
         }
@@ -1821,19 +1821,19 @@ pub(crate) mod tests {
             )
             .unwrap();
             assert!(
-                tensor.bind(py).hasattr("__hurray_buffer__").unwrap(),
-                "__hurray_buffer__ must be present in Layer 8c"
+                tensor.bind(py).hasattr("__hurray__").unwrap(),
+                "__hurray__ must be present in Layer 8c"
             );
-            // Calling __hurray_buffer__() must return a PyCapsule without panicking.
+            // Calling __hurray__() must return a PyCapsule without panicking.
             let capsule = tensor
                 .bind(py)
-                .call_method0("__hurray_buffer__")
-                .expect("__hurray_buffer__ must not raise");
+                .call_method0("__hurray__")
+                .expect("__hurray__ must not raise");
             // SAFETY: capsule is a borrowed Python object from the call above.
             let is_valid = unsafe {
-                pyo3::ffi::PyCapsule_IsValid(capsule.as_ptr(), c"hurray_buffer".as_ptr())
+                pyo3::ffi::PyCapsule_IsValid(capsule.as_ptr(), c"hurray_tensor".as_ptr())
             };
-            assert_eq!(is_valid, 1, "capsule must be named 'hurray_buffer'");
+            assert_eq!(is_valid, 1, "capsule must be named 'hurray_tensor'");
         });
     }
 

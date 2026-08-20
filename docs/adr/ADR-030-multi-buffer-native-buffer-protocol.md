@@ -102,6 +102,9 @@ version check exists so the mismatch is diagnosed rather than dereferenced.
 
 ### 5. `__hurray_sparse_buffer__` is not introduced
 
+> **Amended by [ADR-033](ADR-033-native-protocol-rename-hurray.md):** the one probe is
+> now `hasattr(obj, '__hurray__')`. One protocol, one probe — only its spelling changed.
+
 The separate sparse protocol floated in ADR-023 is superseded. `SparseTensor` MUST
 implement `__hurray_buffer__` using this protocol, with its values and index buffers in
 descriptor order. Consumers discover support exactly as before, via

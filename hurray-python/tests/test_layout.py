@@ -101,9 +101,9 @@ def test_array_rejects_a_sparse_layout():
 
 
 def test_native_protocol_accepts_every_layout():
-    """__hurray_buffer__ is the full-fidelity path, so it must not discriminate."""
+    """__hurray__ is the full-fidelity path, so it must not discriminate."""
     for t in (hurray.Tensor(bytes(16), hurray.float32, [4]), _coo()):
-        assert t.__hurray_buffer__() is not None
+        assert t.__hurray__() is not None
 
 
 # ── File I/O covers every layout (#156) ───────────────────────────────────────

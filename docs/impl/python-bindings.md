@@ -84,7 +84,7 @@ namespace (see ADR-029).
 |---|---|
 | `__dlpack__(stream=None)` | MUST return a DLPack capsule for zero-copy buffer sharing. See [DLPack Interoperability](#dlpack-interoperability) for stream semantics. |
 | `__dlpack_device__()` | MUST return a `(DLDeviceType, device_id)` tuple. `device_id` is passed as runtime metadata at `Tensor` construction time and defaults to `0`. See [DLPack Interoperability](#dlpack-interoperability). |
-| `__hurray_buffer__(stream=None)` | MUST return a native Hurray buffer capsule (full-fidelity, all dtypes). See [Native Buffer Interchange Protocol](#native-buffer-interchange-protocol). |
+| `__hurray__(stream=None)` | MUST return a native Hurray capsule (full-fidelity, all dtypes). See [Native Interchange Protocol](#native-interchange-protocol). |
 | `dtype` | MUST return the tensor's `hurray.dtype.*` object. |
 | `shape` | MUST return a `Tuple[Optional[int], ...]`. Each element is an `int` for a known dimension, or `None` for a dynamic (unknown) dimension. |
 | `ndim` | MUST return the number of dimensions. |
@@ -121,7 +121,7 @@ namespace (see ADR-029).
 For **Tier 2 element types** (sub-byte integers, float8 variants) and **quantized
 types**, `hurray-python` MUST expose a `hurray`-namespaced dtype object (e.g.,
 `hurray.dtype.int4`, `hurray.dtype.float8_e4m3`). These have no standard NumPy dtype
-and cross between Hurray-aware components via the native buffer protocol or `save`/`load`.
+and cross between Hurray-aware components via the native protocol or `save`/`load`.
 
 Tensors with Tier 2 / quantized dtypes MAY still implement `__dlpack__` where DLPack
 supports the element type. For element types outside the DLPack type enum, `__dlpack__`
@@ -237,21 +237,21 @@ Notes on the mapping:
    MUST NOT fabricate a DLPack mapping. It MUST raise `hurray.UnsupportedError`
    unless the consumer has explicitly agreed on a private mapping out of band.
 8. For combinations in notes 5, 6, and 7 where `hurray.UnsupportedError` is
-   raised, Hurray-aware consumers SHOULD use the native buffer interchange
-   protocol (`__hurray_buffer__`) instead. See
-   [Native Buffer Interchange Protocol](#native-buffer-interchange-protocol).
+   raised, Hurray-aware consumers SHOULD use the native interchange
+   protocol (`__hurray__`) instead. See
+   [Native Interchange Protocol](#native-interchange-protocol).
 
-## Native Buffer Interchange Protocol
+## Native Interchange Protocol
 
-`hurray-python` MUST expose a native buffer interchange protocol for
+`hurray-python` MUST expose a native interchange protocol for
 hurray-to-hurray zero-copy transfers covering `(device_tag, memory_class)`
 combinations that DLPack v1.0 cannot represent (see ADR-023).
 
-- `hurray.Tensor.__hurray_buffer__(stream=None) -> PyCapsule` — MUST return a
-  PyCapsule named `"hurray_buffer"` wrapping a `HurrayBufferList` pointer from
+- `hurray.Tensor.__hurray__(stream=None) -> PyCapsule` — MUST return a
+  PyCapsule named `"hurray_tensor"` wrapping a `HurrayBufferList` pointer from
   `hurray-ffi`. Available for **all** dtypes (Tier 1, Tier 2, quantized).
-- `hurray.from_hurray_buffer(obj, /) -> hurray.Tensor` — MUST accept any object
-  whose `__hurray_buffer__` returns a valid capsule and reconstruct a
+- `hurray.from_hurray(obj, /) -> hurray.Tensor` — MUST accept any object
+  whose `__hurray__` returns a valid capsule and reconstruct a
   `hurray.Tensor` that owns the transferred buffers.
 
 ### Multi-buffer tensors
@@ -286,12 +286,12 @@ buffer in a single capsule (ADR-030).
 
 The PyCapsule lifetime rules MUST match DLPack discipline:
 
-- **Capsule name on creation:** `"hurray_buffer"`.
-- **Capsule name after consumption:** `"used_hurray_buffer"`. The consumer MUST
+- **Capsule name on creation:** `"hurray_tensor"`.
+- **Capsule name after consumption:** `"used_hurray_tensor"`. The consumer MUST
   rename the capsule before taking ownership, exactly as DLPack consumers rename
   `"dltensor"` to `"used_dltensor"`.
 - **Capsule destructor:** if the capsule is destroyed while still named
-  `"hurray_buffer"`, the destructor MUST call `hurray_buffer_list_destroy` on the
+  `"hurray_tensor"`, the destructor MUST call `hurray_buffer_list_destroy` on the
   wrapped pointer, which destroys every handle the list owns. If the capsule has
   been consumed (renamed), the consumer MUST call `hurray_buffer_list_destroy`
   exactly once. Handles obtained from `hurray_buffer_list_get` are **borrowed**
@@ -302,19 +302,19 @@ The PyCapsule lifetime rules MUST match DLPack discipline:
 
 ### `stream` parameter
 
-`__hurray_buffer__(stream=None)` uses the same `stream` semantics as `__dlpack__`:
+`__hurray__(stream=None)` uses the same `stream` semantics as `__dlpack__`:
 see [Stream parameter semantics](#stream-parameter-semantics).
 
 ### ABI versioning
 
 The capsule context MUST include the `HURRAY_C_ABI_VERSION` constant from the
-producing `hurray-ffi` build. `hurray.from_hurray_buffer` MUST verify the version
+producing `hurray-ffi` build. `hurray.from_hurray` MUST verify the version
 before dereferencing the handle; a mismatch MUST raise `hurray.UnsupportedError`.
 
 ### Discovery
 
 Consumers MUST discover support by probing
-`hasattr(obj, '__hurray_buffer__')`. There is no separate capability flag on the
+`hasattr(obj, '__hurray__')`. There is no separate capability flag on the
 `hurray` namespace.
 
 ## Buffer Lifetime and Ownership
@@ -355,7 +355,7 @@ For CPU tensors with Tier 1 element types, `hurray-python` MUST support:
 For tensors with Tier 2 / quantized element types, `hurray.Tensor.__array__()` MUST
 raise `hurray.UnsupportedError`. NumPy has no dtype for `int4`, `float8` variants, or
 quantized/scaled types; returning an `ndarray` is structurally impossible. Callers that
-need the raw bytes SHOULD use the native buffer protocol or DLPack directly.
+need the raw bytes SHOULD use the native protocol or DLPack directly.
 
 ## PyTorch Interoperability
 
@@ -557,9 +557,9 @@ Panics from the Rust core MUST NOT propagate as Python crashes. The PyO3 binding
 layer MUST catch panics and convert them to `hurray.InternalError` (subclass of
 `RuntimeError`).
 
-`hurray.from_hurray_buffer` (Layer 8c) MUST raise:
+`hurray.from_hurray` (Layer 8c) MUST raise:
 - `hurray.BufferError` if the capsule is null, already consumed (named
-  `"used_hurray_buffer"`), or otherwise invalid.
+  `"used_hurray_tensor"`), or otherwise invalid.
 - `hurray.UnsupportedError` if the `HURRAY_C_ABI_VERSION` embedded in the capsule
   does not match the consumer's linked version.
 
@@ -578,7 +578,7 @@ plus the binding's own unit and integration tests.
   not implement (see ADR-029). Cross-checking against the golden corpus maps directly
   onto the parts of the Hurray specification the binding actually covers.
 - New behaviour MUST ship with tests that exercise the public interop surface (DLPack,
-  NumPy/PyTorch bridges, the native buffer protocol, `save`/`load`).
+  NumPy/PyTorch bridges, the native protocol, `save`/`load`).
 
 ## Benchmark Suite
 
@@ -596,7 +596,7 @@ The suite SHOULD cover the following categories:
 | **DLPack capsule** | `__dlpack__()` round-trip (create + consume); capsule destructor overhead; `from_dlpack()` from NumPy and PyTorch. |
 | **NumPy interop** | `from_numpy()` (zero-copy); `__array__()` (zero-copy); dtype coverage (all Tier 1 types). |
 | **PyTorch interop** | `from_torch()` and `to_torch()` round-trip on CPU and CUDA. |
-| **Native buffer** | `__hurray_buffer__()` / `from_hurray_buffer()` round-trip (full-fidelity, all dtypes). |
+| **Native protocol** | `__hurray__()` / `from_hurray()` round-trip (full-fidelity, all dtypes). |
 | **Construction** | `zeros`, `ones`, `full`, `arange`, `linspace` for representative shapes and dtypes. |
 | **Serialization** | `save`/`load` and streaming read/write throughput (GiB/s) for representative tensors. |
 | **Memory lifecycle** | `Tensor` allocation + deallocation throughput; large-tensor zero-copy overhead (GiB-scale). |

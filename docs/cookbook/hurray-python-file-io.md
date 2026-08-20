@@ -36,7 +36,7 @@ subset = hurray.load("model.hrry", names=["bias"])
 
 `hurray.load()` returns a `dict[str, hurray.Tensor]`. Tensors arrive with
 an owned buffer (a copy of the bytes from disk). For zero-copy access via
-memory-mapped files, use the native buffer protocol (Layer 8c).
+memory-mapped files, use the native protocol (Layer 8c).
 
 ## Round-trip example
 

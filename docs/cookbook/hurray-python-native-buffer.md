@@ -1,7 +1,7 @@
-# Native Buffer Interchange Protocol
+# Native Interchange Protocol
 
-`hurray.Tensor` exposes a `__hurray_buffer__()` method and a matching
-`hurray.from_hurray_buffer()` constructor for in-process zero-copy tensor exchange
+`hurray.Tensor` exposes a `__hurray__()` method and a matching
+`hurray.from_hurray()` constructor for in-process zero-copy tensor exchange
 between Hurray-aware Python extensions.
 
 Unlike DLPack, the native protocol preserves the full Hurray descriptor — device tag,
@@ -19,7 +19,7 @@ raw = struct.pack("6f", 1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
 source = hurray.Tensor(raw, hurray.float32, [2, 3])
 
 # Zero-copy transfer via the native protocol.
-target = hurray.from_hurray_buffer(source)
+target = hurray.from_hurray(source)
 
 assert target.shape == source.shape   # (2, 3)
 assert target.dtype == source.dtype   # hurray.float32
@@ -33,8 +33,8 @@ as long as `target` exists.
 Probe support with `hasattr` before calling:
 
 ```python
-if hasattr(obj, "__hurray_buffer__"):
-    tensor = hurray.from_hurray_buffer(obj)
+if hasattr(obj, "__hurray__"):
+    tensor = hurray.from_hurray(obj)
 else:
     # Fall back to DLPack or another protocol.
     tensor = hurray.from_dlpack(obj)
@@ -55,34 +55,34 @@ three gaps that DLPack v1.0 cannot express:
 
 ## Tier 2 and quantized tensors
 
-`__hurray_buffer__` is available unconditionally — it is not gated on strict or relaxed
+`__hurray__` is available unconditionally — it is not gated on strict or relaxed
 mode and does not require the dtype to be an Array API Tier 1 type:
 
 ```python
 import hurray
 
 q_tensor = hurray.Tensor(bytes(64), hurray.int4, [128])
-q_copy = hurray.from_hurray_buffer(q_tensor)
+q_copy = hurray.from_hurray(q_tensor)
 
 assert q_copy.dtype == hurray.int4   # works in strict mode
 ```
 
 ## Capsule lifecycle
 
-`__hurray_buffer__()` returns a `PyCapsule` named `"hurray_buffer"`. The capsule
+`__hurray__()` returns a `PyCapsule` named `"hurray_tensor"`. The capsule
 holds a `HurrayBuffer` pointer (from `hurray-ffi`) and a strong Python reference to
 the source `Tensor`.
 
-`hurray.from_hurray_buffer()` renames the capsule to `"used_hurray_buffer"` before
+`hurray.from_hurray()` renames the capsule to `"used_hurray_tensor"` before
 taking ownership — preventing double-free if the capsule is later GC'd. Attempting to
 consume the same capsule twice raises `hurray.BufferError`.
 
 ```python
 t = hurray.Tensor(bytes(8), hurray.float32, [2])
-cap = t.__hurray_buffer__()          # fresh capsule
+cap = t.__hurray__()          # fresh capsule
 
-t2 = hurray.from_hurray_buffer(t)    # OK: calls __hurray_buffer__() internally
-cap2 = t.__hurray_buffer__()         # OK: each call produces a new capsule
+t2 = hurray.from_hurray(t)    # OK: calls __hurray__() internally
+cap2 = t.__hurray__()         # OK: each call produces a new capsule
 ```
 
 ## Error handling
@@ -91,13 +91,13 @@ cap2 = t.__hurray_buffer__()         # OK: each call produces a new capsule
 import hurray
 
 try:
-    hurray.from_hurray_buffer(42)
+    hurray.from_hurray(42)
 except TypeError:
-    pass  # object does not expose __hurray_buffer__
+    pass  # object does not expose __hurray__
 
 try:
     # ABI version mismatch (cross-build scenario)
-    hurray.from_hurray_buffer(some_other_build_tensor)
+    hurray.from_hurray(some_other_build_tensor)
 except hurray.UnsupportedError:
     pass  # producer and consumer ABI versions differ
 ```

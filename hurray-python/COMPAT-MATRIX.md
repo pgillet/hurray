@@ -8,7 +8,7 @@ Update this file whenever a release adds or drops support for any of these.
 
 ## Release matrix
 
-| hurray-python | DLPack (producer) | DLPack (consumer) | Native buffer protocol | Min `HURRAY_C_ABI_VERSION` | CPython |
+| hurray-python | DLPack (producer) | DLPack (consumer) | Native protocol | Min `HURRAY_C_ABI_VERSION` | CPython |
 |---|---|---|---|---|---|
 | 0.1.x | v1.0 (`dltensor_versioned`) | v0.8 + v1.0 | yes, multi-buffer | 3 | ≥ 3.10 |
 
@@ -25,9 +25,9 @@ Update this file whenever a release adds or drops support for any of these.
 the legacy `"dltensor"` (DLPack v0.8) and the versioned `"dltensor_versioned"`
 (DLPack v1.0) capsule names, for compatibility with NumPy < 2.1 and PyTorch < 2.5.
 
-### Native buffer protocol
+### Native protocol
 
-The `__hurray_buffer__` / `hurray.from_hurray_buffer` protocol is shipped in 0.1.x.
+The `__hurray__` / `hurray.from_hurray` protocol is shipped in 0.1.x.
 The `HURRAY_C_ABI_VERSION` required by the capsule payload format is **3**: ADR-030
 changed the capsule pointer from a single `HurrayBuffer` to a `HurrayBufferList`
 carrying every buffer of the tensor, and raised the ABI version so a version-2

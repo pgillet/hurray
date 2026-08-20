@@ -91,7 +91,7 @@ def test_quantization_survives_a_file_round_trip(tmp_path):
 
 
 def test_quantization_survives_the_native_protocol():
-    received = hurray.from_hurray_buffer(_per_channel_tensor())
+    received = hurray.from_hurray(_per_channel_tensor())
     assert received.buffer_count == 2
     assert received.quantization.scale_buffer_index == 1
 

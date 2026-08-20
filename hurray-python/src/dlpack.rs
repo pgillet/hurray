@@ -210,7 +210,7 @@ pub fn build_capsule(
     let dl_dtype = element_type_to_dlpack(element_type).ok_or_else(|| {
         pyo3::exceptions::PyBufferError::new_err(format!(
             "element type '{}' cannot be represented in DLPack v1.0; \
-             bool is 1-bit packed in Hurray but 1-byte in DLPack — use __hurray_buffer__ instead",
+             bool is 1-bit packed in Hurray but 1-byte in DLPack — use __hurray__ instead",
             crate::dtype::element_type_name(element_type),
         ))
     })?;
@@ -236,7 +236,7 @@ pub fn build_capsule(
     if is_unsupported_layout {
         return Err(UnsupportedError::new_err(
             "tensor layout cannot be expressed as DLPack strides (e.g. tiled, Morton); \
-             use __hurray_buffer__ instead",
+             use __hurray__ instead",
         ));
     }
     let dl_strides: Option<Box<[i64]>> = strides_opt.map(|v| v.into_boxed_slice());
@@ -355,7 +355,7 @@ pub fn device_to_dlpack(tag: DeviceTag, memory_class: MemoryClass) -> PyResult<c
         (DeviceTag::Cuda, MemoryClass::Unified) => DLDeviceType::CudaManaged as c_int,
         (DeviceTag::Cuda, MemoryClass::Peer | MemoryClass::Private(_)) => {
             return Err(UnsupportedError::new_err(
-                "CUDA PEER/Private memory has no DLPack equivalent; use __hurray_buffer__ instead",
+                "CUDA PEER/Private memory has no DLPack equivalent; use __hurray__ instead",
             ))
         }
         (DeviceTag::Rocm, MemoryClass::Standard) => DLDeviceType::Rocm as c_int,
@@ -363,13 +363,13 @@ pub fn device_to_dlpack(tag: DeviceTag, memory_class: MemoryClass) -> PyResult<c
         (DeviceTag::Rocm, MemoryClass::Unified | MemoryClass::Peer | MemoryClass::Private(_)) => {
             // ROCm UNIFIED has no DLPack equivalent (kDLROCMManaged does not exist in v1.0).
             return Err(UnsupportedError::new_err(
-                    "ROCm UNIFIED/PEER/Private memory has no DLPack equivalent; use __hurray_buffer__ instead",
-                ));
+                "ROCm UNIFIED/PEER/Private memory has no DLPack equivalent; use __hurray__ instead",
+            ));
         }
         (DeviceTag::Metal, _) => DLDeviceType::Metal as c_int,
         (DeviceTag::Vulkan, MemoryClass::Peer) => {
             return Err(UnsupportedError::new_err(
-                "Vulkan PEER memory has no DLPack equivalent; use __hurray_buffer__ instead",
+                "Vulkan PEER memory has no DLPack equivalent; use __hurray__ instead",
             ))
         }
         (DeviceTag::Vulkan, _) => DLDeviceType::Vulkan as c_int,
@@ -377,7 +377,7 @@ pub fn device_to_dlpack(tag: DeviceTag, memory_class: MemoryClass) -> PyResult<c
         (DeviceTag::Hexagon, _) => DLDeviceType::Hexagon as c_int,
         (DeviceTag::LevelZero, MemoryClass::Peer) => {
             return Err(UnsupportedError::new_err(
-                "Level Zero PEER memory has no DLPack equivalent; use __hurray_buffer__ instead",
+                "Level Zero PEER memory has no DLPack equivalent; use __hurray__ instead",
             ))
         }
         (DeviceTag::LevelZero, _) => DLDeviceType::OneApi as c_int,
@@ -385,7 +385,7 @@ pub fn device_to_dlpack(tag: DeviceTag, memory_class: MemoryClass) -> PyResult<c
         // Private device tags have no DLPack mapping; the binding must not fabricate one.
         (DeviceTag::Private(_), _) => {
             return Err(UnsupportedError::new_err(
-                "private device tags have no DLPack mapping; use __hurray_buffer__ instead",
+                "private device tags have no DLPack mapping; use __hurray__ instead",
             ))
         }
     };

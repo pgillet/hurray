@@ -1,6 +1,6 @@
 """An unconsumed native-buffer capsule must not take the process down with it.
 
-A ``__hurray_buffer__`` capsule that is never consumed is finalized by CPython — and
+A ``__hurray__`` capsule that is never consumed is finalized by CPython — and
 that can happen *during interpreter shutdown*, after the interpreter is no longer
 initialized. The destructor must release its reference to the source tensor without
 asking PyO3 for a ``Python`` token there: a panic inside an ``extern "C"`` finalizer
@@ -30,7 +30,7 @@ def test_an_unconsumed_capsule_exits_cleanly():
         import hurray
 
         t = hurray.Tensor(bytes(16), hurray.float32, [4])
-        capsule = t.__hurray_buffer__()   # never consumed, still alive at exit
+        capsule = t.__hurray__()   # never consumed, still alive at exit
         print("built")
         """
     )
@@ -49,7 +49,7 @@ def test_an_unconsumed_multi_buffer_capsule_exits_cleanly():
         values = np.array([5.0, 7.0], dtype=np.float32)
         indices = np.array([[0, 0], [1, 1]], dtype=np.uint64)
         t = hurray.sparse_coo(values, indices, [2, 2])
-        capsule = t.__hurray_buffer__()   # two buffers, never consumed
+        capsule = t.__hurray__()   # two buffers, never consumed
         print("built")
         """
     )
@@ -64,7 +64,7 @@ def test_a_consumed_capsule_exits_cleanly():
         import hurray
 
         t = hurray.Tensor(bytes(16), hurray.float32, [4])
-        received = hurray.from_hurray_buffer(t)
+        received = hurray.from_hurray(t)
         assert received.shape == (4,)
         print("consumed")
         """
@@ -81,7 +81,7 @@ def test_dropping_a_capsule_before_exit_still_works():
         import hurray
 
         t = hurray.Tensor(bytes(16), hurray.float32, [4])
-        capsule = t.__hurray_buffer__()
+        capsule = t.__hurray__()
         del capsule
         gc.collect()
         print("collected")

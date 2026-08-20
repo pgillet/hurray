@@ -22,7 +22,7 @@ delivered.
 
 ## Carrying every buffer in process
 
-`__hurray_buffer__` puts all of a tensor's buffers in **one** capsule wrapping a
+`__hurray__` puts all of a tensor's buffers in **one** capsule wrapping a
 `HurrayBufferList` (ADR-030). One capsule, one lifetime, one destroy.
 
 Sparse is not a special case here — it is simply the multi-buffer case, which is why
@@ -105,14 +105,14 @@ indices = np.array([[0, 0], [1, 1]], dtype=np.uint64)  # [nnz, rank]
 sparse = hurray.sparse_coo(values, indices, [2, 2])
 
 # One protocol for every tensor kind — probe exactly as for a dense tensor.
-assert hasattr(sparse, "__hurray_buffer__")
+assert hasattr(sparse, "__hurray__")
 assert not hasattr(sparse, "__hurray_sparse_buffer__")
 
-capsule = sparse.__hurray_buffer__()
+capsule = sparse.__hurray__()
 
 # The consumer receives the full descriptor with every buffer attached, in
 # descriptor order: values first, then the index array.
-back = hurray.from_hurray_buffer(sparse)
+back = hurray.from_hurray(sparse)
 assert back.shape == (2, 2)
 assert back.dtype == hurray.float32
 ```
@@ -172,7 +172,7 @@ import hurray
 # Producer and consumer must agree on the ABI version; the check happens before
 # the capsule pointer is ever dereferenced.
 tensor = hurray.Tensor(bytes(16), hurray.float32, [4])
-received = hurray.from_hurray_buffer(tensor)  # UnsupportedError on mismatch
+received = hurray.from_hurray(tensor)  # UnsupportedError on mismatch
 ```
 
 ## What this does not yet do
@@ -184,7 +184,7 @@ next step.
 
 ## See also
 
-- [Native Buffer Interchange Protocol](hurray-python-native-buffer.md) — the
+- [Native Interchange Protocol](hurray-python-native-buffer.md) — the
   single-buffer basics and how the protocol compares to DLPack
 - [Quantized Inference](quantized-inference.md) — which schemes need a scale buffer
 - [Sparse Tensors with SciPy](hurray-python-sparse-scipy.md) — building COO/CSR/CSC
