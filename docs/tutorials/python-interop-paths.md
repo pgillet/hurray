@@ -30,7 +30,7 @@ Which gives:
 |---|---|---|---|---|
 | 1 | Import `hurray` | Python | `hurray` | on the buffers, yes |
 | 2 | Speak DLPack | nothing Hurray-specific | nothing | yes |
-| 3 | Implement `__hurray_buffer__` | C/C++/Rust extension | `hurray-ffi` | yes, full fidelity |
+| 3 | Implement `__hurray__` | C/C++/Rust extension | `hurray-ffi` | yes, full fidelity |
 | 4 | Parse the bytes | a reader/writer | nothing | your choice |
 
 > **Note (non-normative):** Most integrations should start at path 2, discover it
@@ -121,9 +121,9 @@ none of that matters and you are done.
 
 ---
 
-## Path 3 — Implement `__hurray_buffer__`
+## Path 3 — Implement `__hurray__`
 
-When DLPack is too narrow, implement Hurray's native buffer protocol on your own
+When DLPack is too narrow, implement Hurray's native protocol on your own
 type. This is for libraries with a compiled extension: you link `hurray-ffi` and hand
 back a `PyCapsule`.
 
@@ -133,21 +133,21 @@ back a `PyCapsule`.
 
 The contract, in full:
 
-1. Expose `__hurray_buffer__(stream=None)` returning a `PyCapsule` named
-   `"hurray_buffer"`.
+1. Expose `__hurray__(stream=None)` returning a `PyCapsule` named
+   `"hurray_tensor"`.
 2. The capsule pointer is a `HurrayBufferList` — build it with
    `hurray_buffer_list_new` and one `hurray_buffer_list_push` per buffer, in
    descriptor buffer-table order.
 3. The capsule context carries your encoded `TensorDescriptor` and
    `HURRAY_C_ABI_VERSION`.
-4. Consumers rename the capsule to `"used_hurray_buffer"` on consumption; your
+4. Consumers rename the capsule to `"used_hurray_tensor"` on consumption; your
    destructor calls `hurray_buffer_list_destroy` if it was never consumed.
 
 Discovery is duck-typed. Nothing registers anything:
 
 ```python
-if hasattr(obj, "__hurray_buffer__"):
-    tensor = hurray.from_hurray_buffer(obj)
+if hasattr(obj, "__hurray__"):
+    tensor = hurray.from_hurray(obj)
 elif hasattr(obj, "__dlpack__"):
     tensor = hurray.from_dlpack(obj)        # narrower, but widely available
 else:

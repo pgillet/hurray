@@ -9,7 +9,7 @@ via the decode and interop paths.
 
 `hurray.Tensor` is an interchange object, not an Array API array: it exposes an
 inspection and interop surface (`shape`, `dtype`, `device`, `__dlpack__`,
-`__hurray_buffer__`, …), not array computation. See ADR-029.
+`__hurray__`, …), not array computation. See ADR-029.
 
 ## Creation functions
 

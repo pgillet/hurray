@@ -55,6 +55,10 @@ is not an Array API construct and falls outside the modes' jurisdiction.
 
 ### 1. Protocol name: `__hurray_buffer__` / `from_hurray_buffer`
 
+> **Amended by [ADR-033](ADR-033-native-protocol-rename-hurray.md):** the protocol is
+> named `__hurray__` / `from_hurray`, and the capsule is named `"hurray_tensor"` /
+> `"used_hurray_tensor"`. The original text follows unchanged.
+
 `hurray.Tensor` MUST expose a dunder method
 `__hurray_buffer__(stream=None) -> PyCapsule`. The `hurray` module MUST expose
 `hurray.from_hurray_buffer(obj, /) -> hurray.Tensor` that accepts any object whose
@@ -156,6 +160,10 @@ same semantics as `__dlpack__(stream=None)` in § Stream parameter semantics:
 
 ### 7. Discovery: `hasattr(tensor, '__hurray_buffer__')`
 
+> **Amended by [ADR-033](ADR-033-native-protocol-rename-hurray.md):** the protocol is
+> named `__hurray__` / `from_hurray`, and the capsule is named `"hurray_tensor"` /
+> `"used_hurray_tensor"`. The original text follows unchanged.
+
 Consumers MUST discover support by probing `hasattr(obj, '__hurray_buffer__')`. There
 MUST NOT be a capability flag on the `hurray` namespace. This matches the discovery
 convention of `__dlpack__`, `__array__`, and `__cuda_array_interface__`. A consumer
@@ -163,6 +171,10 @@ that detects `__hurray_buffer__` MAY still fall back to `__dlpack__` if it does 
 link `hurray-ffi`. The two probes are independent.
 
 ### 8. Error semantics
+
+> **Amended by [ADR-033](ADR-033-native-protocol-rename-hurray.md):** the protocol is
+> named `__hurray__` / `from_hurray`, and the capsule is named `"hurray_tensor"` /
+> `"used_hurray_tensor"`. The original text follows unchanged.
 
 - A consumer receiving an object lacking `__hurray_buffer__` MUST raise `TypeError`.
 - If the wrapped `HurrayBuffer` pointer is null or the capsule name is not

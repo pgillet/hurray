@@ -6,7 +6,7 @@ per-channel / NF4 / MXFP quantization scales, sparse index arrays, block-paged
 page tables — has more, and every buffer must reach the consumer or the
 descriptor's buffer indices point at nothing.
 
-``__hurray_buffer__`` carries them all in a single capsule, in descriptor
+``__hurray__`` carries them all in a single capsule, in descriptor
 buffer-table order. Sparse is not a special case: it is simply the multi-buffer
 case, which is why there is no separate ``__hurray_sparse_buffer__``.
 
@@ -25,7 +25,7 @@ dense = hurray.Tensor(bytes(16), hurray.float32, [4])
 print("=== Single-buffer tensor ===")
 print(f"  shape={dense.shape} dtype={dense.dtype}")
 
-received = hurray.from_hurray_buffer(dense)
+received = hurray.from_hurray(dense)
 print(f"  round-tripped: shape={received.shape} dtype={received.dtype}")
 print("  (N=1 is not a special path — the same protocol, one element)")
 
@@ -42,10 +42,10 @@ print("\n=== Multi-buffer tensor (COO sparse) ===")
 print(f"  layout={sparse.layout} nnz={sparse.nnz} shape={sparse.shape}")
 
 # One protocol for every tensor kind — probe for it exactly as for a dense tensor.
-print(f"  has __hurray_buffer__:        {hasattr(sparse, '__hurray_buffer__')}")
+print(f"  has __hurray__:        {hasattr(sparse, '__hurray__')}")
 print(f"  has __hurray_sparse_buffer__: {hasattr(sparse, '__hurray_sparse_buffer__')}")
 
-capsule = sparse.__hurray_buffer__()
+capsule = sparse.__hurray__()
 print(f"  capsule: {capsule}")
 
 # ── Consuming a multi-buffer capsule ──────────────────────────────────────────
@@ -53,7 +53,7 @@ print(f"  capsule: {capsule}")
 # The consumer gets the full descriptor — layout, element type, shape — with every
 # buffer attached in descriptor order: values first, then the index array.
 
-back = hurray.from_hurray_buffer(sparse)
+back = hurray.from_hurray(sparse)
 print("\n=== After the hop ===")
 print(f"  shape={back.shape} dtype={back.dtype}")
 print("  values and index buffers both travelled; the COO descriptor is intact")

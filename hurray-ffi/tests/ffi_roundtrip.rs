@@ -113,7 +113,7 @@ fn encode_rank3_descriptor() -> Vec<u8> {
 
 #[test]
 fn abi_version_is_3() {
-    // Raised 2 -> 3 by ADR-030: the native buffer capsule now wraps a
+    // Raised 2 -> 3 by ADR-030: the native protocol capsule now wraps a
     // HurrayBufferList, so a v2 consumer must be told rather than dereference it.
     assert_eq!(hurray_c_abi_version(), 3);
 }

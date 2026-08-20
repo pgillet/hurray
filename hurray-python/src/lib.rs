@@ -20,7 +20,7 @@ mod file_io;
 mod interop;
 pub(crate) mod layout;
 mod metadata;
-mod native_buffer;
+mod native_protocol;
 mod print_options;
 pub(crate) mod quantization;
 mod scipy_interop;
@@ -47,8 +47,8 @@ mod tensor;
 /// | `hurray.Layout` and its per-layout subclasses (e.g. `hurray.CsrLayout`) | classes | ADR-032 |
 /// | `hurray.from_scipy` | function | 8a.4 |
 /// | `hurray.sparse_coo` | function | 8a.4 |
-/// | `hurray.from_hurray_buffer` | function | 8c |
-/// | `hurray.Tensor.__hurray_buffer__` | method | 8c |
+/// | `hurray.from_hurray` | function | 8c |
+/// | `hurray.Tensor.__hurray__` | method | 8c |
 /// | `hurray.zeros` / `hurray.ones` / `hurray.full` / `hurray.empty` | functions | 8a.5 |
 /// | `hurray.zeros_like` / `hurray.ones_like` / `hurray.full_like` / `hurray.empty_like` | functions | 8a.5 |
 /// | `hurray.arange` / `hurray.linspace` / `hurray.eye` | functions | 8a.5 |
@@ -69,7 +69,7 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     layout::register(m)?;
     sparse::register(m)?;
     scipy_interop::register(m)?;
-    native_buffer::register(m)?;
+    native_protocol::register(m)?;
     creation::register(m)?;
     file_io::register(m)?;
     print_options::register(m)?;

@@ -78,23 +78,23 @@ outside it:
 
 For those, use Hurray's own full-fidelity protocol.
 
-## The native buffer protocol
+## The native protocol
 
-`__hurray_buffer__` / `hurray.from_hurray_buffer` exchange the **entire** tensor
+`__hurray__` / `hurray.from_hurray` exchange the **entire** tensor
 descriptor — quantization, sparse and exotic layouts, sub-byte types, device and sync
 metadata — between Hurray-aware components, zero-copy:
 
 ```python
-capsule = t.__hurray_buffer__()      # full-fidelity, all dtypes
-u = hurray.from_hurray_buffer(t)     # reconstruct from any object exposing it
+capsule = t.__hurray__()      # full-fidelity, all dtypes
+u = hurray.from_hurray(t)     # reconstruct from any object exposing it
 ```
 
 > **What adoption would unlock (non-normative).** Today only `hurray-python` implements
-> `__hurray_buffer__`, so full-fidelity exchange is Hurray-to-Hurray. If a framework
+> `__hurray__`, so full-fidelity exchange is Hurray-to-Hurray. If a framework
 > adopted the protocol, the copies that live at the *edges* today would disappear. For
 > example, `hurray.from_scipy` / `hurray.sparse_coo` currently repack SciPy's separate
 > `row`/`col` arrays into Hurray's packed `[nnz, rank]` layout (one interleave copy); a
-> SciPy that spoke `__hurray_buffer__` could hand its sparse structure across without that
+> SciPy that spoke `__hurray__` could hand its sparse structure across without that
 > copy. The same applies to quantized and sub-byte tensors, which have no DLPack
 > representation at all — a consumer implementing the native protocol could receive them
 > directly instead of falling back to `save`/`load`.
@@ -104,7 +104,7 @@ u = hurray.from_hurray_buffer(t)     # reconstruct from any object exposing it
 - [Quickstart](quickstart.md) — the shortest path in and out of a tensor.
 - [Python: DLPack and NumPy Interop](hurray-python-dlpack-numpy.md) — more on the DLPack
   capsule and `__array__` details.
-- [Python: Native Buffer Protocol](hurray-python-native-buffer.md) — the capsule lifetime
-  and ABI-version rules behind `__hurray_buffer__`.
+- [Python: Native Interchange Protocol](hurray-python-native-buffer.md) — the capsule lifetime
+  and ABI-version rules behind `__hurray__`.
 - [Python: Sparse Tensors and SciPy](hurray-python-sparse-scipy.md) — CSR/CSC/COO
   construction, including where the edge copies occur.

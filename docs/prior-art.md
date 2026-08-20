@@ -640,8 +640,8 @@ across engines, versions, parallelism strategies, and storage tiers.
   without out-of-band agreement — turning TRT-LLM's bespoke "layout conversion during
   transmission" (§3.4) into a general, descriptor-driven transform.
 
-- **Native buffer protocol (ADR-023).** Hurray's `__hurray_buffer__` /
-  `from_hurray_buffer` zero-copy handoff lets these engines wrap their existing paged
+- **Native protocol (ADR-023).** Hurray's `__hurray__` /
+  `from_hurray` zero-copy handoff lets these engines wrap their existing paged
   GPU buffers as Hurray tensors without a copy — the producer exposes the page buffers
   plus a descriptor; the consumer imports them. This is the in-process counterpart to
   the wire-format descriptor and the natural API for a vLLM `KVConnector`-style
