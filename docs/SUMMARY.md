@@ -114,3 +114,4 @@
     - [ADR-030: Multi-Buffer Native Buffer Protocol](adr/ADR-030-multi-buffer-native-buffer-protocol.md)
     - [ADR-031: Unified Python Tensor Class](adr/ADR-031-unified-python-tensor-class.md)
     - [ADR-032: Python Layout Descriptor Hierarchy](adr/ADR-032-python-layout-descriptor-hierarchy.md)
+    - [ADR-033: Native Protocol Rename to `__hurray__`](adr/ADR-033-native-protocol-rename-hurray.md)
