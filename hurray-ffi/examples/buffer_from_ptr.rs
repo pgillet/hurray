@@ -15,7 +15,7 @@ use hurray_ffi::{
         hurray_buffer_destroy, hurray_buffer_device_tag, hurray_buffer_memory_class,
         hurray_buffer_sync_mode,
     },
-    hurray_buffer_from_ptr, hurray_c_abi_version, HurrayBuffer, HURRAY_OK,
+    hurray_buffer_from_ptr, hurray_c_abi_version, HurrayBuffer, HURRAY_C_ABI_VERSION, HURRAY_OK,
 };
 
 /// Release callback: prints a message and frees the heap allocation.
@@ -36,7 +36,12 @@ fn main() {
     // ── ABI version check ─────────────────────────────────────────────────────
     let abi_ver = hurray_c_abi_version();
     println!("Hurray C ABI version: {abi_ver}");
-    assert_eq!(abi_ver, 2, "unexpected ABI version");
+    // Against the constant, not a literal: a literal goes stale the next time the
+    // ABI is bumped, and says nothing useful when it does.
+    assert_eq!(
+        abi_ver, HURRAY_C_ABI_VERSION,
+        "hurray_c_abi_version() must report the compiled-in ABI version"
+    );
 
     // ── Create a 1 KB CPU buffer on the heap ──────────────────────────────────
     // Leak the Vec so the raw pointer remains valid until the release callback.

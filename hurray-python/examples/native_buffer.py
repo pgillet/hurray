@@ -37,7 +37,9 @@ print(f"Buffer matches: {src_arr.flatten().tolist()}")
 
 # ── Works for all dtypes, including Tier 2 ────────────────────────────────────
 
-int4_tensor = hurray.Tensor(bytes(8), hurray.int4, [16])
+# Tier 2 types live on the hurray.dtype submodule — only the Tier 1 names are
+# re-exported at the top level, since those are the ones NumPy also has.
+int4_tensor = hurray.Tensor(bytes(8), hurray.dtype.int4, [16])
 int4_copy = hurray.from_hurray_buffer(int4_tensor)
 assert int4_copy.shape == int4_tensor.shape
 assert int4_copy.dtype == int4_tensor.dtype

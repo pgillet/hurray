@@ -73,6 +73,20 @@ jobs:
       # Run hurray-python tests separately with default features (no extension-module).
       - run: cargo test --workspace --all-features --exclude hurray-python
       - run: cargo test -p hurray-python
+      # Examples are documentation people copy, and nothing else imports them, so
+      # they rot silently — `--all-targets` compiles them but never runs them.
+      # Enumerated from cargo metadata so a new example needs no edit here.
+      - name: Run Rust examples
+        run: |
+          cargo metadata --format-version 1 --no-deps \
+            | jq -r '.packages[] as $p | $p.targets[]
+                     | select(.kind[] == "example")
+                     | "\($p.name) \(.name)"' \
+            | while read -r pkg example; do
+                echo "::group::$pkg --example $example"
+                cargo run -q -p "$pkg" --example "$example" || exit 1
+                echo "::endgroup::"
+              done
 
   python-conformance:
     name: Python conformance
