@@ -2,6 +2,17 @@
 
 > For the human-readable project overview, format contract, and key properties, see **`README.md`** at the repo root.
 
+## What Hurray Is Not
+
+Hurray is a tensor **interchange format** and its reference implementation. Knowing what it is not is what keeps passes from drifting:
+
+- **Not a compute library.** No kernels, no arithmetic, no reductions, no indexing. Math belongs to whatever framework the buffer is handed to. `hurray-python` in particular is a codec and a zero-copy bridge, and MUST NOT claim Array API conformance (ADR-029).
+- **Not a general-purpose serialization format.** It carries tensors, not arbitrary objects, records, or tables. A feature that only makes sense for non-tensor data does not belong here.
+- **Not a model runtime.** It describes and moves tensors; it does not execute graphs, schedule kernels, or own a device context.
+- **Not a columnar/dataframe format.** Arrow occupies that ground and inspired this project; Hurray is the tensor analogue, not a competitor to it.
+
+When a request seems to call for one of these, say so before building it.
+
 ## Live Information Sources
 
 Agents MUST read from project files directly rather than relying on memory for project content:
@@ -77,6 +88,28 @@ hurray/
 └── hurray-inspect/             # CLI hex viewer for Hurray descriptor files
 ```
 
+This tree is a map, not an inventory, and it goes stale. Check the filesystem before concluding that something does not exist. `PROJECT_STRUCTURE.md` has the full annotated version.
+
+## Environment
+
+Verified 2026-08-20. Correct this section when it stops being true.
+
+- **The system Python has no pip**, and `python3 -m venv` fails its `ensurepip` step. To build and test `hurray-python` locally, bootstrap pip by hand — without this, Python behaviour is only verifiable in CI, which is a round trip per mistake:
+
+  ```bash
+  python3 -m venv "$VENV"                       # prints an ensurepip failure; ignore it
+  curl -sS -o get-pip.py https://bootstrap.pypa.io/get-pip.py
+  "$VENV/bin/python" get-pip.py
+  "$VENV/bin/python" -m pip install maturin numpy scipy pytest
+  VIRTUAL_ENV="$VENV" "$VENV/bin/maturin" develop -m hurray-python/Cargo.toml
+  "$VENV/bin/python" -m pytest hurray-python/tests/ -q
+  ```
+
+- `maturin develop` does **not** infer `VIRTUAL_ENV`; set it explicitly.
+- The install is editable, so re-run `maturin develop` after any Rust change before running pytest.
+- Build the venv outside the repository — a venv inside it pollutes `git status` and the doc-link checker.
+- `torch` is not installed and is not expected to be; examples and tests that need it must skip, not fail.
+
 ## Guiding Principles
 
 - **Spec is the source of truth.** The Rust implementation follows the spec. When they conflict, fix the implementation, not the spec.
@@ -84,6 +117,8 @@ hurray/
 - **Streamable.** Both readers and writers must be able to process tensor data incrementally. A reader must be able to start processing without buffering the entire input; a writer must be able to emit tensors one at a time without buffering the entire output. Tensor descriptors always precede their data buffers; the format is self-delimiting; back-references and end-of-file indexes are forbidden.
 - **Language-agnostic.** No Rust-isms leak into the format design or the C FFI boundary.
 - **Document design decisions in code.** When a non-obvious implementation choice was made over a considered alternative, add a brief inline comment explaining the WHY — not what the code does, but why this specific approach was chosen. Examples: `// PartialEq only: f32 NaN semantics make Eq unsound.` or `// Reject private tags: unconstrained wire format gives callers nothing useful.` Keep it to one line; no multi-line blocks.
+- **No slop.** Slop is code that patches the specific case instead of the general one, dead code, code kept "just in case", and code far more complicated than the problem requires. Do not settle for the first design that comes to mind — look for the smallest one that actually works, then write that. A pass that adds surface without adding capability is a pass to reconsider, not to finish.
+- **Never add a flag to avoid making a decision.** When torn between two designs, choose one and record why in an ADR or a WHY comment. A permanent option that exists because the choice was hard doubles the surface, doubles the tests, and leaves the decision to the caller, who knows less than you do. Diagnostic and debug switches are fine; permanent semantic variants are not.
 - **Correctness first, but performance is a first-class concern.** The implementation must be correct above all, but must also aim for performance from the start — choose efficient algorithms, avoid unnecessary allocations, and design for zero-copy and SIMD-friendly layouts. The `performance-optimizer` agent may be invoked proactively, not only on explicit request.
 - **Inference-optimized.** Layout diversity, quantization, and device memory are first-class concerns.
 
