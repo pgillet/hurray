@@ -28,11 +28,13 @@ print(f"DLPack capsule: {capsule}")
 device_type, device_id = t.__dlpack_device__()
 print(f"DLPack device: type={device_type} (kDLCPU=1), id={device_id}")
 
-# NumPy consumes the capsule — zero-copy, no data movement.
-arr_from_capsule = np.from_dlpack(capsule)
-print(f"NumPy from DLPack: shape={arr_from_capsule.shape}, dtype={arr_from_capsule.dtype}")
-assert arr_from_capsule.shape == (2, 3)
-assert arr_from_capsule.dtype == np.float32
+# Hand NumPy the *tensor*, not the capsule: a DLPack consumer takes an object
+# exposing __dlpack__ and calls it itself, negotiating device and stream with the
+# producer. (NumPy accepted a bare capsule until 2.1; it no longer does.)
+arr_from_dlpack = np.from_dlpack(t)
+print(f"NumPy from DLPack: shape={arr_from_dlpack.shape}, dtype={arr_from_dlpack.dtype}")
+assert arr_from_dlpack.shape == (2, 3)
+assert arr_from_dlpack.dtype == np.float32
 
 # ── __array__ protocol ───────────────────────────────────────────────────────
 

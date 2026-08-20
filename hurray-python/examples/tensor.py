@@ -20,11 +20,13 @@ assert t.device.kind == "cpu"
 t_gpu = hurray.Tensor(buf, hurray.float32, [2, 3], hurray.Device("cuda", 0))
 assert t_gpu.device.kind == "cuda"
 
-# No Array API namespace in strict mode
+# No Array API namespace: hurray-python is an interchange codec, not a compute
+# library, so it does not claim Array API conformance (ADR-029).
 assert not hasattr(t, "__array_namespace__")
 
-# No DLPack yet
-assert not hasattr(t, "__dlpack__")
+# DLPack, however, is a standalone protocol and every tensor speaks it.
+assert hasattr(t, "__dlpack__")
+assert hasattr(t, "__dlpack_device__")
 
 # T raises
 try:

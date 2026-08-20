@@ -9,6 +9,7 @@ Demonstrates:
 - switching sparse display to PyTorch-style content via print options
 """
 
+import numpy as np
 import scipy.sparse as sp
 
 import hurray
@@ -58,6 +59,9 @@ def demo_sparse_repr():
     m = sp.csr_matrix(
         ([1.0, 2.0, 3.0, 4.0], ([0, 0, 1, 2], [0, 2, 1, 0])), shape=(3, 3)
     )
+    # Hurray's wire format requires uint64 index arrays; SciPy defaults to int32.
+    m.indices = m.indices.astype(np.uint64)
+    m.indptr = m.indptr.astype(np.uint64)
     t = hurray.from_scipy(m)
     print("repr(csr tensor):")
     print(repr(t))
@@ -72,6 +76,9 @@ def demo_sparse_print_options():
     m = sp.csr_matrix(
         ([1.0, 2.0, 3.0, 4.0], ([0, 0, 1, 2], [0, 2, 1, 0])), shape=(3, 3)
     )
+    # Hurray's wire format requires uint64 index arrays; SciPy defaults to int32.
+    m.indices = m.indices.astype(np.uint64)
+    m.indptr = m.indptr.astype(np.uint64)
     t = hurray.from_scipy(m)
 
     # Default: metadata only (SciPy-style).
