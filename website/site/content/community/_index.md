@@ -19,6 +19,16 @@ recipes, and tutorials — are welcome.
   docs.
 - Every implementation change ships with tests, documentation, and a cookbook example.
 
+## AI full disclosure
+
+Hurray is developed with strong assistance from Claude (Anthropic), via Claude Code, with
+a human leading the direction, the design decisions, and the review. Every architectural
+choice is recorded as an **Architecture Decision Record**, so the reasoning behind the
+format is auditable regardless of who or what typed it.
+
+We say this openly because it shaped how the project was built. If you would rather not
+use AI-developed code, this is not the project for you.
+
 ## Code of conduct
 
 All participants are expected to uphold a respectful, harassment-free environment. Be kind,
