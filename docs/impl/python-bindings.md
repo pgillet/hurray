@@ -305,11 +305,24 @@ The PyCapsule lifetime rules MUST match DLPack discipline:
 `__hurray__(stream=None)` uses the same `stream` semantics as `__dlpack__`:
 see [Stream parameter semantics](#stream-parameter-semantics).
 
+### The capsule context
+
+The capsule context MUST be a `HurrayTensorContext` from `hurray-ffi` (ADR-034),
+carrying the encoded `TensorDescriptor` and the producing build's
+`HURRAY_C_ABI_VERSION`. It MUST NOT be a structure private to `hurray-python`: the
+protocol serves consumers in other languages, and a private structure leaves them the
+buffers without the descriptor that says what the buffers are.
+
+The strong reference that keeps the source tensor alive MUST travel as the context's
+opaque `owner`, released through its `owner_release` callback, so that no Python type
+reaches the C ABI.
+
 ### ABI versioning
 
-The capsule context MUST include the `HURRAY_C_ABI_VERSION` constant from the
-producing `hurray-ffi` build. `hurray.from_hurray` MUST verify the version
-before dereferencing the handle; a mismatch MUST raise `hurray.UnsupportedError`.
+`hurray.from_hurray` MUST read the version with
+`hurray_tensor_context_abi_version` **before** any other accessor and before
+dereferencing the buffer list; a mismatch MUST raise `hurray.UnsupportedError`. See
+[C FFI § Tensor Context](c-ffi.md#tensor-context) for why that ordering is normative.
 
 ### Discovery
 

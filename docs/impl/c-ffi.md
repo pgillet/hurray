@@ -19,13 +19,14 @@ foundation for all non-Python language bindings.
 
 The C ABI carries a single `uint32` version identifier exposed via a constant
 `HURRAY_C_ABI_VERSION` and a runtime accessor `hurray_c_abi_version()`. The
-current version is `3`:
+current version is `4`:
 
 | Version | Changes |
 |---------|---------|
 | `1` | Initial C ABI: opaque handles, buffer release callbacks, panic-safe error returns. |
 | `2` | Per-mode buffer handoff sync payloads (`SYNC_PRODUCER_SYNCED`, `SYNC_EVENT`, `SYNC_CONSUMER_STREAM`) and the event-release callback. See [Buffer Handoff Synchronisation](#buffer-handoff-synchronisation). |
 | `3` | `HurrayBufferList` for multi-buffer tensors, and the native protocol capsule now wraps a list rather than a single `HurrayBuffer` (ADR-030). See [Buffer Lists](#buffer-lists). |
+| `4` | `HurrayTensorContext`, so a consumer in any language can read a capsule's descriptor and ABI version (ADR-034). See [Tensor Context](#tensor-context). |
 
 A consumer of the C ABI MUST query `hurray_c_abi_version()` before invoking any
 function whose contract changed in a later version. A consumer compiled against
@@ -45,6 +46,7 @@ handles**. Callers MUST NOT dereference or inspect the pointed-to memory directl
 | `HurrayDescriptor*` | A parsed tensor descriptor |
 | `HurrayBuffer*` | A buffer handle (data + metadata) |
 | `HurrayBufferList*` | An ordered, owning collection of buffer handles |
+| `HurrayTensorContext*` | A capsule's descriptor bytes, ABI version, and owner reference |
 | `HurrayReader*` | A streaming tensor reader |
 | `HurrayWriter*` | A streaming tensor writer |
 
@@ -82,6 +84,50 @@ The following rules are normative.
 - Destroying a list MUST destroy every owned handle exactly once, and MUST null
   each owned slot as it goes, so that a release callback which panics or
   re-enters cannot cause a double free.
+
+## Tensor Context
+
+A native-protocol capsule carries two things: a `HurrayBufferList` as its pointer,
+and a `HurrayTensorContext` as its context (ADR-034). The list holds the bytes; the
+context holds the **encoded tensor descriptor** that says what those bytes are, plus
+the ABI version of the build that produced them.
+
+Before ADR-034 the context was a structure private to `hurray-python`, so the buffers
+crossed the language boundary and the descriptor did not. A consumer in any other
+language received element bytes with no element type, shape, layout, or quantization.
+
+```c
+HurrayStatus hurray_tensor_context_new(uint32_t abi_version,
+                                       const uint8_t *descriptor_bytes,
+                                       uint64_t descriptor_len,
+                                       void *owner,
+                                       HurrayOwnerReleaseFn owner_release,
+                                       struct HurrayTensorContext **out_ctx);
+
+HurrayStatus hurray_tensor_context_abi_version(const struct HurrayTensorContext *ctx,
+                                               uint32_t *out);
+HurrayStatus hurray_tensor_context_descriptor(const struct HurrayTensorContext *ctx,
+                                              const uint8_t **out_bytes,
+                                              uint64_t *out_len);
+HurrayStatus hurray_tensor_context_destroy(struct HurrayTensorContext **ctx);
+```
+
+- A consumer MUST call `hurray_tensor_context_abi_version` **first** and compare the
+  result against its own `HURRAY_C_ABI_VERSION` before calling any other accessor.
+  That ordering is what allows later ABI versions to add accessors without breaking
+  older consumers: a consumer that checked the version knows which ones exist.
+- `hurray_tensor_context_descriptor` returns a **borrow** owned by the context, valid
+  until the context is destroyed. A caller that needs it longer MUST copy it. An empty
+  descriptor reports a null pointer and a zero length.
+- The context owns a copy of the descriptor bytes; a borrow would tie its validity to
+  a buffer the producer may drop.
+- `owner` and `owner_release` are opaque and never interpreted. They exist so a
+  producer can keep whatever owns the tensor's memory alive for the capsule's
+  lifetime — `hurray-python` parks a Python object reference there, which is how a
+  Python type is kept out of the C ABI entirely. `owner_release` is invoked exactly
+  once, during `hurray_tensor_context_destroy`.
+- Destroying a null handle is a no-op returning `HURRAY_OK`, so cleanup paths may call
+  it unconditionally. Destroy nulls the caller's pointer.
 
 ## Panic Safety
 

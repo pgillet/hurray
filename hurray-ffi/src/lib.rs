@@ -25,6 +25,7 @@ pub mod descriptor;
 pub(crate) mod panic;
 pub mod status;
 pub mod sync;
+pub mod tensor_context;
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
 
@@ -38,6 +39,7 @@ pub use status::{
     HURRAY_ERR_SYNC_MODE_MISMATCH, HURRAY_ERR_VERSION_MISMATCH, HURRAY_OK,
 };
 pub use sync::{HurrayEventReleaseFn, HurraySyncConsumerStreamPayload, HurraySyncEventPayload};
+pub use tensor_context::{hurray_tensor_context_new, HurrayOwnerReleaseFn, HurrayTensorContext};
 
 // ── ABI version ───────────────────────────────────────────────────────────────
 
@@ -51,9 +53,9 @@ pub use sync::{HurrayEventReleaseFn, HurraySyncConsumerStreamPayload, HurraySync
 /// ```
 /// use hurray_ffi::HURRAY_C_ABI_VERSION;
 ///
-/// assert_eq!(HURRAY_C_ABI_VERSION, 3);
+/// assert_eq!(HURRAY_C_ABI_VERSION, 4);
 /// ```
-pub const HURRAY_C_ABI_VERSION: u32 = 3;
+pub const HURRAY_C_ABI_VERSION: u32 = 4;
 
 /// Returns the [`HURRAY_C_ABI_VERSION`] constant.
 ///
@@ -62,7 +64,7 @@ pub const HURRAY_C_ABI_VERSION: u32 = 3;
 /// # Examples
 ///
 /// ```
-/// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 3);
+/// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 4);
 /// ```
 #[no_mangle]
 pub extern "C" fn hurray_c_abi_version() -> u32 {

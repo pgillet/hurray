@@ -7,7 +7,7 @@ documentation_style = "c99"
 header = "/* Hurray C ABI — https://github.com/pgillet/hurray */"
 
 [export]
-include = ["HurrayStatus", "HurrayReleaseCallback", "HurrayEventReleaseFn", "HurraySyncEventPayload", "HurraySyncConsumerStreamPayload", "HurrayBuffer", "HurrayDescriptor", "HurrayReader", "HurrayWriter"]
+include = ["HurrayStatus", "HurrayReleaseCallback", "HurrayEventReleaseFn", "HurraySyncEventPayload", "HurraySyncConsumerStreamPayload", "HurrayBuffer", "HurrayDescriptor", "HurrayReader", "HurrayWriter", "HurrayTensorContext", "HurrayOwnerReleaseFn"]
 exclude = []
 
 [export.rename]

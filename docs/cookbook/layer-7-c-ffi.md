@@ -175,6 +175,78 @@ HurrayStatus s = hurray_buffer_handoff_consumer_stream(buffer, &sp);
 HurrayStatus s = hurray_buffer_handoff_producer_synced(buffer);
 ```
 
+## Reading a capsule from outside Python
+
+A native-protocol capsule carries a `HurrayBufferList` as its pointer and a
+`HurrayTensorContext` as its context. The list holds the bytes; the context holds the
+descriptor that says what those bytes *are* (ADR-034). Without it a consumer gets
+element data with no element type, shape, or layout — which is what every non-Python
+consumer got before ADR-034.
+
+**Check the version first.** It is the one accessor guaranteed to work across ABI
+versions, and every other accessor assumes a caller that has already checked:
+
+```c
+uint32_t abi_version = 0;
+if (hurray_tensor_context_abi_version(ctx, &abi_version) != HURRAY_OK) return -1;
+if (abi_version != HURRAY_C_ABI_VERSION) {
+    /* Producer and consumer disagree — refuse rather than dereference. */
+    return -1;
+}
+```
+
+Then borrow the descriptor and decode it:
+
+```c
+const uint8_t *bytes = NULL;
+uint64_t len = 0;
+if (hurray_tensor_context_descriptor(ctx, &bytes, &len) != HURRAY_OK) return -1;
+
+HurrayDescriptor *descriptor = NULL;
+if (hurray_descriptor_decode(bytes, (uintptr_t)len, &descriptor) != HURRAY_OK) return -1;
+
+uint8_t type_tag = 0;
+uint32_t rank = 0;
+hurray_descriptor_element_type_tag(descriptor, &type_tag);
+hurray_descriptor_rank(descriptor, &rank);
+```
+
+The pointer `bytes` is **borrowed** — owned by the context, valid until the context is
+destroyed. Copy it if you need it longer. An empty descriptor reports a null pointer
+and a zero length.
+
+Now the buffers mean something, because the descriptor said what they hold:
+
+```c
+uint64_t count = 0;
+hurray_buffer_list_len(list, &count);
+for (uint64_t i = 0; i < count; i++) {
+    HurrayBuffer *borrowed = NULL;          /* owned by the list — do not destroy */
+    hurray_buffer_list_get(list, i, &borrowed);
+
+    void *ptr = NULL;
+    uint64_t size = 0;
+    hurray_buffer_data_ptr(borrowed, &ptr);
+    hurray_buffer_byte_size(borrowed, &size);
+}
+```
+
+Destroying the context runs its `owner_release` callback, which is how the producer
+learns it can let the tensor go:
+
+```c
+hurray_descriptor_destroy(descriptor);
+hurray_tensor_context_destroy(&ctx);       /* runs owner_release exactly once */
+hurray_buffer_list_destroy(&list);         /* destroys every handle it owns */
+```
+
+Runnable version, in Rust because that is what this repository builds — but the
+sequence is the one any language follows:
+
+```
+cargo run -p hurray-ffi --example tensor_context
+```
+
 ## Key takeaways
 
 - **No panics cross the boundary.** Every function returns `HURRAY_OK` or a
@@ -185,5 +257,8 @@ HurrayStatus s = hurray_buffer_handoff_producer_synced(buffer);
 - **`HURRAY_ERR_NULL_POINTER` for null required arguments.** Every function
   checks its required pointer arguments and returns this code immediately if
   any is null. Optional context pointers (e.g., `release_context`) MAY be null.
-- **Exactly one destroy per create.** Each handle created by a `*_from_ptr` or
-  `*_decode` function MUST be destroyed exactly once.
+- **Exactly one destroy per create.** Each handle created by a `*_from_ptr`,
+  `*_decode`, or `*_new` function MUST be destroyed exactly once.
+- **Read the ABI version before anything else.** For a `HurrayTensorContext` this is
+  normative, not advisory: it is what lets later versions add accessors without
+  breaking consumers compiled against an earlier header.
