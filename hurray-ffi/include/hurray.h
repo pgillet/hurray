@@ -20,9 +20,9 @@
 // ```
 // use hurray_ffi::HURRAY_C_ABI_VERSION;
 //
-// assert_eq!(HURRAY_C_ABI_VERSION, 3);
+// assert_eq!(HURRAY_C_ABI_VERSION, 4);
 // ```
-#define HURRAY_C_ABI_VERSION 3
+#define HURRAY_C_ABI_VERSION 4
 
 // Opaque handle to a buffer registered with the Hurray C ABI.
 //
@@ -55,6 +55,16 @@ typedef struct HurrayDescriptor HurrayDescriptor;
 // hand-off) is deferred; this stub allows cbindgen to emit the type
 // declaration in the generated header.
 typedef struct HurrayReader HurrayReader;
+
+// Opaque handle to a capsule's tensor context: descriptor bytes, ABI version,
+// and an owner reference.
+//
+// Like every other handle in this ABI, this struct is **not** `#[repr(C)]`; its
+// layout is an implementation detail and callers MUST treat it as a black-box
+// pointer. Publishing the layout would buy nothing — a caller holding a capsule
+// already links this library to read its buffer list — and would freeze the
+// layout for the life of the major version (ADR-034 § 2).
+typedef struct HurrayTensorContext HurrayTensorContext;
 
 // Opaque handle to an async streaming writer (full implementation deferred).
 //
@@ -121,6 +131,16 @@ typedef struct HurraySyncEventPayload {
     // Opaque context forwarded to `event_release_fn`; MAY be null.
     void *event_release_context;
 } HurraySyncEventPayload;
+
+// Callback invoked exactly once by [`hurray_tensor_context_destroy`] to release
+// whatever keeps the tensor's memory alive.
+//
+// The argument is the `owner` pointer passed to [`hurray_tensor_context_new`],
+// with the exact value provided at construction time.
+//
+// Implementations MUST NOT call back into the Hurray C ABI from within this
+// callback; doing so may cause deadlocks or use-after-free.
+typedef void (*HurrayOwnerReleaseFn)(void*);
 
 // Operation completed successfully.
 #define HURRAY_OK 0
@@ -504,7 +524,7 @@ HurrayStatus hurray_buffer_memory_class(const struct HurrayBuffer *buffer,
 // # Examples
 //
 // ```
-// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 3);
+// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 4);
 // ```
  uint32_t hurray_c_abi_version(void) ;
 
@@ -610,6 +630,190 @@ HurrayStatus hurray_descriptor_layout_tag(const struct HurrayDescriptor *handle,
 HurrayStatus hurray_descriptor_shape(const struct HurrayDescriptor *handle,
                                      uint64_t *out_dims,
                                      uintptr_t *out_rank)
+;
+
+// Reads the ABI version recorded by the producing build.
+//
+// **Call this first.** It is the one accessor guaranteed to work on a context
+// produced by any version of this ABI; every other accessor assumes a caller
+// that has already compared this value against its own
+// [`HURRAY_C_ABI_VERSION`](crate::HURRAY_C_ABI_VERSION) and found it
+// compatible (ADR-034 § 4). That ordering is what lets later versions add
+// accessors without breaking older consumers.
+//
+// # Safety
+//
+// `ctx` MUST be a live handle from [`hurray_tensor_context_new`], and `out`
+// MUST be a valid, writable pointer.
+//
+// # Examples
+//
+// ```
+// use hurray_ffi::tensor_context::{
+//     hurray_tensor_context_abi_version, hurray_tensor_context_destroy,
+//     hurray_tensor_context_new,
+// };
+// use hurray_ffi::{HurrayTensorContext, HURRAY_C_ABI_VERSION, HURRAY_OK};
+//
+// let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
+// unsafe {
+//     hurray_tensor_context_new(
+//         HURRAY_C_ABI_VERSION, std::ptr::null(), 0, std::ptr::null_mut(), None, &mut ctx,
+//     );
+// }
+//
+// let mut version: u32 = 0;
+// assert_eq!(
+//     unsafe { hurray_tensor_context_abi_version(ctx, &mut version) },
+//     HURRAY_OK,
+// );
+// assert_eq!(version, HURRAY_C_ABI_VERSION);
+//
+// unsafe { hurray_tensor_context_destroy(&mut ctx) };
+// ```
+
+HurrayStatus hurray_tensor_context_abi_version(const struct HurrayTensorContext *ctx,
+                                               uint32_t *out)
+;
+
+// Borrows the encoded tensor descriptor.
+//
+// The returned pointer is owned by `ctx` and is valid until the context is
+// destroyed; the caller MUST NOT free it. Decode it with
+// [`hurray_descriptor_decode`](crate::descriptor::hurray_descriptor_decode) to
+// read the element type, shape, layout, and optional sections.
+//
+// `out_len` is `0` — and `out_bytes` null — for a context created without a
+// descriptor.
+//
+// # Safety
+//
+// `ctx` MUST be a live handle from [`hurray_tensor_context_new`], and both out
+// pointers MUST be valid and writable.
+//
+// # Examples
+//
+// ```
+// use hurray_ffi::tensor_context::{
+//     hurray_tensor_context_descriptor, hurray_tensor_context_destroy,
+//     hurray_tensor_context_new,
+// };
+// use hurray_ffi::{HurrayTensorContext, HURRAY_C_ABI_VERSION, HURRAY_OK};
+//
+// let descriptor = [0x48u8, 0x52, 0x52, 0x59];
+// let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
+// unsafe {
+//     hurray_tensor_context_new(
+//         HURRAY_C_ABI_VERSION,
+//         descriptor.as_ptr(),
+//         descriptor.len() as u64,
+//         std::ptr::null_mut(),
+//         None,
+//         &mut ctx,
+//     );
+// }
+//
+// let mut bytes: *const u8 = std::ptr::null();
+// let mut len: u64 = 0;
+// assert_eq!(
+//     unsafe { hurray_tensor_context_descriptor(ctx, &mut bytes, &mut len) },
+//     HURRAY_OK,
+// );
+// assert_eq!(len, 4);
+// assert_eq!(unsafe { std::slice::from_raw_parts(bytes, len as usize) }, &descriptor);
+//
+// unsafe { hurray_tensor_context_destroy(&mut ctx) };
+// ```
+
+HurrayStatus hurray_tensor_context_descriptor(const struct HurrayTensorContext *ctx,
+                                              const uint8_t **out_bytes,
+                                              uint64_t *out_len)
+;
+
+// Destroys a [`HurrayTensorContext`], invoking its owner-release callback, and
+// nulls the caller's pointer.
+//
+// Destroying a null handle is a no-op that returns [`HURRAY_OK`], so the call
+// is safe to make unconditionally on a cleanup path.
+//
+// # Safety
+//
+// - `ctx` MUST be a valid, writable pointer to a handle slot.
+// - The handle it points to MUST come from [`hurray_tensor_context_new`] and
+//   MUST NOT have been destroyed already.
+//
+// # Examples
+//
+// ```
+// use hurray_ffi::tensor_context::{hurray_tensor_context_destroy, hurray_tensor_context_new};
+// use hurray_ffi::{HurrayTensorContext, HURRAY_C_ABI_VERSION, HURRAY_OK};
+//
+// let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
+// unsafe {
+//     hurray_tensor_context_new(
+//         HURRAY_C_ABI_VERSION, std::ptr::null(), 0, std::ptr::null_mut(), None, &mut ctx,
+//     );
+// }
+//
+// assert_eq!(unsafe { hurray_tensor_context_destroy(&mut ctx) }, HURRAY_OK);
+// assert!(ctx.is_null());
+// // Destroying again is a no-op, not a double free.
+// assert_eq!(unsafe { hurray_tensor_context_destroy(&mut ctx) }, HURRAY_OK);
+// ```
+ HurrayStatus hurray_tensor_context_destroy(struct HurrayTensorContext **ctx) ;
+
+// Creates a [`HurrayTensorContext`] owning a copy of `descriptor_bytes`.
+//
+// `abi_version` MUST be the producing build's `HURRAY_C_ABI_VERSION`; a consumer
+// compares it against its own before trusting anything else about the capsule.
+//
+// `owner` and `owner_release` are optional and opaque. When `owner_release` is
+// non-null it is invoked exactly once, with `owner`, during
+// [`hurray_tensor_context_destroy`].
+//
+// The caller owns the returned handle and MUST destroy it exactly once.
+//
+// # Safety
+//
+// - `out_ctx` MUST be a valid, non-null, writable pointer.
+// - `descriptor_bytes` MUST point to at least `descriptor_len` readable bytes,
+//   unless `descriptor_len` is `0`, in which case it MAY be null.
+// - `owner` MUST remain valid until `owner_release` is invoked.
+//
+// # Examples
+//
+// ```
+// use hurray_ffi::tensor_context::{
+//     hurray_tensor_context_destroy, hurray_tensor_context_new,
+// };
+// use hurray_ffi::{HurrayTensorContext, HURRAY_C_ABI_VERSION, HURRAY_OK};
+//
+// let descriptor = [0x48u8, 0x52, 0x52, 0x59]; // "HRRY"
+// let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
+// assert_eq!(
+//     unsafe {
+//         hurray_tensor_context_new(
+//             HURRAY_C_ABI_VERSION,
+//             descriptor.as_ptr(),
+//             descriptor.len() as u64,
+//             std::ptr::null_mut(),
+//             None,
+//             &mut ctx,
+//         )
+//     },
+//     HURRAY_OK,
+// );
+//
+// assert_eq!(unsafe { hurray_tensor_context_destroy(&mut ctx) }, HURRAY_OK);
+// assert!(ctx.is_null()); // destroy nulls the caller's pointer
+// ```
+
+HurrayStatus hurray_tensor_context_new(uint32_t abi_version,
+                                       const uint8_t *descriptor_bytes,
+                                       uint64_t descriptor_len,
+                                       void *owner,
+                                       HurrayOwnerReleaseFn owner_release,
+                                       struct HurrayTensorContext **out_ctx)
 ;
 
 #endif  /* HURRAY_H */

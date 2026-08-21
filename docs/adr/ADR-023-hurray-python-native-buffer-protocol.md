@@ -122,6 +122,10 @@ Justification:
 
 ### 5. Capsule lifetime: same discipline as DLPack, with Hurray-specific deleter
 
+> **Amended by [ADR-034](ADR-034-c-readable-capsule-context.md):** the capsule context is
+> a `HurrayTensorContext` from `hurray-ffi`, readable from any language, and the ABI
+> version is read through `hurray_tensor_context_abi_version`. C ABI version 4.
+
 The PyCapsule lifetime rules MUST match DLPack semantics:
 
 - **Capsule name on creation:** `"hurray_buffer"`.
@@ -171,6 +175,10 @@ that detects `__hurray_buffer__` MAY still fall back to `__dlpack__` if it does 
 link `hurray-ffi`. The two probes are independent.
 
 ### 8. Error semantics
+
+> **Amended by [ADR-034](ADR-034-c-readable-capsule-context.md):** the capsule context is
+> a `HurrayTensorContext` from `hurray-ffi`, readable from any language, and the ABI
+> version is read through `hurray_tensor_context_abi_version`. C ABI version 4.
 
 > **Amended by [ADR-033](ADR-033-native-protocol-rename-hurray.md):** the protocol is
 > named `__hurray__` / `from_hurray`, and the capsule is named `"hurray_tensor"` /

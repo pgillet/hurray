@@ -175,9 +175,10 @@ implementation-only (ADR-023 § 4), not part of the format specification.
 
 ## Open Questions Deferred
 
-- **Whether `hurray-ffi` should expose a matching C-level name.** The capsule is
-  produced and consumed through `hurray-ffi`'s buffer-list API, which is not named for
-  this protocol at all. Out of scope here.
+- ~~**Whether `hurray-ffi` should expose a matching C-level name.**~~ **Resolved by
+  [ADR-034](ADR-034-c-readable-capsule-context.md) § 5: no rename.** Every C name was
+  accurate for what it named — the C layer simply had no protocol type to misname.
+  ADR-034 gives it one, `HurrayTensorContext`, named for what it carries.
 - **Whether a future capsule carrying a composite group or a stream frame keeps the
   `"hurray_tensor"` capsule name** or introduces a sibling. § 1 makes the method name
   survive that change; the capsule name would not have to.

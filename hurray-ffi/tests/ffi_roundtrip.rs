@@ -24,10 +24,14 @@ use hurray_ffi::{
         hurray_buffer_handoff_producer_synced, HurraySyncConsumerStreamPayload,
         HurraySyncEventPayload,
     },
-    HurrayBuffer, HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_ERR_INTERNAL, HURRAY_ERR_INTERNAL_PANIC,
-    HURRAY_ERR_INVALID_LAYOUT, HURRAY_ERR_INVALID_MAGIC, HURRAY_ERR_INVALID_SYNC_MODE,
-    HURRAY_ERR_INVALID_TYPE, HURRAY_ERR_NULL_POINTER, HURRAY_ERR_SYNC_MODE_MISMATCH,
-    HURRAY_ERR_VERSION_MISMATCH, HURRAY_OK,
+    tensor_context::{
+        hurray_tensor_context_abi_version, hurray_tensor_context_descriptor,
+        hurray_tensor_context_destroy, hurray_tensor_context_new,
+    },
+    HurrayBuffer, HurrayTensorContext, HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_ERR_INTERNAL,
+    HURRAY_ERR_INTERNAL_PANIC, HURRAY_ERR_INVALID_LAYOUT, HURRAY_ERR_INVALID_MAGIC,
+    HURRAY_ERR_INVALID_SYNC_MODE, HURRAY_ERR_INVALID_TYPE, HURRAY_ERR_NULL_POINTER,
+    HURRAY_ERR_SYNC_MODE_MISMATCH, HURRAY_ERR_VERSION_MISMATCH, HURRAY_OK,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -112,10 +116,12 @@ fn encode_rank3_descriptor() -> Vec<u8> {
 // ── Phase 1 — ABI version and status codes ───────────────────────────────────
 
 #[test]
-fn abi_version_is_3() {
+fn abi_version_is_4() {
     // Raised 2 -> 3 by ADR-030: the native protocol capsule now wraps a
     // HurrayBufferList, so a v2 consumer must be told rather than dereference it.
-    assert_eq!(hurray_c_abi_version(), 3);
+    // Raised 3 -> 4 by ADR-034: the capsule context became HurrayTensorContext, so
+    // a v3 consumer must be told rather than assume there is nothing to read.
+    assert_eq!(hurray_c_abi_version(), 4);
 }
 
 #[test]
@@ -535,4 +541,144 @@ fn sync_handoff_consumer_stream_null_stream() {
     let status = unsafe { hurray_buffer_handoff_consumer_stream(buf, &payload) };
     assert_eq!(status, HURRAY_ERR_SYNC_MODE_MISMATCH);
     unsafe { hurray_buffer_destroy(buf) };
+}
+
+// ── Phase 8 — Tensor context (ADR-034) ───────────────────────────────────────
+
+/// The claim ADR-034 exists to make true: a consumer that is **not**
+/// `hurray-python` can read a capsule's descriptor.
+///
+/// Before ADR-034 the descriptor lived in a Rust struct private to the Python
+/// binding, so the buffers crossed the language boundary and the descriptor did
+/// not — which made the protocol's full-fidelity promise hold between two Python
+/// peers and nowhere else. Nothing in this test touches Python; it walks the same
+/// path a Go or Julia binding would.
+#[test]
+fn a_non_python_consumer_reads_the_descriptor_back() {
+    let encoded = encode_simple_descriptor();
+
+    // Producer side: stash the encoded descriptor in a context.
+    let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
+    let status = unsafe {
+        hurray_tensor_context_new(
+            hurray_c_abi_version(),
+            encoded.as_ptr(),
+            encoded.len() as u64,
+            std::ptr::null_mut(),
+            None,
+            &mut ctx,
+        )
+    };
+    assert_eq!(status, HURRAY_OK);
+
+    // Consumer side, step 1: check the version before trusting anything else.
+    let mut abi_version: u32 = 0;
+    assert_eq!(
+        unsafe { hurray_tensor_context_abi_version(ctx, &mut abi_version) },
+        HURRAY_OK
+    );
+    assert_eq!(abi_version, hurray_c_abi_version());
+
+    // Step 2: borrow the descriptor bytes.
+    let mut bytes: *const u8 = std::ptr::null();
+    let mut len: u64 = 0;
+    assert_eq!(
+        unsafe { hurray_tensor_context_descriptor(ctx, &mut bytes, &mut len) },
+        HURRAY_OK
+    );
+    assert!(!bytes.is_null());
+
+    // Step 3: decode them, and read what the tensor actually is.
+    let mut decoded: *mut hurray_ffi::HurrayDescriptor = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { hurray_descriptor_decode(bytes, len as usize, &mut decoded) },
+        HURRAY_OK
+    );
+
+    let mut type_tag: u8 = 0;
+    let mut rank: u32 = 0;
+    assert_eq!(
+        unsafe { hurray_descriptor_element_type_tag(decoded, &mut type_tag) },
+        HURRAY_OK
+    );
+    assert_eq!(
+        unsafe { hurray_descriptor_rank(decoded, &mut rank) },
+        HURRAY_OK
+    );
+    assert_eq!(type_tag, ElementType::Float32.tag());
+    assert_eq!(rank, 2);
+
+    let mut dims = [0u64; 2];
+    let mut capacity: usize = dims.len();
+    assert_eq!(
+        unsafe { hurray_descriptor_shape(decoded, dims.as_mut_ptr(), &mut capacity) },
+        HURRAY_OK
+    );
+    assert_eq!(dims, [2, 3], "shape survived the C boundary");
+
+    unsafe { hurray_descriptor_destroy(decoded) };
+    assert_eq!(
+        unsafe { hurray_tensor_context_destroy(&mut ctx) },
+        HURRAY_OK
+    );
+    assert!(ctx.is_null());
+}
+
+/// A consumer built against a different ABI must be able to find that out.
+#[test]
+fn a_version_mismatch_is_visible_before_anything_else_is_read() {
+    let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
+    unsafe {
+        hurray_tensor_context_new(
+            hurray_c_abi_version() - 1, // pretend an older producer
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            None,
+            &mut ctx,
+        );
+    }
+
+    let mut abi_version: u32 = 0;
+    assert_eq!(
+        unsafe { hurray_tensor_context_abi_version(ctx, &mut abi_version) },
+        HURRAY_OK
+    );
+    assert_ne!(
+        abi_version,
+        hurray_c_abi_version(),
+        "the mismatch is readable, which is the whole point of checking first"
+    );
+
+    unsafe { hurray_tensor_context_destroy(&mut ctx) };
+}
+
+/// The owner callback is what keeps a producer's memory alive; it must fire once.
+#[test]
+fn the_owner_release_runs_exactly_once() {
+    static RELEASED: AtomicU32 = AtomicU32::new(0);
+
+    unsafe extern "C" fn on_release(_owner: *mut c_void) {
+        RELEASED.fetch_add(1, Ordering::SeqCst);
+    }
+
+    let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
+    unsafe {
+        hurray_tensor_context_new(
+            hurray_c_abi_version(),
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            Some(on_release),
+            &mut ctx,
+        );
+    }
+    assert_eq!(RELEASED.load(Ordering::SeqCst), 0);
+
+    unsafe { hurray_tensor_context_destroy(&mut ctx) };
+    assert_eq!(RELEASED.load(Ordering::SeqCst), 1);
+
+    // Destroy nulled the handle, so a defensive second call must not release twice.
+    unsafe { hurray_tensor_context_destroy(&mut ctx) };
+    assert_eq!(RELEASED.load(Ordering::SeqCst), 1);
 }
