@@ -67,6 +67,7 @@
 - [Python: Native Interchange Protocol](cookbook/hurray-python-native-buffer.md)
 - [Python: Layout Descriptors](cookbook/hurray-python-layouts.md)
 - [Python: Sparse Tensors and SciPy](cookbook/hurray-python-sparse-scipy.md)
+- [Python: Streaming](cookbook/hurray-python-streaming.md)
 - [Python: File I/O](cookbook/hurray-python-file-io.md)
 - [Python: Tensor Display](cookbook/hurray-python-display.md)
 - [Python: Error Handling](cookbook/hurray-python-error-handling.md)

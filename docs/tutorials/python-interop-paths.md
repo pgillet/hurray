@@ -70,8 +70,8 @@ loaded = hurray.load("out.hrry")["a"]
 ```
 
 **What you get.** The full descriptor — quantization, statistics, shard — and the
-file format. (The streaming format has no Python API yet; it is `hurray-io`, Rust
-only, so a Python producer writes files rather than streams.)
+file format, or `hurray.StreamWriter` / `hurray.StreamReader` for the streaming one
+(see [Python: Streaming](../cookbook/hurray-python-streaming.md)).
 
 **What it costs.** A hard dependency on `hurray`, and your users install a compiled
 extension. For a library whose Hurray support is one feature among many, that is the

@@ -25,6 +25,7 @@ mod print_options;
 pub(crate) mod quantization;
 mod scipy_interop;
 mod sparse;
+mod stream;
 mod tensor;
 
 /// Python module entry point.
@@ -69,6 +70,7 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     layout::register(m)?;
     sparse::register(m)?;
     scipy_interop::register(m)?;
+    stream::register(m)?;
     native_protocol::register(m)?;
     creation::register(m)?;
     file_io::register(m)?;
