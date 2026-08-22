@@ -116,3 +116,4 @@
     - [ADR-032: Python Layout Descriptor Hierarchy](adr/ADR-032-python-layout-descriptor-hierarchy.md)
     - [ADR-033: Native Protocol Rename to `__hurray__`](adr/ADR-033-native-protocol-rename-hurray.md)
     - [ADR-034: C-Readable Capsule Context](adr/ADR-034-c-readable-capsule-context.md)
+    - [ADR-035: Python Streaming API](adr/ADR-035-python-streaming-api.md)
