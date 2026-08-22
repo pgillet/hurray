@@ -59,11 +59,24 @@ That maps exactly onto `next_tensor` returning `Ok(None)`, and it is the shape a
 caller expects from something that yields values incrementally. It also composes with
 everything that consumes an iterator, at no cost.
 
-The writer is a context manager because a stream that is never finished is not a valid
-stream — `finish` writes the terminator. Making the close automatic means the failure
-mode cannot happen silently on the happy path. `finish()` remains available explicitly
-for callers who cannot use `with`, and MUST be idempotent so both paths compose. A
-writer used after finishing MUST raise `hurray.StreamError`.
+The writer is a context manager because `finish` **flushes**, and a caller who forgets
+it loses however much of the stream was still buffered. Making the close automatic
+means that cannot happen silently on the happy path. `finish()` remains available
+explicitly for callers who cannot use `with`, and MUST be idempotent so both paths
+compose. A writer used after finishing MUST raise `hurray.StreamError`.
+
+> **Correction (2026-08-22):** this section first said `finish` writes a *terminator*.
+> It does not — `StreamWriter::finish` flushes and returns the sink. The Hurray stream
+> format is self-delimiting per frame and has no end marker; a stream ends at EOF,
+> which is the same property that forbids end-of-file indexes. The decision is
+> unchanged and the reason is if anything stronger: a forgotten `finish` truncates the
+> stream rather than merely leaving it unterminated.
+>
+> One consequence follows and is worth stating: a stream truncated **exactly** at a
+> frame boundary is indistinguishable from a complete one, because EOF is the only end
+> marker there is. Truncation mid-frame raises `hurray.StreamError`; truncation on a
+> boundary yields a short stream and no error. That is a property of the format, not of
+> this binding.
 
 The reader MUST also be usable as a context manager, so a caller can release the
 transport deterministically rather than waiting for garbage collection.

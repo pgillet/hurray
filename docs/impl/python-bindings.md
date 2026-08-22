@@ -541,6 +541,81 @@ For every constructible layout, rebuilding a tensor from another tensor's `layou
 the buffer-count and buffer-size tiers cannot run for them. Nothing in such a descriptor
 states how many buffers it needs or how large they should be.
 
+## Streaming
+
+`hurray-python` MUST expose the streaming interchange format through two classes
+(ADR-035). The format's defining property is that neither side buffers the whole
+sequence, and the Python surface MUST preserve it: a reader MUST yield a tensor as
+soon as its descriptor and buffers have arrived, and a writer MUST emit each tensor
+as it is given one.
+
+```python
+with hurray.StreamWriter(destination) as writer:
+    writer.write(tensor)
+
+for tensor in hurray.StreamReader(source):
+    ...
+```
+
+### Blocking
+
+Both classes are **blocking**. Each owns a `tokio` runtime for its lifetime and MUST
+release the GIL around every call into it, so other Python threads run while a stream
+waits on its transport. An `asyncio` surface is deliberately absent; see ADR-035 § 1.
+
+### `hurray.StreamReader`
+
+- MUST implement `__iter__` returning itself and `__next__` yielding a `hurray.Tensor`,
+  raising `StopIteration` at a clean end of stream.
+- MUST implement the context-manager protocol, and expose `close()`, so the transport
+  can be released without waiting for collection. A closed reader MUST behave as
+  exhausted rather than raise.
+- MUST read with `next_item` semantics, not `next_tensor`: a composite head owns no
+  buffers, so reading it as an ordinary tensor would yield an empty tensor and then
+  surface the head's members as top-level tensors — a stream that decoded
+  "successfully" having lost the composition.
+- MUST raise `hurray.UnsupportedError`, naming the composite, when the stream contains
+  one. It MUST NOT skip it.
+
+### `hurray.StreamWriter`
+
+- MUST accept a `hurray.Tensor` in `write`, transmitting every buffer its descriptor
+  references, in descriptor order.
+- MUST implement the context-manager protocol, finishing the stream on exit. `finish()`
+  MUST also be callable explicitly and MUST be idempotent, so the two paths compose.
+- MUST raise `hurray.StreamError` when written to after finishing.
+- With no destination, MUST build the stream in memory and return it from `getvalue()`.
+  `getvalue()` on a writer that has a destination MUST raise `hurray.StreamError`.
+
+### Transports
+
+| Argument | Meaning |
+|---|---|
+| `str` | a filesystem path |
+| an object with `fileno()` | a socket, a pipe, or an open file |
+| `bytes` (reader only) | an in-memory stream |
+| omitted (writer only) | build in memory; retrieve with `getvalue()` |
+
+A file descriptor MUST be duplicated, so that finishing or closing the stream does not
+close the caller's. An object with no descriptor — `io.BytesIO` — is not accepted
+directly; the `TypeError` raised MUST say so, since the fix (`getvalue()`) is not
+guessable from a bare type error.
+
+### Exceptions
+
+| Failure | Exception |
+|---|---|
+| framing — truncated, malformed, or oversized frame | `hurray.StreamError` |
+| the descriptor did not decode or validate | `hurray.InvalidDescriptorError` |
+| the transport failed | `hurray.FileError` |
+| the stream contains a composite | `hurray.UnsupportedError` |
+
+> **Note (non-normative):** a stream has no end marker — frames are self-delimiting and
+> the stream ends at EOF, which is the property that also forbids end-of-file indexes.
+> A stream truncated **mid-frame** therefore raises `hurray.StreamError`, while one
+> truncated exactly **on a frame boundary** is indistinguishable from a shorter stream
+> and yields no error. That is a property of the format, not of the binding.
+
 ## Error Handling
 
 All errors from the Rust core MUST be surfaced as Python exceptions:
