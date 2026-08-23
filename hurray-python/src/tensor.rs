@@ -2722,7 +2722,7 @@ pub(crate) mod tests {
                 None,
             )
             .unwrap();
-            assert!(matches!(tensor.buffer, BufferStore::Owned(_)));
+            assert!(matches!(tensor.buffer, BufferStore::Owned { .. }));
             assert_eq!(tensor.buffer.len(), 24); // 6 × f32 = 24 bytes
         });
     }
