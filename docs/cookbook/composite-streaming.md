@@ -108,10 +108,47 @@ composite-aware layer on top.
 - `Error::Core` — composite validation failed (member-count mismatch, partition does not
   cover the index space, overlay ordering).
 
+## From Python
+
+`hurray.StreamWriter` takes a composite exactly as it takes a tensor, and
+`hurray.StreamReader` yields one — a composite is **one** item, not a head plus loose
+members (ADR-036):
+
+```python
+import hurray
+
+def tile(offset):
+    return hurray.Tensor(
+        bytes(128), hurray.float32, [8, 4], shard=hurray.Shard([8, 8], [0, offset])
+    )
+
+weight = hurray.Composite(
+    "partition", shape=[8, 8], dtype=hurray.float32, members=[tile(0), tile(4)]
+)
+plain = hurray.Tensor(bytes(16), hurray.float32, [4])
+
+with hurray.StreamWriter(destination) as writer:
+    writer.write(plain)
+    writer.write(weight)
+
+for item in hurray.StreamReader(source):
+    if isinstance(item, hurray.Composite):
+        print(item.layout.composition_rule, item.member_count)
+    else:
+        print(item.shape)
+```
+
+A stream carrying one composite of two members yields **one** item, not three. The
+Python reader uses `next_item` for exactly the reason this page gives: `next_tensor`
+would hand back the head as an empty tensor and its members as top-level ones, losing
+the composition without raising.
+
 ## Runnable example
 
 ```text
 cargo run --example composite_stream --features tokio -p hurray-io
+python hurray-python/examples/composites.py
 ```
 
-See `hurray-io/examples/composite_stream.rs` for the full program.
+See `hurray-io/examples/composite_stream.rs` and
+`hurray-python/examples/composites.py` for the full programs.

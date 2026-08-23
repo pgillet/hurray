@@ -541,6 +541,73 @@ For every constructible layout, rebuilding a tensor from another tensor's `layou
 the buffer-count and buffer-size tiers cannot run for them. Nothing in such a descriptor
 states how many buffers it needs or how large they should be.
 
+## Composites
+
+`hurray-python` MUST expose composite tensors through a `hurray.Composite` class
+(ADR-036). A composite MUST NOT be a `hurray.Tensor`: a composite *contains* tensors
+where a tensor *has* data, its head owns zero buffers, and `len(members)` has no
+meaning on a tensor.
+
+```python
+composite = hurray.Composite(
+    "partition", shape=[8, 8], dtype=hurray.float32, members=[tile0, tile1]
+)
+```
+
+### Construction
+
+- `composition_rule` — `"partition"`, `"overlay"`, or `"group"`.
+- `shape` and `dtype` — the logical view the head presents. Both are **required** and
+  MUST NOT be derived from the members: a partition's shape could be computed from its
+  members' shards, and deriving it would silently reshape the head to match a caller's
+  miscomputed offset.
+- `members` — a sequence of `hurray.Tensor` **or** `hurray.Composite`, since the format
+  nests. Anything else MUST raise `TypeError` naming the offending index.
+- `combine_op` — required for `"overlay"`, and MUST be rejected for the other rules,
+  matching `hurray.CompositeLayout`, which is the same field.
+- `member_count` is taken from `members` rather than stated: it counts what was passed,
+  so it cannot disagree with it.
+
+Validation MUST delegate to `hurray-core`'s `CompositeValidator` — per-member boxes,
+partition coverage, overlay ordering, member count. The binding MUST NOT keep a second
+copy of those rules. Failures MUST surface as `hurray.InvalidDescriptorError`.
+
+### Surface
+
+| Member | Meaning |
+|---|---|
+| `members` | the members, in wire order, as a tuple |
+| `member_count` | how many the head declares |
+| `layout` | a `hurray.CompositeLayout` |
+| `shape`, `ndim`, `dtype` | the head's logical view |
+
+A `Composite` MUST compare by value — head and members alike — so that the round-trip
+obligation can be stated as equality. Its `repr` MUST be depth-aware, since composites
+nest.
+
+`Composite` MUST NOT expose `values`, `buffer`, `buffer_count`, `__array__`, or
+`__dlpack__`. There is no data to expose; the members hold it.
+
+### I/O
+
+- `StreamWriter.write` MUST accept a `Composite` and emit it as head-then-members.
+- `StreamReader` MUST yield a `Composite` as **one** item. It MUST NOT surface a head
+  and its members as separate items — that would lose the composition without raising.
+- `save` MUST accept a `Composite` as a named entry; `load` MUST return one.
+- Because the file container gives every tensor an index entry, a composite's members
+  MUST be named `"{head}.{index}"`, recursively. Those names are an artifact of the
+  container, not of the composite, so they are generated rather than requested.
+- `load` MUST return a composite under its head's name and MUST NOT also return its
+  members as top-level entries. A member requested explicitly by name MUST still be
+  returned.
+
+### Not on the native protocol
+
+`Composite` MUST NOT implement `__hurray__`. That capsule carries a buffer list and one
+descriptor; a composite is a tree, and flattening one would require wire structure the
+format does not define. `hasattr(obj, "__hurray__")` therefore keeps meaning what it
+means. Use the streaming or file path, which the format defines for exactly this.
+
 ## Streaming
 
 `hurray-python` MUST expose the streaming interchange format through two classes

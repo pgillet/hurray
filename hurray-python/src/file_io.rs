@@ -15,7 +15,7 @@ use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 #[cfg(test)]
 use pyo3::IntoPyObjectExt;
 
-use hurray_io::file::{FileReader, FileTensor, FileWriter, KvValue};
+use hurray_io::file::{FileItem, FileReader, FileTensor, FileWriter, KvValue};
 
 use crate::{
     buffer::BufferStore,
@@ -192,7 +192,7 @@ pub fn load(
 ) -> PyResult<Bound<'_, PyDict>> {
     // Release GIL while doing async file I/O.
     let file_tensors = py
-        .detach(|| -> hurray_io::Result<Vec<(String, FileTensor)>> {
+        .detach(|| -> hurray_io::Result<Vec<(String, FileItem)>> {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -206,10 +206,31 @@ pub fn load(
                         None => reader.tensor_names().map(|s| s.to_string()).collect(),
                     };
 
+                    // A composite's members have index entries of their own, so a name
+                    // already claimed by a composite must not also come back alone.
+                    // Membership is the reader's to decide, recovered from write order.
+                    let mut claimed: std::collections::HashSet<String> =
+                        std::collections::HashSet::new();
+
                     let mut out = Vec::with_capacity(names_to_load.len());
                     for name in names_to_load {
-                        let ft = reader.read_tensor(&name).await?;
-                        out.push((ft.name.clone(), ft));
+                        if claimed.contains(&name) {
+                            continue;
+                        }
+                        // Read the descriptor alone first: read_tensor rejects a
+                        // composite head, which owns no buffers, so the kind has to be
+                        // known before choosing how to read it.
+                        let descriptor = reader.read_descriptor(&name).await?;
+                        let item = if matches!(
+                            descriptor.layout,
+                            hurray_core::LayoutDescriptor::Composite(_)
+                        ) {
+                            FileItem::Composite(reader.read_composite(&name).await?)
+                        } else {
+                            FileItem::Tensor(reader.read_tensor(&name).await?)
+                        };
+                        consumed_names(&item, &mut claimed);
+                        out.push((name, item));
                     }
                     Ok(out)
                 })
@@ -218,11 +239,61 @@ pub fn load(
 
     // GIL re-acquired: build Python dict.
     let dict = PyDict::new(py);
-    for (name, ft) in file_tensors {
-        let tensor = file_tensor_to_tensor(py, ft)?;
-        dict.set_item(name, tensor)?;
+    for (name, item) in file_tensors {
+        dict.set_item(name, file_item_to_py(py, item)?)?;
     }
     Ok(dict)
+}
+
+/// Builds the Python object for one entry read from a file.
+///
+/// A composite becomes a `hurray.Composite`, recursively (ADR-036). The tree came
+/// through core's `CompositeValidator` on read, so this does not revalidate it.
+fn file_item_to_py(py: Python<'_>, item: FileItem) -> PyResult<Py<PyAny>> {
+    match item {
+        FileItem::Tensor(ft) => Ok(file_tensor_to_tensor(py, ft)?.into_any()),
+        FileItem::Composite(fc) => {
+            let members = fc
+                .members
+                .into_iter()
+                .map(|m| file_item_to_py(py, m))
+                .collect::<PyResult<Vec<_>>>()?;
+            crate::composite::composite_from_parts(py, fc.head, members)
+        }
+    }
+}
+
+/// Every name a composite tree occupies: its head and, recursively, its members.
+///
+/// A file gives every tensor an index entry, head and member alike, so without this
+/// the members would come back twice — once inside their composite and once as
+/// top-level entries of their own.
+fn consumed_names(item: &FileItem, into: &mut std::collections::HashSet<String>) {
+    match item {
+        FileItem::Tensor(t) => {
+            into.insert(t.name.clone());
+        }
+        FileItem::Composite(c) => {
+            into.insert(c.name.clone());
+            for member in &c.members {
+                consumed_names(member, into);
+            }
+        }
+    }
+}
+
+/// One entry queued for `save`: a tensor, or a composite tree with names attached.
+enum SaveEntry {
+    Tensor {
+        name: String,
+        descriptor: hurray_core::TensorDescriptor,
+        buffers: Vec<Vec<u8>>,
+    },
+    Composite {
+        name: String,
+        head: hurray_core::TensorDescriptor,
+        members: Vec<crate::composite::NamedNode>,
+    },
 }
 
 /// Save tensors to a Hurray file.
@@ -265,15 +336,25 @@ pub fn save(
     kv: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<()> {
     // Extract tensor data while holding GIL: descriptor + raw bytes per buffer.
-    let mut entries: Vec<(String, hurray_core::TensorDescriptor, Vec<Vec<u8>>)> =
-        Vec::with_capacity(tensors.len());
+    let mut entries: Vec<SaveEntry> = Vec::with_capacity(tensors.len());
     for (key, val) in tensors {
         let name: String = key.extract()?;
+        if let Ok(composite) = val.extract::<PyRef<crate::composite::Composite>>() {
+            let (head, members) = crate::composite::named_tree(py, &composite, &name);
+            entries.push(SaveEntry::Composite {
+                name,
+                head,
+                members,
+            });
+            continue;
+        }
         // Every layout goes down this path: since ADR-031 a sparse tensor is a
         // Tensor whose layout is COO/CSR/CSC, and its component buffers are just
         // its buffer table (#156).
         let tensor = val.extract::<PyRef<Tensor>>().map_err(|_| {
-            UnsupportedError::new_err("hurray.save() only accepts hurray.Tensor values")
+            UnsupportedError::new_err(
+                "hurray.save() only accepts hurray.Tensor and hurray.Composite values",
+            )
         })?;
         // Every buffer in descriptor order (ADR-030 § 3), so quantization scale
         // and sparse index buffers reach the file alongside the data.
@@ -282,7 +363,11 @@ pub fn save(
             .buffers()
             .map(|b| unsafe { b.as_slice() }.to_vec())
             .collect();
-        entries.push((name, tensor.descriptor.clone(), buffers));
+        entries.push(SaveEntry::Tensor {
+            name,
+            descriptor: tensor.descriptor.clone(),
+            buffers,
+        });
     }
     let kv_pairs = if let Some(d) = kv {
         py_dict_to_kv(d)?
@@ -292,20 +377,43 @@ pub fn save(
 
     // Release GIL while doing async file I/O.
     py.detach(|| -> hurray_io::Result<()> {
-        tokio::runtime::Builder::new_current_thread()
+        let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
-            .map_err(hurray_io::Error::Io)?
-            .block_on(async {
-                let file = tokio::fs::File::create(&path).await?;
-                let mut writer = FileWriter::new(file).await?;
-                for (name, desc, buffers) in &entries {
+            .map_err(hurray_io::Error::Io)?;
+
+        // One block_on per step rather than one around the whole loop: a composite's
+        // borrowed node tree is built by a *synchronous* continuation (see
+        // with_file_nodes), and block_on cannot be called from inside another.
+        let file = runtime.block_on(tokio::fs::File::create(&path))?;
+        let mut writer = runtime.block_on(FileWriter::new(file))?;
+
+        for entry in &entries {
+            match entry {
+                SaveEntry::Tensor {
+                    name,
+                    descriptor,
+                    buffers,
+                } => {
                     let slices: Vec<&[u8]> = buffers.iter().map(|b| b.as_slice()).collect();
-                    writer.write_tensor(name, desc, &slices).await?;
+                    runtime.block_on(writer.write_tensor(name, descriptor, &slices))?;
                 }
-                writer.finish(kv_pairs).await?;
-                Ok(())
-            })
+                SaveEntry::Composite {
+                    name,
+                    head,
+                    members,
+                } => {
+                    let mut result = Ok(());
+                    crate::composite::with_file_nodes(members, &[], &mut |nodes| {
+                        result = runtime.block_on(writer.write_composite(name, head, nodes));
+                    });
+                    result?;
+                }
+            }
+        }
+
+        runtime.block_on(writer.finish(kv_pairs))?;
+        Ok(())
     })
     .map_err(io_err_to_py)
 }

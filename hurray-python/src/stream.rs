@@ -21,8 +21,9 @@
 //! `next_tensor` would hand back a composite *head* as though it were an ordinary
 //! tensor — it owns no buffers — and then read the head's members as separate
 //! top-level tensors. The caller would get a stream that decoded "successfully" while
-//! silently losing the composition. `next_item` recognises the head, and this module
-//! refuses it by name (ADR-035 § 4).
+//! silently losing the composition. `next_item` recognises the head and yields a
+//! `hurray.Composite` (ADR-036), which is why one `next()` is one item whether that
+//! item is a tensor or a whole composite tree.
 
 use std::os::fd::RawFd;
 
@@ -34,9 +35,10 @@ use tokio::runtime::Runtime;
 use hurray_io::stream::{StreamItem, StreamReader as IoReader, StreamWriter as IoWriter};
 
 use crate::buffer::BufferStore;
+use crate::composite::{composite_from_parts, owned_tree, with_stream_nodes};
 use crate::device::Device;
 use crate::dtype::Dtype;
-use crate::errors::{FileError, InvalidDescriptorError, StreamError, UnsupportedError};
+use crate::errors::{FileError, InvalidDescriptorError, StreamError};
 use crate::tensor::Tensor;
 
 /// Any source `hurray-io` can read a stream from.
@@ -261,13 +263,12 @@ impl StreamReader {
         slf
     }
 
-    /// The next tensor, or `StopIteration` at a clean end of stream.
+    /// The next item — a `hurray.Tensor`, or a `hurray.Composite` when the stream
+    /// carries one — or `StopIteration` at a clean end of stream.
     ///
     /// ## Errors
     ///
     /// - `hurray.StreamError` — a truncated or malformed frame.
-    /// - `hurray.UnsupportedError` — the stream contains a composite, which
-    ///   `hurray.Tensor` cannot represent.
     /// - `hurray.FileError` — the transport failed.
     ///
     /// ## Examples
@@ -292,15 +293,7 @@ impl StreamReader {
 
         match item {
             None => Ok(None),
-            Some(StreamItem::Tensor(t)) => {
-                Ok(Some(stream_tensor_to_py(py, t.descriptor, t.buffers)?))
-            }
-            Some(StreamItem::Composite(c)) => Err(UnsupportedError::new_err(format!(
-                "the stream contains a composite ({} members); hurray.Tensor cannot \
-                 represent a composite head, which owns no buffers. Read this stream \
-                 with the Rust API until composite support lands in Python.",
-                c.members.len()
-            ))),
+            Some(item) => Ok(Some(stream_item_to_py(py, item)?)),
         }
     }
 
@@ -442,7 +435,14 @@ impl StreamWriter {
     /// with hurray.StreamWriter() as writer:
     ///     writer.write(hurray.Tensor(bytes(16), hurray.float32, [4]))
     /// ```
-    pub fn write(&mut self, py: Python<'_>, tensor: &Bound<'_, Tensor>) -> PyResult<()> {
+    pub fn write(&mut self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<()> {
+        if let Ok(composite) = item.extract::<PyRef<'_, crate::composite::Composite>>() {
+            return self.write_composite(py, &composite);
+        }
+        let tensor = item.extract::<Bound<'_, Tensor>>().map_err(|_| {
+            pyo3::exceptions::PyTypeError::new_err("expected a hurray.Tensor or a hurray.Composite")
+        })?;
+        let tensor = &tensor;
         let Some(writer) = self.inner.as_mut() else {
             return Err(StreamError::new_err(
                 "this stream has been finished; create a new StreamWriter to write more",
@@ -473,6 +473,33 @@ impl StreamWriter {
                 .map(|s| unsafe { std::slice::from_raw_parts(s.0, s.1) })
                 .collect();
             runtime.block_on(writer.write_tensor(&descriptor, &buffers))
+        })
+        .map_err(stream_err)
+    }
+
+    /// Emits a composite as head-then-members, the wire's own binding rule.
+    fn write_composite(
+        &mut self,
+        py: Python<'_>,
+        composite: &crate::composite::Composite,
+    ) -> PyResult<()> {
+        let Some(writer) = self.inner.as_mut() else {
+            return Err(StreamError::new_err(
+                "this stream has been finished; create a new StreamWriter to write more",
+            ));
+        };
+
+        // Pull the whole tree out while the GIL is held: descriptors by value, buffers
+        // as raw parts. The Python objects stay alive because `composite` borrows them.
+        let tree = owned_tree(py, composite);
+        let runtime = &self.runtime;
+
+        py.detach(move || {
+            // SAFETY: every slice points into a buffer owned by a tensor the caller's
+            // composite still holds, so releasing the GIL cannot free any of them.
+            with_stream_nodes(&tree.members, &[], &mut |members| {
+                runtime.block_on(writer.write_composite(&tree.head, members))
+            })
         })
         .map_err(stream_err)
     }
@@ -550,6 +577,25 @@ impl StreamWriter {
 }
 
 // ── Conversion ────────────────────────────────────────────────────────────────
+
+/// Builds the Python object for one decoded stream item.
+///
+/// A composite becomes a `hurray.Composite`, recursively — the reader has already
+/// validated the tree through the same `CompositeValidator` the constructor uses, so
+/// this path does not revalidate it.
+fn stream_item_to_py(py: Python<'_>, item: StreamItem) -> PyResult<Py<PyAny>> {
+    match item {
+        StreamItem::Tensor(t) => stream_tensor_to_py(py, t.descriptor, t.buffers),
+        StreamItem::Composite(c) => {
+            let members = c
+                .members
+                .into_iter()
+                .map(|m| stream_item_to_py(py, m))
+                .collect::<PyResult<Vec<_>>>()?;
+            composite_from_parts(py, c.head, members)
+        }
+    }
+}
 
 /// Builds a `hurray.Tensor` from a decoded stream tensor.
 ///
@@ -721,42 +767,30 @@ mod tests {
         })
     }
 
+    /// The failure this guards against: `next_tensor` would return the head as an
+    /// empty tensor and then surface its two members as top-level ones, so a caller
+    /// would see **three** tensors and no error. One composite is one item.
     #[test]
-    fn a_composite_is_refused_by_name_rather_than_skipped() {
+    fn a_composite_arrives_as_one_item_not_three() {
         init();
         let wire = composite_stream();
         Python::attach(|py| {
             let bytes = pyo3::types::PyBytes::new(py, &wire);
             let mut reader = StreamReader::new(py, bytes.as_any()).expect("reader opens");
 
-            let err = reader
+            let first = reader
                 .__next__(py)
-                .expect_err("a composite must not decode as a tensor");
-            assert!(
-                err.is_instance_of::<crate::errors::UnsupportedError>(py),
-                "expected UnsupportedError, got {err}"
-            );
-            let message = err.to_string();
-            assert!(
-                message.contains("composite"),
-                "the error must name what it refused: {message}"
-            );
-        });
-    }
+                .expect("the composite decodes")
+                .expect("one item");
+            let composite = first
+                .bind(py)
+                .extract::<PyRef<'_, crate::composite::Composite>>()
+                .expect("a composite, not a tensor");
+            assert_eq!(composite.member_count(), 2);
 
-    /// The failure this guards against: `next_tensor` would have returned the head as
-    /// an empty tensor and then surfaced its two members as top-level tensors, so a
-    /// caller would see three tensors and no error at all.
-    #[test]
-    fn a_composite_stream_yields_no_tensors_at_all() {
-        init();
-        let wire = composite_stream();
-        Python::attach(|py| {
-            let bytes = pyo3::types::PyBytes::new(py, &wire);
-            let mut reader = StreamReader::new(py, bytes.as_any()).expect("reader opens");
             assert!(
-                reader.__next__(py).is_err(),
-                "the very first item must fail, not the third"
+                reader.__next__(py).expect("clean EOF").is_none(),
+                "the members must not also appear as top-level items"
             );
         });
     }

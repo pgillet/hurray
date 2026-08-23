@@ -162,6 +162,10 @@ needs.
 - `UnknownLayout` — exposes tag and raw bytes; buffer count unknown. Constructible, so
   that a permissive relay can reconstruct a descriptor it decoded and write it back
   out. The Python constructor MUST reject any tag for which a named variant exists.
+> **Amended by [ADR-036](ADR-036-python-composite-class.md):** the rule is unchanged —
+> a composite layout still cannot be given to `hurray.Tensor` — but the error now
+> names `hurray.Composite`, which holds a head and its members together.
+
 - `CompositeLayout` — readable in full: a composite head decoded from a stream MUST NOT
   have its layout misreported. Constructing a tensor with a composite layout MUST raise
   `hurray.UnsupportedError`; a composite head owns no buffers, which the Python `Tensor`

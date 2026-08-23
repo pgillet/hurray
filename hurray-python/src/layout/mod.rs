@@ -52,6 +52,7 @@ pub(crate) use validate::{validate_layout, validate_quantization_indices};
 pub use dense::{
     ColMajorLayout, HilbertLayout, MortonLayout, RowMajorLayout, StridedLayout, TiledLayout,
 };
+pub(crate) use indirect::parse_composition_rule;
 pub use indirect::{BlockPagedLayout, CompositeLayout, PrivateExtensionLayout, UnknownLayout};
 pub use sparse::{CooLayout, CscLayout, CsfLayout, CsrLayout};
 
@@ -325,6 +326,16 @@ pub(crate) fn layout_name(layout: &LayoutDescriptor) -> &'static str {
         // LayoutDescriptor is #[non_exhaustive]; a layout added to core but not yet
         // named here reads as an extension rather than failing to compile downstream.
         _ => "extension",
+    }
+}
+
+/// The composition rule of a composite layout, as its lowercase name.
+///
+/// Returns `"unknown"` for any other layout — callers should only ask about a head.
+pub(crate) fn composition_rule_name(layout: &LayoutDescriptor) -> &'static str {
+    match layout {
+        LayoutDescriptor::Composite(c) => indirect::rule_name(&c.rule),
+        _ => "unknown",
     }
 }
 

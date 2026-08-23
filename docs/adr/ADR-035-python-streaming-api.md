@@ -109,6 +109,11 @@ side does not invalidate the caller's object. The stream MUST close its duplicat
 
 ### 4. Composites are rejected by name, not skipped
 
+> **Amended by [ADR-036](ADR-036-python-composite-class.md):** the reader now yields a
+> `hurray.Composite` instead of raising. The rule that survives is the one this
+> section was really about: a composite is **one** item, never a head plus loose
+> members.
+
 `StreamReader::next_item` yields a tensor **or** a composite. A composite head owns no
 buffers, and `hurray.Tensor` cannot represent that — ADR-031 and ADR-032 both deferred
 composite authoring from Python for exactly this reason, and ADR-032 § 6 already makes
