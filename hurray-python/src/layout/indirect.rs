@@ -412,7 +412,7 @@ fn composite_of<'a>(slf: &'a PyRef<'_, CompositeLayout>) -> PyResult<&'a CoreCom
     }
 }
 
-fn rule_name(rule: &CompositionRule) -> &'static str {
+pub(crate) fn rule_name(rule: &CompositionRule) -> &'static str {
     match rule {
         CompositionRule::Partition => "partition",
         CompositionRule::Overlay(_) => "overlay",
@@ -429,7 +429,10 @@ fn combine_name(op: CombineOp) -> &'static str {
     }
 }
 
-fn parse_composition_rule(rule: &str, combine: Option<&str>) -> PyResult<CompositionRule> {
+pub(crate) fn parse_composition_rule(
+    rule: &str,
+    combine: Option<&str>,
+) -> PyResult<CompositionRule> {
     let overlay_op = |op: Option<&str>| -> PyResult<CombineOp> {
         match op {
             Some("replace") => Ok(CombineOp::Replace),

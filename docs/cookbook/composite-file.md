@@ -99,6 +99,33 @@ a maliciously deep composite.
 - `Error::Core` — composite validation failed (member-count mismatch, partition coverage,
   overlay ordering).
 
+## From Python
+
+`hurray.save` takes a composite as a named entry and `hurray.load` returns one
+(ADR-036):
+
+```python
+import hurray
+
+hurray.save("model.hrry", {"weight": weight, "bias": bias})
+
+loaded = hurray.load("model.hrry")
+loaded["weight"]            # a hurray.Composite
+loaded["weight"].members    # its tiles, in write order
+```
+
+Every tensor in a file gets an index entry, head and member alike, so a composite's
+members are named `"{head}.{index}"` — `weight.0`, `weight.1`. Those names are an
+artifact of the container rather than of the composite, so they are generated for you.
+
+`load` returns the composite under its head's name and does **not** also return its
+members as top-level entries; on the wire they belong to the head. Asking for one
+explicitly still works:
+
+```python
+tile = hurray.load("model.hrry", names=["weight.0"])["weight.0"]
+```
+
 ## Runnable example
 
 ```text

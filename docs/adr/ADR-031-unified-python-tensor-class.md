@@ -143,6 +143,10 @@ produce.
 
 ### 5. One protocol implementation
 
+> **Answered by [ADR-036](ADR-036-python-composite-class.md):** a composite is a
+> container of tensors, not a tensor. `hurray.Composite` is its own class, and
+> `hurray.Tensor` is unchanged.
+
 `__hurray_buffer__` is implemented once. `hurray.from_hurray_buffer`,
 `hurray.load()`, and `hurray.save()` handle every layout uniformly, which closes
 issue #156 and the sparse half of the #146 follow-up without any per-class dispatch.

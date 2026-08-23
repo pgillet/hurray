@@ -30,6 +30,8 @@ index, compute the local offset, apply that member's addressing.
 
 Build a `[8, 8]` head split into two `[8, 4]` members:
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::{
     composite::CompositeTensor,
@@ -64,6 +66,32 @@ let member = |offset: u64| {
 let composite = CompositeTensor::new(head, vec![member(0), member(4)]).unwrap();
 assert_eq!(composite.member_count(), 2);
 ```
+
+```python
+import hurray
+
+# A member is an ordinary tensor with a shard box saying where it sits in the head.
+def tile(offset):
+    return hurray.Tensor(
+        bytes(128), hurray.float32, [8, 4], shard=hurray.Shard([8, 8], [0, offset])
+    )
+
+# The head is stated — shape and dtype — and the members are checked against it.
+composite = hurray.Composite(
+    "partition",
+    shape=[8, 8],
+    dtype=hurray.float32,
+    members=[tile(0), tile(4)],
+)
+assert composite.member_count == 2
+assert composite.layout.composition_rule == "partition"
+```
+
+</div>
+
+`hurray.Composite` is not a `hurray.Tensor`: the head owns no buffers, so there is no
+`.values` and no `__dlpack__`. The data belongs to the members, each an ordinary
+tensor (ADR-036).
 
 Element `[3, 6]` (row 3, column 6) resolves to member 1 at local index `[3, 2]` (column
 2 within that member's `[8, 4]` box). The read is zero-copy once the member is selected.
@@ -176,6 +204,8 @@ semantics. Members MAY differ arbitrarily in rank, shape, element type, layout, 
 device. Useful for weight collections, multi-head attention outputs, and other
 use cases where multiple tensors are delivered together.
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::{
     composite::CompositeTensor,
@@ -213,6 +243,23 @@ let member1 = TensorDescriptor::new(
 let composite = CompositeTensor::new(head, vec![member0, member1]).unwrap();
 assert_eq!(composite.member_count(), 2);
 ```
+
+```python
+import hurray
+
+# A group makes no claim about coverage, so its members need not agree on
+# anything — different shapes, different element types.
+tokens = hurray.Tensor(bytes(100), hurray.int8, [100])
+logits = hurray.Tensor(bytes(216 * 8), hurray.float64, [3, 3, 3])
+
+composite = hurray.Composite(
+    "group", shape=[1], dtype=hurray.int8, members=[tokens, logits]
+)
+assert composite.member_count == 2
+assert composite.layout.combine_op is None      # only overlays have one
+```
+
+</div>
 
 ## Validation
 

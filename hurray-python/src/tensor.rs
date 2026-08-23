@@ -208,7 +208,8 @@ impl Tensor {
         if layout_desc.is_virtual() {
             return Err(UnsupportedError::new_err(
                 "a composite layout cannot be given to hurray.Tensor: a composite head \
-                 owns no buffers, which this class cannot represent",
+                 owns no buffers, which this class cannot represent. Use hurray.Composite, \
+                 which holds a head and its members together (ADR-036).",
             ));
         }
 
