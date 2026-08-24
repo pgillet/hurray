@@ -76,9 +76,21 @@ np.zeros(n) address % 4096, ten samples each
  16777216 bytes -> [16]
 ```
 
-Every large NumPy array is **exactly 16 bytes past a page boundary**, deterministically,
-so it is never 64-byte aligned. Small arrays land on 64 about a quarter of the time, by
-luck. NumPy documents no alignment guarantee of its own: `numpy.org/devdocs/dev/alignment`
+A large NumPy array served by a **fresh** `mmap` is therefore exactly 16 bytes past a page
+boundary, and never 64-byte aligned. Small arrays land on 64 about a quarter of the time,
+by luck.
+
+> **Correction (2026-08-24, from CI).** An earlier draft of this section said *every* large
+> array is 16 bytes past a page, deterministically. That overstates it, and a test written
+> on the strength of it failed on CI. The mechanism is real — 0/40 allocations of 1 MiB and
+> above landed on 64 when the arrays were **held**, so a fresh `mmap` genuinely never
+> qualifies — but glibc also **recycles freed chunks**, and a large allocation that lands
+> in a recycled chunk inherits whatever offset the heap's history gives it, including 64.
+> The honest claim is therefore: NumPy's alignment is *unpredictable*, reliably wrong for
+> a fresh mmap and a matter of heap history otherwise. Nothing may be written that assumes
+> either outcome for a particular array — including a test.
+
+NumPy documents no alignment guarantee of its own: `numpy.org/devdocs/dev/alignment`
 defines only "true" and "uint" alignment for its internal copy code, both derived from
 `dtype.alignment` — 8 bytes for `float64`, never 64.
 
@@ -222,10 +234,11 @@ version of it copies for most arrays. `copy=False` exists so that a caller who n
 guarantee gets an error instead of a silent memcpy, and so the cost is measurable rather
 than mysterious.
 
-Note where the cost falls: because the misalignment above `MMAP_THRESHOLD` is
-deterministic, the copy is **certain** for large arrays and merely likely for small ones.
-The penalty is largest exactly where it is least welcome, which is the strongest argument
-for the escape hatch below.
+Note where the cost falls: a large array freshly served by `mmap` never qualifies, so the
+copy is all but unavoidable exactly where it costs most. It is not *certain* — a large
+allocation that lands in a chunk glibc recycled may happen to be aligned — but a producer
+cannot arrange for that, and unpredictability is no better than a copy. This is the
+strongest argument for the escape hatch below.
 
 ### 6a. The escape hatch: allocate through NumPy's pluggable allocator
 

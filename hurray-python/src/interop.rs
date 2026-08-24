@@ -35,9 +35,10 @@ use crate::tensor::Tensor;
 /// ## The `copy` argument (ADR-037 § 6)
 ///
 /// `buffer-protocol.md` § Alignment requires every non-empty buffer to start on a
-/// 64-byte boundary, and NumPy does not promise one. For arrays above glibc's
-/// `MMAP_THRESHOLD` it reliably does *not* provide one: the allocator's 16-byte header
-/// puts the data 16 bytes past a page boundary, every time.
+/// 64-byte boundary, and NumPy does not promise one. A large array served by a fresh
+/// `mmap` never has one — glibc puts a 16-byte chunk header before the pointer — and any
+/// other array's address is a matter of heap history. Either way the caller cannot
+/// arrange for it, which is why this decision is made per call rather than assumed.
 ///
 /// - `copy=None` (default) — copy only when the source is under-aligned.
 /// - `copy=False` — never copy; raise `hurray.BufferError` naming the alignment the

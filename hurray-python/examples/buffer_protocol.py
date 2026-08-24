@@ -61,19 +61,20 @@ print("\n=== Measured, never asserted ===")
 big = np.zeros(1 << 20, dtype=np.float32)  # 4 MiB
 address = big.__array_interface__["data"][0]
 print(f"  a 4 MiB NumPy array sits at ...{address % 4096} mod 4096")
-print(f"  which is {address % 64}-byte aligned, not {hurray.MIN_BUFFER_ALIGNMENT}")
-print("  (glibc serves this size with mmap and puts a 16-byte header first, so this is")
-print("   deterministic, not luck)")
+print(f"  which leaves it {address % 64} bytes past a {hurray.MIN_BUFFER_ALIGNMENT}-byte boundary")
+print("  (glibc puts a 16-byte chunk header before every mmap-served block, so a fresh")
+print("   one never reaches 64; a recycled chunk can land anywhere. Unpredictable either")
+print("   way, which is exactly why nothing here assumes it)")
 
 # ── So ingest copies, unless you say otherwise ────────────────────────────────
 
 print("\n=== copy: None | False | True ===")
 
 t = hurray.from_numpy(big)
-print(f"  copy=None (default): copied, and now declares {t.buffer_handles[0].alignment}")
+print(f"  copy=None (default): declares {t.buffer_handles[0].alignment}, copying if it had to")
 
 try:
-    hurray.from_numpy(big, copy=False)
+    hurray.from_numpy(big[1:], copy=False)      # an offset slice is always under-aligned
 except hurray.CopyRequiredError as exc:
     print(f"  copy=False: {exc}")
 

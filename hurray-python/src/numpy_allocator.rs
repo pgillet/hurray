@@ -9,9 +9,9 @@
 //! ## Why this exists
 //!
 //! `buffer-protocol.md` § Alignment requires every non-empty buffer to start on a
-//! 64-byte boundary. NumPy does not promise one, and above glibc's `MMAP_THRESHOLD` it
-//! reliably does not provide one — the allocator's 16-byte header puts the data 16 bytes
-//! past a page boundary — so `from_numpy` copies most arrays (ADR-037 § 6).
+//! 64-byte boundary. NumPy does not promise one, and a large array served by a fresh
+//! `mmap` never has one — glibc puts a 16-byte chunk header before the pointer — so
+//! `from_numpy` copies most arrays (ADR-037 § 6).
 //!
 //! NEP 49 is the sanctioned answer, and alignment is the first motivation it lists.
 //! NumPy considered guaranteeing alignment, declined, and shipped this hook instead. So

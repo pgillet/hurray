@@ -201,15 +201,27 @@ def test_copy_true_always_copies():
     assert np.asarray(t)[0] == 0.0
 
 
-def test_a_large_numpy_array_is_never_shared_by_accident():
-    """Above glibc's MMAP_THRESHOLD the misalignment is deterministic, not a coin flip:
-    the allocator's 16-byte header puts the data 16 bytes past a page boundary. This is
-    where the copy is certain, and it is where it hurts most."""
-    arr = np.zeros(1 << 20, dtype=np.float32)  # 4 MiB
-    assert _address(arr) % hurray.MIN_BUFFER_ALIGNMENT != 0
+def test_a_large_array_is_handled_honestly_whichever_way_it_lands():
+    """A large array's alignment is not something a producer can arrange: glibc puts a
+    16-byte chunk header before every mmap-served block, so a fresh one never reaches 64,
+    but a recycled chunk inherits whatever the heap's history gives it.
 
-    with pytest.raises(hurray.CopyRequiredError):
-        hurray.from_numpy(arr, copy=False)
+    So this asserts the invariant rather than the outcome — whatever the address is, the
+    declaration matches it and `copy=False` either shares or refuses, never lies."""
+    arr = np.zeros(1 << 20, dtype=np.float32)  # 4 MiB
+    qualifies = _address(arr) % hurray.MIN_BUFFER_ALIGNMENT == 0
+
+    if qualifies:
+        shared = hurray.from_numpy(arr, copy=False)
+        assert shared.buffer_handles[0].alignment >= hurray.MIN_BUFFER_ALIGNMENT
+    else:
+        with pytest.raises(hurray.CopyRequiredError):
+            hurray.from_numpy(arr, copy=False)
+
+    # Either way the default produces a tensor that declares the truth.
+    tensor = hurray.from_numpy(arr)
+    address = np.asarray(tensor).__array_interface__["data"][0]
+    assert address % tensor.buffer_handles[0].alignment == 0
 
 
 def test_an_empty_array_needs_no_copy():

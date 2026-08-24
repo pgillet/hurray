@@ -60,9 +60,8 @@ assert t.dtype == hurray.float32
 
 `from_numpy` stores a raw pointer into NumPy's buffer and holds a strong Python
 reference to `arr` — provided the buffer's base address satisfies the format's 64-byte
-alignment floor. NumPy does not promise one, and for arrays above glibc's
-`MMAP_THRESHOLD` it reliably does not deliver one, so most arrays are copied into an
-aligned allocation instead. Pass `copy=False` to get a `hurray.CopyRequiredError` rather
+alignment floor. NumPy does not promise one, and a large array served by a fresh `mmap`
+never has one, so most arrays are copied into an aligned allocation instead. Pass `copy=False` to get a `hurray.CopyRequiredError` rather
 than a silent copy; see
 [Buffer Protocol](layer-1-buffer-protocol.md#alignment-is-measured-not-asserted).
 

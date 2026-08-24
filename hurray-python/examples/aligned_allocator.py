@@ -1,8 +1,10 @@
 """Allocating NumPy arrays that Hurray can share without copying (ADR-037 § 6a).
 
 `hurray.from_numpy` copies most arrays. Not out of caution — the format requires
-every buffer to start on a 64-byte boundary, NumPy does not promise one, and for
-anything above glibc's mmap threshold it reliably does not deliver one.
+every buffer to start on a 64-byte boundary and NumPy does not promise one. A
+large array served by a fresh mmap never has it (glibc puts a 16-byte chunk
+header before the pointer); any other array's address is a matter of heap
+history. Either way it is not something a producer can arrange.
 
 NEP 49 is the way out, and it is NumPy's own: alignment is the first motivation
 the NEP lists. NumPy considered guaranteeing it, declined, and shipped a
@@ -41,12 +43,17 @@ ordinary = np.zeros(BIG, dtype=np.float32)
 print(f"  a {ordinary.nbytes // 1024} KiB array is {alignment_of(ordinary)}-byte aligned")
 print(f"  the format needs {hurray.MIN_BUFFER_ALIGNMENT}")
 
+# A slice offset by one element is under-aligned on every machine, which a freshly
+# allocated array is not quite: it usually misses 64, but a recycled heap chunk can
+# land on it. That unpredictability is the point — you cannot plan around it.
+under_aligned = ordinary[1:]
+
 try:
-    hurray.from_numpy(ordinary, copy=False)
+    hurray.from_numpy(under_aligned, copy=False)
 except hurray.CopyRequiredError as exc:
     print(f"  so copy=False refuses it: {exc}")
 
-print("  and the default, copy=None, copies it — every time, for every array this size")
+print("  and the default, copy=None, copies instead — silently, on every ingest")
 
 # ── The allocator ─────────────────────────────────────────────────────────────
 
@@ -75,6 +82,8 @@ print("  (one allocation, no memcpy — which is what the format promised all al
 print("\n=== Scope ===")
 
 print(f"  an array allocated outside: {alignment_of(np.zeros(BIG, dtype=np.float32))}-byte aligned")
+print("  (whatever that number happens to be — outside the block it is the heap's")
+print("   business, not ours; inside, it is always at least 64)")
 print("  the handler is per array and thread-local, so it never leaks into code")
 print("  that did not ask for it. Each array remembers the handler it was born")
 print("  under, and is freed through that one — so an array outlives its block:")
