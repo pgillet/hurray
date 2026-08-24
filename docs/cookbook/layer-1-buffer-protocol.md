@@ -254,14 +254,12 @@ import numpy as np
 import hurray
 
 array = np.zeros(1 << 20, dtype=np.float32)          # 4 MiB
-address = array.__array_interface__["data"][0]
 
-# NumPy does not promise 64-byte alignment, and above glibc's MMAP_THRESHOLD it
-# reliably does not deliver one: the allocator's 16-byte header puts the data 16
-# bytes past a page boundary, every time.
-assert address % hurray.MIN_BUFFER_ALIGNMENT == 16
-
-tensor = hurray.from_numpy(array)                    # copied into an aligned allocation
+# NumPy promises no alignment beyond the dtype's own, and a large allocation served
+# by a fresh mmap is 16 bytes past a page boundary — glibc puts its chunk header
+# there — so it never reaches 64. A recycled chunk may land anywhere, which is no
+# better: the address is not something a producer can arrange.
+tensor = hurray.from_numpy(array)                    # copied if it does not qualify
 assert tensor.buffer_handles[0].alignment >= hurray.MIN_BUFFER_ALIGNMENT
 ```
 
@@ -275,10 +273,12 @@ therefore take a `copy` argument, with the same meaning as NumPy's:
 | `True` | Always copy |
 
 ```python
+under_aligned = array[1:]                            # 4-byte aligned, guaranteed
+
 try:
-    hurray.from_numpy(array, copy=False)
+    hurray.from_numpy(under_aligned, copy=False)
 except hurray.CopyRequiredError as exc:
-    print(exc)   # "array is 16-byte aligned, below the 64-byte minimum ..."
+    print(exc)   # "array is 4-byte aligned, below the 64-byte minimum ..."
 ```
 
 This is a real cost, and it is worth stating plainly rather than burying: zero-copy NumPy

@@ -1,7 +1,7 @@
 """Allocating NumPy arrays Hurray can share without copying (ADR-037 § 6a).
 
 `from_numpy` copies most arrays, because NumPy does not promise the 64-byte alignment the
-format requires and above glibc's `MMAP_THRESHOLD` reliably does not provide it. NEP 49 is
+format requires and a large array served by a fresh `mmap` never has it. NEP 49 is
 the sanctioned way out: install a data-memory handler for the duration of a block and the
 arrays allocated inside it clear the bar.
 
@@ -22,8 +22,13 @@ multiarray = pytest.importorskip("numpy._core.multiarray")
 
 ALIGN = hurray.MIN_BUFFER_ALIGNMENT
 
-# Large enough that glibc serves it with mmap, where the misalignment is deterministic
-# rather than luck — so "this was not aligned by accident" is a real assertion.
+# Large enough to exercise the mmap path rather than a small-bin allocation.
+#
+# Note what is deliberately NOT asserted anywhere below: that an array allocated
+# *outside* the block is misaligned. A fresh mmap never reaches 64, but glibc recycles
+# freed chunks, and a recycled one can land anywhere — so the contrast is drawn with the
+# handler NumPy records per array, which is exact, rather than with an address that is a
+# matter of heap history. An earlier version asserted the address and failed on CI.
 BIG = 1 << 20
 
 
@@ -77,11 +82,6 @@ def test_arrays_allocated_inside_are_aligned():
         for count in (1, 16, 1024, BIG):
             arr = np.zeros(count, dtype=np.float32)
             assert _address(arr) % ALIGN == 0, f"{arr.nbytes} bytes"
-
-
-def test_a_large_array_outside_the_block_is_not_aligned():
-    """The control: without the handler this size is reliably 16 bytes past a page."""
-    assert _address(np.zeros(BIG, dtype=np.float32)) % ALIGN != 0
 
 
 def test_each_array_records_the_handler_it_was_born_under():
@@ -154,10 +154,17 @@ def test_from_numpy_shares_an_array_allocated_inside_the_block():
     assert np.asarray(tensor)[0] == 42.0, "the buffer was copied, not shared"
 
 
-def test_the_same_array_outside_the_block_would_have_been_refused():
-    """The contrast the feature exists for, asserted rather than described."""
+def test_an_array_the_allocator_did_not_touch_can_still_be_refused():
+    """The contrast the feature exists for. Uses an offset slice rather than a fresh
+    array, because a fresh one's address depends on the heap's history — under the
+    allocator it does not depend on anything."""
+    outside = np.zeros(BIG, dtype=np.float32)[1:]  # 4-byte aligned, guaranteed
     with pytest.raises(hurray.CopyRequiredError):
-        hurray.from_numpy(np.zeros(BIG, dtype=np.float32), copy=False)
+        hurray.from_numpy(outside, copy=False)
+
+    with hurray.aligned_allocator():
+        inside = np.zeros(BIG, dtype=np.float32)
+    assert hurray.from_numpy(inside, copy=False).buffer_handles[0].alignment >= ALIGN
 
 
 def test_the_sparse_constructors_benefit_too():

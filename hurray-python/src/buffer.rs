@@ -212,9 +212,9 @@ pub(crate) fn measured_alignment(ptr: *const u8, len: usize) -> u32 {
 ///
 /// - `Some(true)` — always copy.
 /// - `None` — copy only when the source is under-aligned. The default, because refusing
-///   by default would break `from_numpy` for essentially every array (glibc puts large
-///   NumPy allocations 16 bytes past a page boundary, deterministically), and copying
-///   unconditionally would give up zero-copy even when the source qualified.
+///   by default would break `from_numpy` for most arrays — glibc puts a 16-byte chunk
+///   header before every mmap-served block, so a large array never reaches 64 — and
+///   copying unconditionally would give up zero-copy even when the source qualified.
 /// - `Some(false)` — never copy; an under-aligned source is an error naming the
 ///   alignment actually measured, so the cost is visible rather than silent.
 ///

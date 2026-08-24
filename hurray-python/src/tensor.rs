@@ -1584,9 +1584,9 @@ impl Tensor {
         // Measured, not assumed (ADR-037 § 5). The comment this replaced claimed
         // Python and NumPy allocators are always 64-byte aligned; they are not —
         // glibc puts a 16-byte header before every mmap-served block, so a large
-        // NumPy array sits exactly 16 bytes past a page boundary, every time.
-        // Declaring an alignment the address does not have invites a consumer's
-        // aligned SIMD load to fault.
+        // NumPy array served by a fresh mmap misses 64 entirely. Declaring an
+        // alignment the address does not have invites a consumer's aligned SIMD
+        // load to fault.
         let alignment = crate::buffer::measured_alignment(ptr, len);
         let buffer_handle = BufferHandle::with_memory_class(
             len as u64,
