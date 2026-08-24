@@ -56,8 +56,28 @@ alignment, measured over twenty samples per size:
   4194304 bytes: 0/20
 ```
 
-Essentially never — and `BufferHandle::with_memory_class` rejects any declared alignment
-below 64, so the binding cannot state the truth either. `hurray-python` therefore cannot
+Essentially never — and it is worse than chance for exactly the arrays where copying
+costs most. Above glibc's `MMAP_THRESHOLD` (128 KiB by default) an allocation is served
+by `mmap`, which returns a page-aligned block; glibc then places a 16-byte header before
+the pointer it hands back. Measured, and identical for plain `malloc`, so it is the
+allocator rather than NumPy:
+
+```
+np.zeros(n) address % 4096, ten samples each
+   262144 bytes -> [16]
+  1048576 bytes -> [16]
+  4194304 bytes -> [16]
+ 16777216 bytes -> [16]
+```
+
+Every large NumPy array is **exactly 16 bytes past a page boundary**, deterministically,
+so it is never 64-byte aligned. Small arrays land on 64 about a quarter of the time, by
+luck. NumPy documents no alignment guarantee of its own: `numpy.org/devdocs/dev/alignment`
+defines only "true" and "uint" alignment for its internal copy code, both derived from
+`dtype.alignment` — 8 bytes for `float64`, never 64.
+
+`BufferHandle::with_memory_class` rejects any declared alignment below 64, so the binding
+cannot state the truth either. `hurray-python` therefore cannot
 currently ingest a NumPy array zero-copy *and* be conformant. That is not a bug in the
 binding; it is a collision between the format's alignment floor and what the Python
 ecosystem allocates.
@@ -196,6 +216,30 @@ version of it copies for most arrays. `copy=False` exists so that a caller who n
 guarantee gets an error instead of a silent memcpy, and so the cost is measurable rather
 than mysterious.
 
+Note where the cost falls: because the misalignment above `MMAP_THRESHOLD` is
+deterministic, the copy is **certain** for large arrays and merely likely for small ones.
+The penalty is largest exactly where it is least welcome, which is the strongest argument
+for the escape hatch below.
+
+### 6a. The escape hatch: allocate through NumPy's pluggable allocator
+
+NumPy ≥ 1.22 lets an extension install a data-memory handler (NEP 49;
+`numpy._core.multiarray.get_handler_name()` reports `default_allocator` today).
+`hurray-python` SHOULD offer one that allocates 64-byte-aligned blocks:
+
+```python
+with hurray.aligned_allocator():
+    weights = np.zeros(shape, dtype=np.float32)   # 64-byte aligned
+t = hurray.from_numpy(weights, copy=False)        # genuinely zero-copy
+```
+
+This turns "Hurray always copies NumPy arrays" into "arrays allocated for Hurray are not
+copied", which is a materially different bargain for a producer that controls its own
+allocations — the case that matters for an inference pipeline writing checkpoints.
+
+Deferred rather than decided here only because it is additive and independent: the
+`copy` argument is needed regardless, for arrays the caller did not allocate.
+
 ### 7. `sync_mode` is read-only, and byte-yielding paths refuse anything else
 
 Read-only for a different reason than alignment, and the difference matters. Alignment is
@@ -271,7 +315,8 @@ rejected — though it deserves the full argument, because it is the one option 
 restore zero-copy NumPy ingest.
 
 The case for it: DLPack imposes no alignment requirement at all, and a format whose most
-important on-ramp must copy has an adoption problem. The case against is stronger on this
+important on-ramp must copy has an adoption problem — sharpened by the measurement above,
+since the copy is certain for large arrays rather than occasional. The case against is stronger on this
 project's own terms. `docs/prior-art.md` § 699 lists *"alignment guarantees — 64-byte
 minimum for SIMD; page-aligned for GPU/IPC — expressed in the spec, not left to
 convention"* among the gaps Hurray deliberately fixes; relaxing it gives away a stated
@@ -331,6 +376,8 @@ which has both, and is answered with a sentence of documentation.
 
 ## Open Questions Deferred
 
+- **Shipping the NEP 49 aligned allocator of § 6a**, and whether it should be a context
+  manager, a module-level install, or both.
 - **Requesting a stronger alignment at construction** — `hurray.empty(..., alignment=4096)`
   that *allocates* to the request and declares what it allocated. Explicitly not a
   reopening of § 4: an allocation request is an instruction to the allocator, not a
