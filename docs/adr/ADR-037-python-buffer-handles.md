@@ -225,7 +225,35 @@ for the escape hatch below.
 
 NumPy ≥ 1.22 lets an extension install a data-memory handler (NEP 49;
 `numpy._core.multiarray.get_handler_name()` reports `default_allocator` today).
-`hurray-python` SHOULD offer one that allocates 64-byte-aligned blocks:
+
+**This is the use case NEP 49 was written for.** Its Motivation lists "ensuring data
+alignment" first, citing a 2005 numpy-discussion thread on SIMD alignment and issue
+#5312, *"Use an aligned allocator for NumPy?"*, where 64-byte alignment produced a 40×
+improvement in one reported case. NumPy considered guaranteeing alignment itself,
+declined, and shipped the hook instead — so "bring your own allocator" is not a
+workaround here, it is the ecosystem's answer to exactly this question. That also
+strengthens § Alternatives: NumPy's own maintainers did not treat a 64-byte requirement
+as unreasonable, they treated satisfying it as the consumer's job.
+
+Three properties of the mechanism make a scoped installer safe, each verified against
+NumPy's own tests and headers rather than assumed:
+
+- **The handler is stored per array.** *"each `ndarray` carries with it the functions
+  used at the time of its instantiation, and these will be used to reallocate or free
+  the data memory of the instance."* An array allocated inside the block is therefore
+  freed by the matching `free` long after the block exits.
+- **It is thread- and context-local.** `numpy/_core/tests/test_mem_policy.py` asserts
+  both: `test_thread_locality` requires that *"the policy is not affected by changes in
+  parallel threads"*, and `test_context_locality` covers `asyncio`. Installing a handler
+  cannot leak into unrelated code.
+- **`PyDataMem_SetHandler` returns the previous handler**, and `NULL` restores the
+  default, so save-and-restore is the intended usage.
+
+With one gotcha that MUST be documented: **child threads do not inherit the policy.**
+Arrays allocated by a worker thread started inside the block get the default allocator,
+and will be copied on ingest like any other.
+
+`hurray-python` SHOULD offer a handler that allocates 64-byte-aligned blocks:
 
 ```python
 with hurray.aligned_allocator():
@@ -239,6 +267,14 @@ allocations — the case that matters for an inference pipeline writing checkpoi
 
 Deferred rather than decided here only because it is additive and independent: the
 `copy` argument is needed regardless, for arrays the caller did not allocate.
+
+Two implementation notes for whoever takes it: setting a handler is **C-API only** —
+NumPy exposes `get_handler_name` and `get_handler_version` to Python but no setter — and
+the `numpy` Rust crate this binding already depends on declares `PyDataMem_SetHandler`
+and `PyDataMem_GetHandler` at API slots 304/305 but leaves them **commented out**, so
+the binding must reach them itself. NEP 49's implementation PR also warns that mixing
+allocators risks mismatched alloc/free pairs, and recommends a `PyCapsule` base when
+taking ownership of data.
 
 ### 7. `sync_mode` is read-only, and byte-yielding paths refuse anything else
 
