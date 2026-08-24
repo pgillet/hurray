@@ -11,8 +11,14 @@ For CSR and CSC, buffers are shared zero-copy with SciPy sparse matrices via
 
 SciPy's `csr_matrix` stores three NumPy arrays: `.data` (values), `.indices`
 (column indices), and `.indptr` (row pointers). `hurray.from_scipy` wraps all
-three without copying — the resulting `Tensor` holds a strong reference
-to the original SciPy matrix so the buffers remain valid.
+three — the resulting `Tensor` holds a strong reference to the original SciPy
+matrix so the buffers remain valid.
+
+Each component is shared or copied on its own merits: three arrays are three
+allocations with three addresses, and only an address that meets the format's
+64-byte alignment floor can be shared. Pass `copy=False` to be told which one
+fell short instead of paying for a silent copy — see
+[Buffer Protocol](layer-1-buffer-protocol.md#alignment-is-measured-not-asserted).
 
 **Index dtype requirement:** Hurray's wire format requires `uint64` index
 arrays. SciPy defaults to `int32`. Cast before calling `from_scipy`:
@@ -104,10 +110,11 @@ m_csr.indptr  = m_csr.indptr.astype(np.uint64)
 sparse = hurray.from_scipy(m_csr)
 ```
 
-**Preferred — `hurray.sparse_coo` from packed arrays (zero-copy):**
+**Preferred — `hurray.sparse_coo` from packed arrays:**
 
-`hurray.sparse_coo(values, indices, shape)` builds a COO `Tensor` directly and
-shares both arrays without copying. `indices` is a 2-D `uint64` array of shape
+`hurray.sparse_coo(values, indices, shape)` builds a COO `Tensor` directly,
+sharing each array whose alignment allows it and copying the rest (`copy=` works
+here too). `indices` is a 2-D `uint64` array of shape
 `[nnz, rank]` (Hurray's packed layout); `values` is 1-D of length `nnz`.
 
 ```python

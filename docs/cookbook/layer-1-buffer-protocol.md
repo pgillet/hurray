@@ -8,6 +8,8 @@ A **buffer handle** declares a tensor's data buffer: its size in bytes, alignmen
 
 The most common case: a CPU buffer with SIMD alignment (64 bytes minimum):
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::{BufferHandle, DeviceTag, SyncMode, MIN_BUFFER_ALIGNMENT};
 
@@ -23,6 +25,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+```python
+import hurray
+
+# Python reads the buffer table rather than authoring it: the buffers a tensor
+# holds already settle every field, so there is nothing left for a caller to
+# supply. One handle per buffer, in descriptor order.
+tensor = hurray.Tensor(bytes(1024), hurray.uint8, [1024])
+handle, = tensor.buffer_handles
+
+assert handle.byte_size == 1024
+assert handle.alignment == hurray.MIN_BUFFER_ALIGNMENT
+assert handle.sync_mode == "producer_synced"
+assert handle.device is tensor.device       # colocation: one device per descriptor
+```
+
+</div>
+
+A handle is a value copied out of the table, not a view into it: it holds no reference to
+its tensor and none to any buffer, so collecting handles across a stream pins nothing.
+That is also why metadata and bytes have separate accessors — `tensor.buffer(i)` hands
+back a byte view, `tensor.buffer_handles[i]` answers questions about those bytes without
+touching them. On a CUDA tensor the second works where the first cannot.
 
 For GPU or IPC buffers, use page alignment (4096 bytes):
 
@@ -54,6 +79,8 @@ Always use the strongest alignment you can guarantee — readers may rely on it 
 
 A tensor with zero elements (e.g., shape `[5, 0, 10]`) has zero-byte buffers. Use `BufferHandle::empty()`:
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::{BufferHandle, DeviceTag};
 
@@ -66,6 +93,18 @@ fn main() {
     assert_eq!(empty.alignment(), 1); // Any power-of-two is valid
 }
 ```
+
+```python
+import hurray
+
+empty, = hurray.Tensor(b"", hurray.float32, [0]).buffer_handles
+
+assert empty.is_empty
+assert empty.byte_size == 0
+assert empty.alignment == 1     # no byte to load, so nothing to align
+```
+
+</div>
 
 Readers MUST NOT dereference the pointer of an empty buffer. In C ABI contexts, it may be a null pointer; in others, it may be non-null but uninitialized. Do not read or write.
 
@@ -203,6 +242,79 @@ fn main() {
 }
 ```
 
+## Alignment Is Measured, Not Asserted
+
+The floor above is what makes the next part interesting. A producer does not get to
+*claim* 64-byte alignment — a consumer will issue aligned SIMD loads on the strength of
+that claim, and a claim the address cannot back invites a fault. So the Python binding
+measures the address it is given, and declares what it finds:
+
+```python
+import numpy as np
+import hurray
+
+array = np.zeros(1 << 20, dtype=np.float32)          # 4 MiB
+address = array.__array_interface__["data"][0]
+
+# NumPy does not promise 64-byte alignment, and above glibc's MMAP_THRESHOLD it
+# reliably does not deliver one: the allocator's 16-byte header puts the data 16
+# bytes past a page boundary, every time.
+assert address % hurray.MIN_BUFFER_ALIGNMENT == 16
+
+tensor = hurray.from_numpy(array)                    # copied into an aligned allocation
+assert tensor.buffer_handles[0].alignment >= hurray.MIN_BUFFER_ALIGNMENT
+```
+
+`from_numpy`, `from_torch`, `from_scipy`, `sparse_coo`, `from_dlpack` and `asarray`
+therefore take a `copy` argument, with the same meaning as NumPy's:
+
+| `copy` | Behaviour |
+|---|---|
+| `None` (default) | Copy into a 64-byte-aligned allocation only if the source is under-aligned |
+| `False` | Never copy; raise `hurray.CopyRequiredError` naming the alignment the source actually has |
+| `True` | Always copy |
+
+```python
+try:
+    hurray.from_numpy(array, copy=False)
+except hurray.CopyRequiredError as exc:
+    print(exc)   # "array is 16-byte aligned, below the 64-byte minimum ..."
+```
+
+This is a real cost, and it is worth stating plainly rather than burying: zero-copy NumPy
+ingest copies for most arrays. `copy=False` exists so a caller who needs the guarantee
+gets an error instead of a silent `memcpy`. An array you allocated on a 64-byte boundary
+yourself is shared, not copied — and `from_scipy` decides per component, so a matrix's
+`.data` can be shared while its `.indptr` is copied.
+
+One consequence worth knowing: alignment is exempt from the round-trip obligation that
+governs `layout`, `quantization`, `statistics` and `shard`. Alignment describes an
+*address*, and a rebuild that copies bytes has a different one. A tensor that arrived
+declaring 4096 will honestly declare 64 after a rebuild through Python `bytes`.
+
+## Sync Mode
+
+`sync_mode` says when a buffer may be read. `buffer-protocol.md` § Consumer Requirement
+puts the duty on the consumer: for `event` and `consumer_stream`, wait on the producer's
+device event before touching a byte.
+
+Everything the Python binding constructs is `producer_synced`, and that is a consequence
+rather than a default — the interpreter cannot enqueue device work through this API, so
+it cannot promise anything else. There is deliberately no `sync_mode=` keyword: a
+settable field could only author a contract nothing could honour.
+
+```python
+tensor = hurray.Tensor(bytes(64), hurray.float32, [16])
+assert tensor.buffer_handles[0].sync_mode == "producer_synced"
+```
+
+A tensor decoded from a stream, a file, or another producer's capsule reports what *that*
+producer declared. If it is not `producer_synced`, the paths that hand out bytes —
+`buffer()`, `.values` / `.indices`, `__array__`, `to_torch`, `__dlpack__` — refuse, since
+the binding cannot perform the wait the contract requires. Relaying such a tensor onward
+with `__hurray__` or `StreamWriter.write` still works: relaying a declaration is not
+reading a byte.
+
 ## Device Colocation
 
 All buffers in a single tensor (data + quantization parameters) must reside on the same device **and** in the same memory class. Validate this before processing:
@@ -323,5 +435,7 @@ Tags `0x09`–`0xEF` are reserved; `0xF0`–`0xFE` are private; `0xFF` is perman
 - **Colocation validation** requires all buffers to share both the same device tag and the same memory class
 - **Private tags** (`0xF0`–`0xFE`) allow vendor-specific devices or memory classes but require out-of-band agreement
 - **Empty buffers** are never dereferenced; alignment rules are waived
+- **In Python**, alignment is measured from the address rather than asserted, and ingest copies an under-aligned source unless `copy=False` tells it to refuse instead
+- **`sync_mode`** is read-only in Python, and a buffer that is not `producer_synced` refuses every path that hands out bytes
 
 See `docs/spec/buffer-protocol.md` for the normative specification.

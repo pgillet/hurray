@@ -18,7 +18,7 @@ use pyo3::prelude::*;
 
 use hurray_core::{ElementType, Shape};
 
-use crate::buffer::BufferStore;
+use crate::buffer::ingest;
 use crate::errors::{InvalidDescriptorError, UnsupportedError};
 use crate::sparse::{build_csc_descriptor, build_csr_descriptor, make_sparse_tensor};
 use crate::tensor::Tensor;
@@ -57,6 +57,14 @@ use crate::tensor::Tensor;
 /// - `hurray.UnsupportedError` — COO format (see above, D19).
 /// - `hurray.UnsupportedError` — index arrays are not `uint64` (D16).
 /// - `hurray.UnsupportedError` — values dtype has no Hurray equivalent.
+/// - `hurray.CopyRequiredError` — `copy=False` and a component array is under-aligned.
+///
+/// ## The `copy` argument (ADR-037 § 6)
+///
+/// As in `from_numpy`, and applied to each of `.data`, `.indices` and `.indptr`
+/// independently: `copy=None` (default) copies only the components whose address misses
+/// the format's 64-byte floor, `copy=False` refuses instead of copying, `copy=True`
+/// copies all three.
 ///
 /// ## Examples
 ///
@@ -75,7 +83,12 @@ use crate::tensor::Tensor;
 /// assert sparse.nnz == 2
 /// ```
 #[pyfunction]
-pub fn from_scipy(py: Python<'_>, matrix: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+#[pyo3(signature = (matrix, *, copy = None))]
+pub fn from_scipy(
+    py: Python<'_>,
+    matrix: &Bound<'_, PyAny>,
+    copy: Option<bool>,
+) -> PyResult<Tensor> {
     // D7-pattern: import scipy lazily — hurray must not require scipy at module load.
     py.import("scipy.sparse").map_err(|_| {
         pyo3::exceptions::PyImportError::new_err(
@@ -153,26 +166,6 @@ pub fn from_scipy(py: Python<'_>, matrix: &Bound<'_, PyAny>) -> PyResult<Tensor>
     let hurray_shape = Shape::new(vec![nrows, ncols])
         .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
 
-    let descriptor = match fmt.as_str() {
-        "csr" => build_csr_descriptor(
-            element_type,
-            hurray_shape,
-            nnz,
-            values_len as u64,
-            aux0_len as u64,
-            aux1_len as u64,
-        )?,
-        "csc" => build_csc_descriptor(
-            element_type,
-            hurray_shape,
-            nnz,
-            values_len as u64,
-            aux0_len as u64,
-            aux1_len as u64,
-        )?,
-        _ => unreachable!(),
-    };
-
     // D14: hold a strong reference to the SciPy matrix to keep all three component
     // arrays alive. SciPy matrices own their .data/.indices/.indptr arrays; as long
     // as the matrix object lives, the arrays (and their buffers) remain valid.
@@ -184,9 +177,49 @@ pub fn from_scipy(py: Python<'_>, matrix: &Bound<'_, PyAny>) -> PyResult<Tensor>
     // that return new arrays on each access. If a future SciPy version makes these
     // properties that allocate on demand, holding the matrix alone would not be
     // sufficient — the individual arrays would need to be stored as bases instead.
-    let values_buf = unsafe { BufferStore::borrowed(values_ptr, values_len, base.clone_ref(py)) };
-    let aux_buf_0 = unsafe { BufferStore::borrowed(aux0_ptr, aux0_len, base.clone_ref(py)) };
-    let aux_buf_1 = unsafe { BufferStore::borrowed(aux1_ptr, aux1_len, base) };
+    //
+    // Each component is shared or copied on its own merits: SciPy's three arrays are
+    // three separate allocations, and `.indptr` in particular is small enough to land
+    // under the alignment floor while `.data` clears it.
+    let values_buf = unsafe {
+        ingest(
+            values_ptr,
+            values_len,
+            base.clone_ref(py),
+            copy,
+            "matrix.data",
+        )?
+    };
+    let aux_buf_0 = unsafe {
+        ingest(
+            aux0_ptr,
+            aux0_len,
+            base.clone_ref(py),
+            copy,
+            "matrix.indices",
+        )?
+    };
+    let aux_buf_1 = unsafe { ingest(aux1_ptr, aux1_len, base, copy, "matrix.indptr")? };
+
+    let descriptor = match fmt.as_str() {
+        "csr" => build_csr_descriptor(
+            element_type,
+            hurray_shape,
+            nnz,
+            (values_len as u64, values_buf.alignment()),
+            (aux0_len as u64, aux_buf_0.alignment()),
+            (aux1_len as u64, aux_buf_1.alignment()),
+        )?,
+        "csc" => build_csc_descriptor(
+            element_type,
+            hurray_shape,
+            nnz,
+            (values_len as u64, values_buf.alignment()),
+            (aux0_len as u64, aux_buf_0.alignment()),
+            (aux1_len as u64, aux_buf_1.alignment()),
+        )?,
+        _ => unreachable!(),
+    };
 
     make_sparse_tensor(py, descriptor, values_buf, aux_buf_0, Some(aux_buf_1))
 }
@@ -259,7 +292,7 @@ mod tests {
             let m = py
                 .eval(&std::ffi::CString::new(code).unwrap(), None, None)
                 .unwrap();
-            let result = from_scipy(py, &m);
+            let result = from_scipy(py, &m, None);
             assert!(result.is_err());
             let err = result.unwrap_err();
             assert!(
@@ -280,7 +313,7 @@ mod tests {
             let m = py
                 .eval(&std::ffi::CString::new(code).unwrap(), None, None)
                 .unwrap();
-            let result = from_scipy(py, &m);
+            let result = from_scipy(py, &m, None);
             assert!(result.is_err());
             assert!(result.unwrap_err().is_instance_of::<UnsupportedError>(py));
         });
@@ -301,7 +334,7 @@ sp.csr_matrix(np.array([[1.0, 0.0],[0.0, 2.0]], dtype=np.float32))
             let m = py
                 .eval(&std::ffi::CString::new(code).unwrap(), None, None)
                 .unwrap();
-            let result = from_scipy(py, &m);
+            let result = from_scipy(py, &m, None);
             assert!(result.is_err());
             assert!(
                 result.unwrap_err().is_instance_of::<UnsupportedError>(py),
@@ -327,8 +360,8 @@ m
             let m = py
                 .eval(&std::ffi::CString::new(code).unwrap(), None, None)
                 .unwrap();
-            let sparse =
-                from_scipy(py, &m).expect("from_scipy should succeed for CSR with uint64 indices");
+            let sparse = from_scipy(py, &m, None)
+                .expect("from_scipy should succeed for CSR with uint64 indices");
             assert_eq!(crate::layout::layout_name(&sparse.descriptor.layout), "csr");
             assert_eq!(sparse.nnz().unwrap(), 2);
         });

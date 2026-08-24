@@ -141,7 +141,8 @@ assert t.dtype == hurray.float64
 
 DLPack is an independent zero-copy interchange protocol (not the Array API); see
 [Python: DLPack and NumPy Interop](hurray-python-dlpack-numpy.md). For NumPy arrays
-you can also use `hurray.from_numpy`, which takes the same zero-copy path.
+you can also use `hurray.from_numpy`, which shares the array's buffer when its alignment
+allows and copies when it does not.
 
 ## Tier 2 types are not constructible here
 

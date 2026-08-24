@@ -353,6 +353,108 @@ enforce the following rules:
 
 The same rules apply to the component `Tensor` views a sparse-layout tensor hands out.
 
+## Buffer Handles
+
+> This section uses RFC 2119 key words: MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT,
+> SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL.
+
+The binding MUST expose one `hurray.BufferHandle` per entry of a tensor's buffer table
+(ADR-037).
+
+### The class
+
+`hurray.BufferHandle` MUST be immutable and MUST expose, as read-only properties:
+
+| Property | Type | Meaning |
+|---|---|---|
+| `byte_size` | `int` | The buffer's declared size in bytes |
+| `alignment` | `int` | The alignment the buffer's base address satisfies |
+| `sync_mode` | `str` | `"producer_synced"`, `"event"`, or `"consumer_stream"` |
+| `device` | `hurray.Device` | The device and memory class the buffer lives in |
+| `is_empty` | `bool` | Whether `byte_size` is zero |
+
+It MUST compare and hash by value, and MUST NOT be constructible from Python: every field
+is settled by the buffers a tensor already holds, so there is nothing a caller could
+supply.
+
+A `BufferHandle` MUST NOT hold a reference to its tensor or to any buffer. In a zero-copy
+format a metadata accessor that extends buffer lifetime is a defect: collecting handles
+across a stream MUST pin nothing.
+
+### `Tensor.buffer_handles`
+
+`hurray.Tensor.buffer_handles` MUST be a tuple with one handle per buffer, in descriptor
+order, so `len(t.buffer_handles) == t.buffer_count`. It MUST be available for every layout
+and every device, including tensors whose bytes cannot be handed out.
+
+`Tensor.buffer(i)` is unchanged and remains the byte-view accessor. The two are separate
+deliberately: on a device tensor the metadata question has an answer where the byte
+question does not.
+
+`BufferHandle.device` MUST be the *same object* as `Tensor.device`, such that
+`t.buffer_handles[i].device is t.device` holds. `buffer-protocol.md` § Device Colocation
+requires every buffer of one descriptor to share a device and memory class, so there is
+exactly one to report.
+
+### Alignment is measured
+
+A descriptor emitted by the binding MUST declare, for each buffer, an alignment its base
+address actually satisfies:
+
+- An empty buffer MUST declare `1`.
+- An owned buffer MUST be allocated to at least `MIN_BUFFER_ALIGNMENT` and declare what it
+  allocated.
+- A borrowed buffer MUST have its base address measured, and MUST declare the largest
+  power of two that address satisfies, capped at `PAGE_ALIGNMENT`. A stronger *true*
+  declaration is legal and useful to IPC and RDMA consumers.
+
+The binding MUST NOT declare an alignment it has not established. A consumer issues
+aligned loads on the strength of this field.
+
+### `copy` on ingest
+
+Because `buffer-protocol.md` § Alignment sets a 64-byte floor that NumPy does not promise,
+every ingest entry point — `from_numpy`, `from_torch`, `from_scipy`, `sparse_coo`,
+`from_dlpack`, `asarray` — MUST accept a keyword-only `copy: bool | None = None`:
+
+| `copy` | Required behaviour |
+|---|---|
+| `None` | Share the source when its address meets the floor; otherwise copy into an allocation that does |
+| `False` | Never copy; raise `hurray.CopyRequiredError` naming the alignment the source actually has |
+| `True` | Always copy |
+
+For a multi-buffer source the decision MUST be made per buffer: SciPy's `.data`,
+`.indices` and `.indptr` are three allocations with three addresses.
+
+### `sync_mode`
+
+`sync_mode` MUST be read-only, and no constructor MAY accept it. `"event"` asserts that a
+device event exists for a consumer to wait on; no Python API supplies one, so a settable
+field could only author a contract nothing could honour. Everything the binding constructs
+is therefore `producer_synced`.
+
+A tensor holding any buffer whose `sync_mode` is not `producer_synced` MUST refuse the
+paths that hand out its bytes — `buffer(i)`, the component views (`.values`, `.indices`,
+`.indptr`), `__array__`, `to_torch` — with `hurray.UnsupportedError` naming the mode.
+`__dlpack__` MUST raise the built-in `BufferError` instead, as
+[Stream parameter semantics](#stream-parameter-semantics) already requires.
+
+`__hurray__` and `StreamWriter.write` MUST continue to relay such tensors unchanged:
+relaying a declaration is not reading a byte.
+
+### Alignment and the round-trip obligation
+
+`alignment` is exempt from the round-trip obligation that governs `layout`,
+`quantization`, `statistics` and `shard` (ADR-032 § 4). Alignment describes an address, and
+a rebuild that copies bytes has a different address; a tensor that arrived declaring `4096`
+MAY honestly declare `64` once rebuilt. Implementations MUST NOT add a settable
+`alignment=` to force equality.
+
+### Constants
+
+The module MUST expose `hurray.MIN_BUFFER_ALIGNMENT` and `hurray.PAGE_ALIGNMENT`,
+mirroring `hurray-core`.
+
 ## NumPy Interoperability
 
 For CPU tensors with Tier 1 element types, `hurray-python` MUST support:
@@ -749,7 +851,7 @@ The suite SHOULD cover the following categories:
 | Category | Representative benchmarks |
 |---|---|
 | **DLPack capsule** | `__dlpack__()` round-trip (create + consume); capsule destructor overhead; `from_dlpack()` from NumPy and PyTorch. |
-| **NumPy interop** | `from_numpy()` (zero-copy); `__array__()` (zero-copy); dtype coverage (all Tier 1 types). |
+| **NumPy interop** | `from_numpy()` on an aligned source (shared) and an under-aligned one (copied); `__array__()` (zero-copy); dtype coverage (all Tier 1 types). |
 | **PyTorch interop** | `from_torch()` and `to_torch()` round-trip on CPU and CUDA. |
 | **Native protocol** | `__hurray__()` / `from_hurray()` round-trip (full-fidelity, all dtypes). |
 | **Construction** | `zeros`, `ones`, `full`, `arange`, `linspace` for representative shapes and dtypes. |

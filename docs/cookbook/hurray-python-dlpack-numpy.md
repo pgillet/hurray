@@ -47,7 +47,7 @@ tensors are `ProducerSynced`; GPU stream handling is deferred to a future pass).
 
 ## NumPy interop
 
-### Zero-copy import: `hurray.from_numpy`
+### Import: `hurray.from_numpy`
 
 ```python
 import numpy as np, hurray
@@ -59,8 +59,15 @@ assert t.dtype == hurray.float32
 ```
 
 `from_numpy` stores a raw pointer into NumPy's buffer and holds a strong Python
-reference to `arr` — no copy is made. The NumPy array must be **C-contiguous**
-(row-major). For Fortran-order or strided arrays, call `numpy.ascontiguousarray` first:
+reference to `arr` — provided the buffer's base address satisfies the format's 64-byte
+alignment floor. NumPy does not promise one, and for arrays above glibc's
+`MMAP_THRESHOLD` it reliably does not deliver one, so most arrays are copied into an
+aligned allocation instead. Pass `copy=False` to get a `hurray.CopyRequiredError` rather
+than a silent copy; see
+[Buffer Protocol](layer-1-buffer-protocol.md#alignment-is-measured-not-asserted).
+
+The NumPy array must be **C-contiguous** (row-major). For Fortran-order or strided
+arrays, call `numpy.ascontiguousarray` first:
 
 ```python
 f_arr = np.asfortranarray(np.zeros((3, 4), dtype=np.float32))

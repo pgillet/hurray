@@ -82,9 +82,12 @@ os.unlink(path)
 - `encode` produces the **self-delimiting** binary descriptor — the first 10 bytes give
   its total length, so a reader can consume it without any external framing. `decode`
   reverses it exactly (`decoded == desc`).
-- On the Python side, `from_numpy` and `np.from_dlpack` are **zero-copy**: the tensor and
-  the array share one buffer. `save`/`load` use the on-disk **HRRYFILE** container (named
-  tensors, footer index, mmap-friendly alignment).
+- On the Python side, `np.from_dlpack` is **zero-copy**: the tensor and the array share
+  one buffer. `from_numpy` shares too *when the array's address meets the format's 64-byte
+  alignment floor*, and copies into an aligned allocation when it does not — see
+  [Buffer Protocol](layer-1-buffer-protocol.md#alignment-is-measured-not-asserted).
+  `save`/`load` use the on-disk **HRRYFILE** container (named tensors, footer index,
+  mmap-friendly alignment).
 
 ## Where to next
 

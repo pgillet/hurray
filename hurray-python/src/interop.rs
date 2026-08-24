@@ -10,7 +10,6 @@ use hurray_core::{
 };
 use pyo3::prelude::*;
 
-use crate::buffer::BufferStore;
 use crate::device::Device;
 use crate::dtype::Dtype;
 use crate::errors::{BufferError, InvalidDescriptorError, UnsupportedError};
@@ -18,10 +17,13 @@ use crate::tensor::Tensor;
 
 // ── hurray.from_numpy ─────────────────────────────────────────────────────────
 
-/// Wrap a NumPy `ndarray` as a `hurray.Tensor` without copying.
+/// Wrap a NumPy `ndarray` as a `hurray.Tensor`, sharing its buffer when the format
+/// permits it.
 ///
-/// The returned `Tensor` holds a strong Python reference to the source `ndarray`
-/// so the array's buffer remains valid for the `Tensor`'s entire lifetime.
+/// When the array's base address meets the format's 64-byte alignment floor, the
+/// returned `Tensor` borrows the buffer and holds a strong Python reference to the source
+/// `ndarray` so it stays valid for the `Tensor`'s entire lifetime. When it does not, the
+/// bytes are copied into an aligned allocation — see `copy` below.
 ///
 /// ## Requirements
 ///
@@ -30,11 +32,24 @@ use crate::tensor::Tensor;
 /// - The array dtype MUST map to a Hurray Tier 1 element type.
 /// - The array MUST reside on CPU (device 0).
 ///
+/// ## The `copy` argument (ADR-037 § 6)
+///
+/// `buffer-protocol.md` § Alignment requires every non-empty buffer to start on a
+/// 64-byte boundary, and NumPy does not promise one. For arrays above glibc's
+/// `MMAP_THRESHOLD` it reliably does *not* provide one: the allocator's 16-byte header
+/// puts the data 16 bytes past a page boundary, every time.
+///
+/// - `copy=None` (default) — copy only when the source is under-aligned.
+/// - `copy=False` — never copy; raise `hurray.BufferError` naming the alignment the
+///   source actually has, so the cost is visible rather than a silent `memcpy`.
+/// - `copy=True` — always copy.
+///
 /// ## Errors
 ///
 /// - `hurray.UnsupportedError` — array is not C-contiguous (D5).
 /// - `hurray.UnsupportedError` — dtype has no Hurray equivalent.
-/// - `hurray.BufferError` — cannot extract buffer pointer from the array.
+/// - `hurray.BufferError` — cannot extract buffer pointer from the array, or
+///   `copy=False` was requested for an under-aligned array.
 ///
 /// ## Examples
 ///
@@ -46,9 +61,15 @@ use crate::tensor::Tensor;
 /// assert t.shape == (2, 3)
 /// assert t.dtype == hurray.float32
 /// assert t.device.kind == "cpu"
+/// assert t.buffer_handles[0].alignment >= hurray.MIN_BUFFER_ALIGNMENT
 /// ```
 #[pyfunction]
-pub fn from_numpy(py: Python<'_>, array: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+#[pyo3(signature = (array, *, copy = None))]
+pub fn from_numpy(
+    py: Python<'_>,
+    array: &Bound<'_, PyAny>,
+    copy: Option<bool>,
+) -> PyResult<Tensor> {
     // 1. Verify C-contiguity (D5: non-C-contiguous → UnsupportedError, no silent copy).
     let flags = array.getattr("flags")?;
     let c_contiguous: bool = flags.get_item("C_CONTIGUOUS")?.extract()?;
@@ -85,17 +106,19 @@ pub fn from_numpy(py: Python<'_>, array: &Bound<'_, PyAny>) -> PyResult<Tensor> 
 
     let nbytes: usize = array.getattr("nbytes")?.extract()?;
 
-    // 5. Build BufferHandle and TensorDescriptor.
-    // NumPy allocators always produce at least 64-byte-aligned data; declare
-    // MIN_BUFFER_ALIGNMENT for non-empty buffers so hurray-core accepts the handle.
-    let alignment = if nbytes == 0 {
-        1
-    } else {
-        hurray_core::MIN_BUFFER_ALIGNMENT
-    };
+    // 5. Share or copy, then declare what the resulting address actually satisfies.
+    //
+    // The declaration follows the buffer rather than the other way round (ADR-037 § 5):
+    // the code this replaced declared 64 without looking, over addresses NumPy leaves
+    // 16-byte aligned.
+    // SAFETY: ptr and nbytes come from the array's __array_interface__, and `array`
+    // keeps that allocation alive for the Tensor's lifetime. The GIL is held.
+    let buffer =
+        unsafe { crate::buffer::ingest(ptr, nbytes, array.clone().unbind(), copy, "array")? };
+
     let buffer_handle = BufferHandle::new(
         nbytes as u64,
-        alignment,
+        buffer.alignment(),
         hurray_core::DeviceTag::Cpu,
         SyncMode::ProducerSynced,
     )
@@ -132,12 +155,6 @@ pub fn from_numpy(py: Python<'_>, array: &Bound<'_, PyAny>) -> PyResult<Tensor> 
         },
     )?;
 
-    // 7. Construct BufferStore::Borrowed.
-    // SAFETY: ptr points into the NumPy array's buffer. The array is kept alive
-    // by `base` (a strong Python reference) for the Tensor's entire lifetime.
-    let base: Py<PyAny> = array.clone().unbind();
-    let buffer = unsafe { BufferStore::borrowed(ptr, nbytes, base) };
-
     Ok(Tensor {
         descriptor,
         buffer,
@@ -149,14 +166,20 @@ pub fn from_numpy(py: Python<'_>, array: &Bound<'_, PyAny>) -> PyResult<Tensor> 
 
 // ── hurray.from_torch ─────────────────────────────────────────────────────────
 
-/// Wrap a `torch.Tensor` as a `hurray.Tensor` without copying (via DLPack).
+/// Wrap a `torch.Tensor` as a `hurray.Tensor`, sharing its buffer when the format
+/// permits it (via DLPack).
 ///
 /// `torch` is resolved at call time — `import hurray` does not require PyTorch (D7).
+///
+/// `copy` means what it means in [`from_numpy`], and applies to the array DLPack hands
+/// back: PyTorch's CPU allocator is 64-byte aligned for most tensors, so `copy=False`
+/// usually succeeds here where it usually fails for arrays NumPy allocated.
 ///
 /// ## Errors
 ///
 /// - `ImportError` — PyTorch is not installed.
 /// - `builtins.BufferError` — element type not representable in DLPack.
+/// - `hurray.BufferError` — `copy=False` was requested for an under-aligned tensor.
 ///
 /// ## Examples
 ///
@@ -169,7 +192,12 @@ pub fn from_numpy(py: Python<'_>, array: &Bound<'_, PyAny>) -> PyResult<Tensor> 
 /// assert t.dtype == hurray.float32
 /// ```
 #[pyfunction]
-pub fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+#[pyo3(signature = (tensor, *, copy = None))]
+pub fn from_torch(
+    py: Python<'_>,
+    tensor: &Bound<'_, PyAny>,
+    copy: Option<bool>,
+) -> PyResult<Tensor> {
     // D7: import torch at call time to avoid a hard dependency at module load.
     let _ = py.import("torch").map_err(|_| {
         pyo3::exceptions::PyImportError::new_err(
@@ -178,7 +206,7 @@ pub fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Tensor>
     })?;
 
     // Use DLPack v1.0 as the bridge: hand torch's tensor straight to the consumer.
-    from_dlpack_object(py, tensor)
+    from_dlpack_object(py, tensor, copy)
 }
 
 // ── Internal: DLPack consumer ────────────────────────────────────────────────
@@ -189,13 +217,17 @@ pub fn from_torch(py: Python<'_>, tensor: &Bound<'_, PyAny>) -> PyResult<Tensor>
 /// object exposing `__dlpack__` / `__dlpack_device__` — NumPy 2.1 dropped raw-capsule
 /// support — and letting NumPy make the call means it negotiates the device and stream
 /// arguments with the producer itself, as the DLPack exchange protocol intends.
-pub(crate) fn from_dlpack_object(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
+pub(crate) fn from_dlpack_object(
+    py: Python<'_>,
+    obj: &Bound<'_, PyAny>,
+    copy: Option<bool>,
+) -> PyResult<Tensor> {
     // Use numpy.from_dlpack to do the heavy lifting: it handles capsule ownership,
     // producer synchronisation, and produces a CPU ndarray we can then wrap.
     let np = py.import("numpy")?;
     let arr = np.call_method1("from_dlpack", (obj,))?;
     // Recursively wrap the resulting ndarray via from_numpy.
-    from_numpy(py, &arr)
+    from_numpy(py, &arr, copy)
 }
 
 // ── Registration ─────────────────────────────────────────────────────────────
