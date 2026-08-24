@@ -287,6 +287,39 @@ gets an error instead of a silent `memcpy`. An array you allocated on a 64-byte 
 yourself is shared, not copied — and `from_scipy` decides per component, so a matrix's
 `.data` can be shared while its `.indptr` is copied.
 
+### Allocating arrays that need no copy
+
+If you control the allocation, you can remove the copy entirely. NumPy ≥ 1.22 lets an
+extension install a data-memory handler (NEP 49), and alignment is the first motivation
+that NEP lists — NumPy considered guaranteeing it, declined, and shipped the hook
+instead, so this is the sanctioned answer rather than a workaround:
+
+```python
+import numpy as np
+import hurray
+
+with hurray.aligned_allocator():
+    weights = np.zeros((512, 512), dtype=np.float32)
+
+tensor = hurray.from_numpy(weights, copy=False)     # accepted: no copy is needed
+assert tensor.buffer_handles[0].alignment >= hurray.MIN_BUFFER_ALIGNMENT
+```
+
+That turns "Hurray always copies NumPy arrays" into "arrays allocated for Hurray are not
+copied" — a materially different bargain for a producer writing its own checkpoints.
+
+Three properties make this safe to reach for, and one is a sharp edge:
+
+- **The handler is stored per array.** An array allocated inside the block is freed
+  through the matching deallocator long after the block exits, so arrays outlive their
+  block safely.
+- **It is thread- and context-local**, so installing it cannot leak into unrelated code,
+  and it is restored on the way out even if the block raises. Blocks nest.
+- **Arrays allocated outside are untouched**, including ones that already existed.
+- **A thread started inside the block does not inherit the policy.** Arrays a worker
+  thread allocates get NumPy's default allocator and are copied on ingest like any other.
+  Enter the block on the thread that allocates.
+
 One consequence worth knowing: alignment is exempt from the round-trip obligation that
 governs `layout`, `quantization`, `statistics` and `shard`. Alignment describes an
 *address*, and a rebuild that copies bytes has a different one. A tensor that arrived
@@ -436,6 +469,7 @@ Tags `0x09`–`0xEF` are reserved; `0xF0`–`0xFE` are private; `0xFF` is perman
 - **Private tags** (`0xF0`–`0xFE`) allow vendor-specific devices or memory classes but require out-of-band agreement
 - **Empty buffers** are never dereferenced; alignment rules are waived
 - **In Python**, alignment is measured from the address rather than asserted, and ingest copies an under-aligned source unless `copy=False` tells it to refuse instead
+- **`hurray.aligned_allocator()`** removes the copy for arrays you allocate yourself, via NumPy's NEP 49 handler — per-array and thread-local, so a child thread does not inherit it
 - **`sync_mode`** is read-only in Python, and a buffer that is not `producer_synced` refuses every path that hands out bytes
 
 See `docs/spec/buffer-protocol.md` for the normative specification.

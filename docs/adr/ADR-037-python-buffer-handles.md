@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (2026-08-23), implemented 2026-08-24
+Accepted (2026-08-23), implemented 2026-08-24 (§ 1–9, then § 6a)
 
 **Correction (2026-08-24, from implementation):** § 6 specified `hurray.BufferError` for
 `copy=False` on an under-aligned source. The implementation raises
@@ -229,6 +229,28 @@ for the escape hatch below.
 
 ### 6a. The escape hatch: allocate through NumPy's pluggable allocator
 
+> **Resolved (2026-08-24), implemented.** Shipped as `hurray.aligned_allocator()`, a
+> **context manager only** — no module-level install. The policy is thread-local, so
+> "install once at startup" would quietly do nothing for arrays allocated on worker
+> threads; one shape avoids teaching that footgun. No `alignment=` parameter either: 64 is
+> the floor the format requires and the only reason the feature exists, and page alignment
+> serves a different question (IPC/RDMA) that can be answered separately if it earns it.
+>
+> A prototype settled four things that the write-up below had left to assumption:
+>
+> - **The API slots must be called with the GIL held.** They read and write a
+>   `ContextVar`; calling `PyDataMem_GetHandler` without the GIL segfaults immediately.
+>   Free under PyO3, but it means these calls must never sit inside a `py.detach()` block.
+> - **`np.zeros` goes through `calloc`, not `malloc`.** An implementation covering only
+>   `malloc` looks correct and silently allocates nothing.
+> - **`realloc` is exercised** (`ndarray.resize`) **and is handed only the new size**, so
+>   the allocator carries a 64-byte header recording each block's size. That also keeps
+>   every `alloc`/`dealloc` pair inside Rust, which is what the NEP's implementation notes
+>   warn to preserve.
+> - **Slots 304/305 verified** against the installed NumPy 2.5.2 headers rather than
+>   recalled.
+
+
 NumPy ≥ 1.22 lets an extension install a data-memory handler (NEP 49;
 `numpy._core.multiarray.get_handler_name()` reports `default_allocator` today).
 
@@ -418,8 +440,8 @@ which has both, and is answered with a sentence of documentation.
 
 ## Open Questions Deferred
 
-- **Shipping the NEP 49 aligned allocator of § 6a**, and whether it should be a context
-  manager, a module-level install, or both.
+- ~~Shipping the NEP 49 aligned allocator of § 6a~~ — resolved and implemented
+  2026-08-24; see the note on § 6a.
 - **Requesting a stronger alignment at construction** — `hurray.empty(..., alignment=4096)`
   that *allocates* to the request and declares what it allocated. Explicitly not a
   reopening of § 4: an allocation request is an instruction to the allocator, not a
