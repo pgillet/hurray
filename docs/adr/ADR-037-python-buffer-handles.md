@@ -2,7 +2,13 @@
 
 ## Status
 
-Proposed (2026-08-23)
+Accepted (2026-08-23), implemented 2026-08-24
+
+**Correction (2026-08-24, from implementation):** § 6 specified `hurray.BufferError` for
+`copy=False` on an under-aligned source. The implementation raises
+`hurray.CopyRequiredError` instead — the binding already reserves that class for
+"`copy=False` requested but a copy is needed", and `__array__` raises it for the same
+reason, so a caller catching one should catch both. Both subclass `ValueError`.
 
 Extends **ADR-032** to the last descriptor section without a Python representation, and
 applies its § 4 declaration-versus-evidence rule to a field where, unusually, the
@@ -202,7 +208,7 @@ follows in this binding:
 ```python
 def from_numpy(array, *, copy: bool | None = None) -> Tensor: ...
 # copy=None   copy into a 64-byte-aligned allocation only if the source is under-aligned
-# copy=False  raise hurray.BufferError naming the measured alignment; never copy
+# copy=False  raise hurray.CopyRequiredError naming the measured alignment; never copy
 # copy=True   always copy
 ```
 

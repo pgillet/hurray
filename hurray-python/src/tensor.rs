@@ -439,6 +439,47 @@ impl Tensor {
         self.buffer_count()
     }
 
+    /// This tensor's buffer table: what each buffer declares about itself.
+    ///
+    /// One `hurray.BufferHandle` per buffer, in descriptor order, so
+    /// `len(t.buffer_handles) == t.buffer_count`. A handle is five scalars — it holds
+    /// no reference to the tensor and none to the bytes, so keeping one costs nothing
+    /// and pins nothing.
+    ///
+    /// Use `buffer(i)` to read a buffer's bytes and `buffer_handles[i]` to ask about
+    /// them. The split is deliberate: on a non-CPU tensor the second must work where
+    /// the first cannot (ADR-037 § 2).
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// t = hurray.Tensor(bytes(16), hurray.float32, [4])
+    /// (handle,) = t.buffer_handles
+    /// assert handle.byte_size == 16
+    /// assert handle.device is t.device
+    /// ```
+    #[getter]
+    pub fn buffer_handles(&self, py: Python<'_>) -> PyResult<Py<PyTuple>> {
+        let handles: Vec<Py<PyAny>> = self
+            .descriptor
+            .buffers
+            .iter()
+            .map(|handle| -> PyResult<Py<PyAny>> {
+                Ok(Py::new(
+                    py,
+                    crate::buffer_handle::BufferHandle {
+                        inner: *handle,
+                        device_py: self.device_py.clone_ref(py),
+                    },
+                )?
+                .into_any())
+            })
+            .collect::<PyResult<_>>()?;
+        Ok(PyTuple::new(py, handles)?.unbind())
+    }
+
     /// The memory layout of this tensor, as a `hurray.Layout` object.
     ///
     /// The object carries that layout's parameters — `nnz`, `strides`, `page_size`,
@@ -648,6 +689,7 @@ impl Tensor {
     pub fn buffer(slf: &Bound<'_, Self>, index: usize) -> PyResult<Py<PyAny>> {
         let byte_size = {
             let t = slf.borrow();
+            require_producer_synced(&t.descriptor, "buffer()")?;
             // The *declared* size, from the descriptor's buffer table — the same
             // number a consumer reading this descriptor off the wire would see.
             t.descriptor
@@ -862,6 +904,16 @@ impl Tensor {
         let _ = (stream, max_version, dl_device, copy);
         let py = slf.py();
         let t = slf.borrow();
+        if let Some((index, mode)) = unsynchronised_buffer(&t.descriptor) {
+            // builtins.BufferError, not the UnsupportedError the other byte paths raise:
+            // python-bindings.md § Stream parameter semantics names it for exactly this
+            // case, and it is what NumPy and PyTorch catch.
+            return Err(pyo3::exceptions::PyBufferError::new_err(format!(
+                "buffer {index} declares sync_mode '{mode}'; a consumer must wait on the \
+                 producer's device event first, and this binding cannot"
+            )));
+        }
+
         // DLPack describes one densely-addressable buffer; a sparse or block-paged
         // tensor has no such single representation (ADR-031 § 3).
         if !is_dense(&t.descriptor.layout) {
@@ -1126,6 +1178,8 @@ impl Tensor {
         let py = slf.py();
         let t = slf.borrow();
 
+        require_producer_synced(&t.descriptor, "__array__")?;
+
         // NumPy's ndarray is dense; a sparse or block-paged buffer is not an array
         // of elements in index order (ADR-031 § 3).
         if !is_dense(&t.descriptor.layout) {
@@ -1337,6 +1391,7 @@ impl Tensor {
         let py = slf.py();
         let (ptr, len, device_tag, memory_class) = {
             let t = slf.borrow();
+            require_producer_synced(&t.descriptor, "a component view")?;
             let store = match buffer_index {
                 0 => &t.buffer,
                 n => t.aux_buffers.get(n - 1).ok_or_else(|| {
@@ -1392,6 +1447,41 @@ pub(crate) fn no_such_attribute(attr: &str, layout: &str) -> PyErr {
     pyo3::exceptions::PyAttributeError::new_err(format!(
         "'Tensor' object has no attribute '{attr}'; this is a {layout} tensor"
     ))
+}
+
+// ── Synchronisation ───────────────────────────────────────────────────────────
+
+/// The buffer whose `sync_mode` forbids handing out bytes, if there is one.
+///
+/// `buffer-protocol.md` § Consumer Requirement puts the duty on the *consumer*: for
+/// `event` and `consumer_stream`, wait on the producer's device event before touching a
+/// byte. This binding has no way to wait — no Python API supplies an event handle — so
+/// every path that hands out bytes stops here instead of reading through the contract
+/// (ADR-037 § 7). Relaying such a tensor onward (`__hurray__`, `StreamWriter.write`) is
+/// untouched: relaying a declaration is not reading a byte.
+///
+/// Anything this binding constructs is `producer_synced`, so only a tensor decoded from a
+/// stream, a file, or another producer's capsule can trip this.
+fn unsynchronised_buffer(descriptor: &TensorDescriptor) -> Option<(usize, hurray_core::SyncMode)> {
+    descriptor
+        .buffers
+        .iter()
+        .enumerate()
+        .find(|(_, h)| h.sync_mode() != hurray_core::SyncMode::ProducerSynced)
+        .map(|(index, h)| (index, h.sync_mode()))
+}
+
+/// Refuse `path` when any buffer needs a wait this binding cannot perform.
+fn require_producer_synced(descriptor: &TensorDescriptor, path: &str) -> PyResult<()> {
+    match unsynchronised_buffer(descriptor) {
+        None => Ok(()),
+        Some((index, mode)) => Err(UnsupportedError::new_err(format!(
+            "{path} cannot hand out the bytes of buffer {index}: it declares sync_mode \
+             '{mode}', so a consumer must wait on the producer's device event first, and \
+             this binding cannot. Relay the tensor instead — __hurray__ and \
+             StreamWriter.write pass it on unchanged."
+        ))),
+    }
 }
 
 // ── Buffer access ─────────────────────────────────────────────────────────────
@@ -1491,10 +1581,13 @@ impl Tensor {
             LayoutDescriptor, SyncMode, DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR,
         };
 
-        // Use MIN_BUFFER_ALIGNMENT (64) for non-empty buffers: Python/NumPy/SciPy
-        // allocators always produce at least 64-byte-aligned data, so declaring
-        // this alignment is correct and satisfies hurray-core's enforcement.
-        let alignment = if len == 0 { 1 } else { MIN_BUFFER_ALIGNMENT };
+        // Measured, not assumed (ADR-037 § 5). The comment this replaced claimed
+        // Python and NumPy allocators are always 64-byte aligned; they are not —
+        // glibc puts a 16-byte header before every mmap-served block, so a large
+        // NumPy array sits exactly 16 bytes past a page boundary, every time.
+        // Declaring an alignment the address does not have invites a consumer's
+        // aligned SIMD load to fault.
+        let alignment = crate::buffer::measured_alignment(ptr, len);
         let buffer_handle = BufferHandle::with_memory_class(
             len as u64,
             alignment,
@@ -2724,6 +2817,139 @@ pub(crate) mod tests {
             .unwrap();
             assert!(matches!(tensor.buffer, BufferStore::Owned { .. }));
             assert_eq!(tensor.buffer.len(), 24); // 6 × f32 = 24 bytes
+        });
+    }
+
+    // ── sync_mode refusal (ADR-037 § 7) ──────────────────────────────────────
+    //
+    // These live in Rust because Python cannot build the tensor under test: every
+    // constructor the binding exposes produces `producer_synced`, which is the whole
+    // point — only a decoded stream, file, or foreign capsule can carry another mode.
+
+    /// A 24-byte float32 tensor whose single buffer declares `mode`.
+    ///
+    /// Tagged CUDA whenever the mode is not `producer_synced`: `hurray-core` refuses that
+    /// combination on a CPU buffer, since there is no device queue for a host write to be
+    /// pending on.
+    fn tensor_with_sync_mode(py: Python<'_>, mode: hurray_core::SyncMode) -> Tensor {
+        let device_tag = if mode == hurray_core::SyncMode::ProducerSynced {
+            DeviceTag::Cpu
+        } else {
+            DeviceTag::Cuda
+        };
+        let bytes = float32_buf_2x3();
+        let buffer = BufferStore::from_slice(&bytes);
+        let handle = hurray_core::BufferHandle::new(
+            bytes.len() as u64,
+            buffer.alignment(),
+            device_tag,
+            mode,
+        )
+        .unwrap();
+        let descriptor = TensorDescriptor::new(
+            hurray_core::DESCRIPTOR_VERSION_MAJOR,
+            hurray_core::DESCRIPTOR_VERSION_MINOR,
+            ElementType::Float32,
+            Shape::new(vec![2, 3]).unwrap(),
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![handle],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        Tensor {
+            descriptor,
+            buffer,
+            aux_buffers: Vec::new(),
+            dtype_py: Py::new(
+                py,
+                Dtype {
+                    inner: ElementType::Float32,
+                },
+            )
+            .unwrap(),
+            device_py: Py::new(
+                py,
+                crate::device::Device {
+                    tag: device_tag,
+                    memory_class: MemoryClass::Standard,
+                    device_id: 0,
+                },
+            )
+            .unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_buffer_awaiting_an_event_refuses_to_hand_out_its_bytes() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            let tensor =
+                Py::new(py, tensor_with_sync_mode(py, hurray_core::SyncMode::Event)).unwrap();
+            let bound = tensor.bind(py);
+
+            let err = Tensor::buffer(bound, 0).unwrap_err();
+            let message = err.to_string();
+            assert!(message.contains("event"), "{message}");
+            assert!(err.is_instance_of::<crate::errors::UnsupportedError>(py));
+
+            let err = Tensor::__array__(bound, None, None).unwrap_err();
+            assert!(err.is_instance_of::<crate::errors::UnsupportedError>(py));
+
+            // __dlpack__ raises the built-in BufferError instead: that is what
+            // python-bindings.md names, and what NumPy and PyTorch catch.
+            let err = Tensor::__dlpack__(bound, None, None, None, None).unwrap_err();
+            assert!(err.is_instance_of::<pyo3::exceptions::PyBufferError>(py));
+            assert!(err.to_string().contains("event"), "{err}");
+        });
+    }
+
+    #[test]
+    fn a_consumer_stream_buffer_is_refused_the_same_way() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            let tensor = Py::new(
+                py,
+                tensor_with_sync_mode(py, hurray_core::SyncMode::ConsumerStream),
+            )
+            .unwrap();
+            let err = Tensor::buffer(tensor.bind(py), 0).unwrap_err();
+            assert!(err.to_string().contains("consumer_stream"), "{err}");
+        });
+    }
+
+    #[test]
+    fn a_producer_synced_buffer_hands_out_its_bytes_as_before() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            let tensor = Py::new(
+                py,
+                tensor_with_sync_mode(py, hurray_core::SyncMode::ProducerSynced),
+            )
+            .unwrap();
+            assert!(Tensor::buffer(tensor.bind(py), 0).is_ok());
+        });
+    }
+
+    /// The declaration a tensor carries is not a byte of its data, so relaying one is
+    /// always allowed — only reading is gated.
+    #[test]
+    fn an_unsynchronised_tensor_still_reports_its_mode() {
+        init();
+        Python::attach(|py| {
+            let _m = build_module(py);
+            let tensor =
+                Py::new(py, tensor_with_sync_mode(py, hurray_core::SyncMode::Event)).unwrap();
+            let handles = tensor.borrow(py).buffer_handles(py).unwrap();
+            let handle = handles.bind(py).get_item(0).unwrap();
+            let mode: String = handle.getattr("sync_mode").unwrap().extract().unwrap();
+            assert_eq!(mode, "event");
         });
     }
 }

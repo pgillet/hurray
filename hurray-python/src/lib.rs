@@ -11,6 +11,7 @@
 use pyo3::prelude::*;
 
 pub(crate) mod buffer;
+mod buffer_handle;
 mod composite;
 mod creation;
 mod device;
@@ -73,6 +74,7 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     scipy_interop::register(m)?;
     stream::register(m)?;
     native_protocol::register(m)?;
+    buffer_handle::register(m)?;
     composite::register(m)?;
     creation::register(m)?;
     file_io::register(m)?;

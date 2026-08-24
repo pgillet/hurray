@@ -202,49 +202,34 @@ pub(crate) fn make_sparse_tensor(
 
 // ── Alignment helper ──────────────────────────────────────────────────────────
 
-/// Return the declared alignment for a buffer of `byte_size` bytes from Python.
+/// Build one `BufferHandle` from a `(byte_size, alignment)` pair.
 ///
-/// Python/NumPy/SciPy allocators always produce at least 64-byte-aligned data,
-/// so declaring `MIN_BUFFER_ALIGNMENT` for non-empty buffers is correct and
-/// satisfies hurray-core's enforcement (`alignment ≥ 64` for non-empty buffers).
-/// Empty buffers require only alignment=1 (the minimum valid power-of-two).
+/// Both come from the `BufferStore` that will hold the bytes, never from a rule of thumb
+/// about Python allocators (ADR-037 § 5): the store is what the consumer will read, so
+/// the store is what the descriptor describes.
 #[inline]
-fn py_buf_alignment(byte_size: u64) -> u32 {
-    if byte_size == 0 {
-        1
-    } else {
-        hurray_core::MIN_BUFFER_ALIGNMENT
-    }
+fn buffer_handle(spec: (u64, u32), what: &str) -> PyResult<BufferHandle> {
+    BufferHandle::new(
+        spec.0,
+        spec.1,
+        hurray_core::DeviceTag::Cpu,
+        SyncMode::ProducerSynced,
+    )
+    .map_err(|e| BufferError::new_err(format!("{what}: {e}")))
 }
 
-/// Build the three `BufferHandle`s needed for a CSR/CSC descriptor.
+/// Build the three `BufferHandle`s needed for a CSR/CSC descriptor, each from its own
+/// `(byte_size, alignment)` pair.
 pub(crate) fn build_three_buffer_handles(
-    values_len: u64,
-    aux0_len: u64,
-    aux1_len: u64,
+    values: (u64, u32),
+    aux0: (u64, u32),
+    aux1: (u64, u32),
 ) -> PyResult<(BufferHandle, BufferHandle, BufferHandle)> {
-    let bh_values = BufferHandle::new(
-        values_len,
-        py_buf_alignment(values_len),
-        hurray_core::DeviceTag::Cpu,
-        SyncMode::ProducerSynced,
-    )
-    .map_err(|e| BufferError::new_err(format!("values buffer: {e}")))?;
-    let bh_aux0 = BufferHandle::new(
-        aux0_len,
-        py_buf_alignment(aux0_len),
-        hurray_core::DeviceTag::Cpu,
-        SyncMode::ProducerSynced,
-    )
-    .map_err(|e| BufferError::new_err(format!("index buffer 0: {e}")))?;
-    let bh_aux1 = BufferHandle::new(
-        aux1_len,
-        py_buf_alignment(aux1_len),
-        hurray_core::DeviceTag::Cpu,
-        SyncMode::ProducerSynced,
-    )
-    .map_err(|e| BufferError::new_err(format!("index buffer 1: {e}")))?;
-    Ok((bh_values, bh_aux0, bh_aux1))
+    Ok((
+        buffer_handle(values, "values buffer")?,
+        buffer_handle(aux0, "index buffer 0")?,
+        buffer_handle(aux1, "index buffer 1")?,
+    ))
 }
 
 /// Require a NumPy array to be C-contiguous (no silent copy on borrow).
@@ -291,12 +276,13 @@ fn array_shape(arr: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
 /// assert t.nnz == 2
 /// ```
 #[pyfunction]
-#[pyo3(signature = (values, indices, shape))]
+#[pyo3(signature = (values, indices, shape, *, copy = None))]
 pub fn sparse_coo(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
     indices: &Bound<'_, PyAny>,
     shape: Vec<i64>,
+    copy: Option<bool>,
 ) -> PyResult<Tensor> {
     if shape.iter().any(|&d| d < 0) {
         return Err(InvalidDescriptorError::new_err(
@@ -341,21 +327,24 @@ pub fn sparse_coo(
     let (val_ptr, val_len, element_type) =
         crate::scipy_interop::extract_numpy_buffer(py, values, None)?;
 
+    // Each source array is the base that keeps its own buffer alive, and each is shared
+    // or copied on its own merits — two arrays, two addresses, two answers.
+    // SAFETY: pointers come from the arrays' __array_interface__; the bases keep the
+    // backing memory alive for the lifetime of the returned tensor's buffer views.
+    let values_buf = unsafe {
+        crate::buffer::ingest(val_ptr, val_len, values.clone().unbind(), copy, "values")?
+    };
+    let indices_buf = unsafe {
+        crate::buffer::ingest(idx_ptr, idx_len, indices.clone().unbind(), copy, "indices")?
+    };
+
     let descriptor = build_coo_descriptor(
         element_type,
         hurray_shape,
         nnz,
-        val_len as u64,
-        idx_len as u64,
+        (val_len as u64, values_buf.alignment()),
+        (idx_len as u64, indices_buf.alignment()),
     )?;
-
-    // Zero-copy: each source array is the base that keeps its borrowed buffer alive.
-    let values_base: Py<PyAny> = values.clone().unbind();
-    let indices_base: Py<PyAny> = indices.clone().unbind();
-    // SAFETY: pointers come from the arrays' __array_interface__; the bases keep the
-    // backing memory alive for the lifetime of the returned tensor's buffer views.
-    let values_buf = unsafe { BufferStore::borrowed(val_ptr, val_len, values_base) };
-    let indices_buf = unsafe { BufferStore::borrowed(idx_ptr, idx_len, indices_base) };
 
     make_sparse_tensor(py, descriptor, values_buf, indices_buf, None)
 }
@@ -365,23 +354,11 @@ pub(crate) fn build_coo_descriptor(
     element_type: ElementType,
     shape: Shape,
     nnz: u64,
-    values_len: u64,
-    indices_len: u64,
+    values: (u64, u32),
+    indices: (u64, u32),
 ) -> PyResult<TensorDescriptor> {
-    let bh_values = BufferHandle::new(
-        values_len,
-        py_buf_alignment(values_len),
-        hurray_core::DeviceTag::Cpu,
-        SyncMode::ProducerSynced,
-    )
-    .map_err(|e| BufferError::new_err(format!("values buffer: {e}")))?;
-    let bh_indices = BufferHandle::new(
-        indices_len,
-        py_buf_alignment(indices_len),
-        hurray_core::DeviceTag::Cpu,
-        SyncMode::ProducerSynced,
-    )
-    .map_err(|e| BufferError::new_err(format!("indices buffer: {e}")))?;
+    let bh_values = buffer_handle(values, "values buffer")?;
+    let bh_indices = buffer_handle(indices, "indices buffer")?;
 
     TensorDescriptor::new(
         DESCRIPTOR_VERSION_MAJOR,
@@ -404,11 +381,11 @@ pub(crate) fn build_csr_descriptor(
     element_type: ElementType,
     shape: Shape,
     nnz: u64,
-    values_len: u64,
-    aux0_len: u64,
-    aux1_len: u64,
+    values: (u64, u32),
+    aux0: (u64, u32),
+    aux1: (u64, u32),
 ) -> PyResult<TensorDescriptor> {
-    let (bh_v, bh_0, bh_1) = build_three_buffer_handles(values_len, aux0_len, aux1_len)?;
+    let (bh_v, bh_0, bh_1) = build_three_buffer_handles(values, aux0, aux1)?;
     TensorDescriptor::new(
         DESCRIPTOR_VERSION_MAJOR,
         DESCRIPTOR_VERSION_MINOR,
@@ -430,11 +407,11 @@ pub(crate) fn build_csc_descriptor(
     element_type: ElementType,
     shape: Shape,
     nnz: u64,
-    values_len: u64,
-    aux0_len: u64,
-    aux1_len: u64,
+    values: (u64, u32),
+    aux0: (u64, u32),
+    aux1: (u64, u32),
 ) -> PyResult<TensorDescriptor> {
-    let (bh_v, bh_0, bh_1) = build_three_buffer_handles(values_len, aux0_len, aux1_len)?;
+    let (bh_v, bh_0, bh_1) = build_three_buffer_handles(values, aux0, aux1)?;
     TensorDescriptor::new(
         DESCRIPTOR_VERSION_MAJOR,
         DESCRIPTOR_VERSION_MINOR,
@@ -498,14 +475,14 @@ pub(crate) mod tests {
         let shape = Shape::new(vec![2, 2]).unwrap();
         let bh_values = BufferHandle::new(
             values.len() as u64,
-            py_buf_alignment(values.len() as u64),
+            hurray_core::MIN_BUFFER_ALIGNMENT,
             hurray_core::DeviceTag::Cpu,
             SyncMode::ProducerSynced,
         )
         .unwrap();
         let bh_idx = BufferHandle::new(
             indices.len() as u64,
-            py_buf_alignment(indices.len() as u64),
+            hurray_core::MIN_BUFFER_ALIGNMENT,
             hurray_core::DeviceTag::Cpu,
             SyncMode::ProducerSynced,
         )
@@ -564,9 +541,9 @@ pub(crate) mod tests {
             ElementType::Float32,
             shape,
             2,
-            values.len() as u64,
-            row_indices.len() as u64,
-            col_ptr.len() as u64,
+            (values.len() as u64, hurray_core::MIN_BUFFER_ALIGNMENT),
+            (row_indices.len() as u64, hurray_core::MIN_BUFFER_ALIGNMENT),
+            (col_ptr.len() as u64, hurray_core::MIN_BUFFER_ALIGNMENT),
         )
         .unwrap();
 
@@ -625,9 +602,9 @@ pub(crate) mod tests {
             ElementType::Float32,
             shape,
             4,
-            values.len() as u64,
-            col_idx.len() as u64,
-            row_ptr.len() as u64,
+            (values.len() as u64, hurray_core::MIN_BUFFER_ALIGNMENT),
+            (col_idx.len() as u64, hurray_core::MIN_BUFFER_ALIGNMENT),
+            (row_ptr.len() as u64, hurray_core::MIN_BUFFER_ALIGNMENT),
         )
         .unwrap();
 
@@ -692,7 +669,7 @@ pub(crate) mod tests {
                 .call_method("array", (vec![vec![0u64, 0], vec![1, 1]],), Some(&ikw))
                 .unwrap();
 
-            let t = sparse_coo(py, &values, &indices, vec![2, 2]).unwrap();
+            let t = sparse_coo(py, &values, &indices, vec![2, 2], None).unwrap();
             assert_eq!(crate::layout::layout_name(&t.descriptor.layout), "coo");
             assert_eq!(t.ndim(), 2);
             assert_eq!(t.nnz().unwrap(), 2);
@@ -715,7 +692,7 @@ pub(crate) mod tests {
             let indices = np
                 .call_method("array", (vec![vec![0i64, 0]],), Some(&ikw))
                 .unwrap();
-            let err = sparse_coo(py, &values, &indices, vec![2, 2]).unwrap_err();
+            let err = sparse_coo(py, &values, &indices, vec![2, 2], None).unwrap_err();
             assert!(err.is_instance_of::<UnsupportedError>(py));
         });
     }
@@ -806,9 +783,9 @@ pub(crate) mod tests {
                 ElementType::Float32,
                 shape,
                 2,
-                values.len() as u64,
-                row_idx.len() as u64,
-                col_ptr.len() as u64,
+                (values.len() as u64, hurray_core::MIN_BUFFER_ALIGNMENT),
+                (row_idx.len() as u64, hurray_core::MIN_BUFFER_ALIGNMENT),
+                (col_ptr.len() as u64, hurray_core::MIN_BUFFER_ALIGNMENT),
             )
             .unwrap();
 

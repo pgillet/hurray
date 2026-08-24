@@ -939,7 +939,7 @@ pub fn asarray(
         drop(t); // Release borrow before calling into obj.
 
         if !needs_dtype_conv && copy != Some(true) {
-            return crate::interop::from_dlpack_object(py, obj);
+            return crate::interop::from_dlpack_object(py, obj, copy);
         }
         // Fall through to numpy for dtype conversion or explicit copy.
     }
@@ -960,21 +960,26 @@ pub fn asarray(
         np.call_method1("asarray", (obj,))?
     };
 
-    crate::interop::from_numpy(py, &arr)
+    // `copy=True` is already honoured above — numpy.asarray produced a fresh array — so
+    // it degrades to None here rather than copying the same bytes a second time.
+    crate::interop::from_numpy(py, &arr, copy.filter(|&c| !c))
 }
 
 /// Construct a tensor from a DLPack capsule or an object with `__dlpack__`.
 ///
 /// The `from_dlpack` entry point. `x` is any object implementing `__dlpack__`; the
 /// exchange is left to the DLPack consumer so that it negotiates device and stream
-/// with the producer. The result is wrapped as a `hurray.Tensor` (zero-copy on CPU).
-/// The `device` and `copy` parameters are accepted for signature compatibility but
-/// only CPU is supported in this version.
+/// with the producer. The result is wrapped as a `hurray.Tensor`, sharing the producer's
+/// buffer when its address meets the format's 64-byte alignment floor and copying into an
+/// aligned allocation when it does not — `copy` chooses between those, exactly as in
+/// [`crate::interop::from_numpy`]. `device` is accepted for signature compatibility; only
+/// CPU is supported in this version.
 ///
 /// ## Errors
 ///
 /// - `ImportError` — NumPy is not installed.
 /// - `hurray.UnsupportedError` — source tensor is not on CPU.
+/// - `hurray.CopyRequiredError` — `copy=False` and the source is under-aligned.
 ///
 /// ## Examples
 ///
@@ -988,7 +993,6 @@ pub fn asarray(
 /// ```
 #[pyfunction]
 #[pyo3(signature = (x, *, device = None, copy = None))]
-#[allow(unused_variables)]
 pub fn from_dlpack(
     py: Python<'_>,
     x: &Bound<'_, PyAny>,
@@ -996,7 +1000,8 @@ pub fn from_dlpack(
     device: Option<&Bound<'_, PyAny>>,
     copy: Option<bool>,
 ) -> PyResult<Tensor> {
-    crate::interop::from_dlpack_object(py, x)
+    let _ = device;
+    crate::interop::from_dlpack_object(py, x, copy)
 }
 
 // ── Registration ──────────────────────────────────────────────────────────────
