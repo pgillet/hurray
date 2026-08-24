@@ -426,6 +426,22 @@ every ingest entry point — `from_numpy`, `from_torch`, `from_scipy`, `sparse_c
 For a multi-buffer source the decision MUST be made per buffer: SciPy's `.data`,
 `.indices` and `.indptr` are three allocations with three addresses.
 
+### The aligned allocator
+
+`hurray-python` MUST expose `hurray.aligned_allocator()`, a context manager that installs
+a 64-byte-aligned NumPy data-memory handler (NEP 49) for the duration of a block, so that
+arrays allocated inside it need no copy on ingest.
+
+- It MUST restore the previously installed handler on exit, including when the block
+  raises, and MUST support nesting.
+- It MUST NOT be offered as a module-level install. The handler is thread-local, so a
+  process-wide "install once" would silently fail to cover arrays allocated on other
+  threads.
+- It MUST raise `hurray.UnsupportedError` on NumPy older than 1.22, which predates NEP 49.
+
+Implementations MUST document that a thread started inside the block does not inherit the
+policy.
+
 ### `sync_mode`
 
 `sync_mode` MUST be read-only, and no constructor MAY accept it. `"event"` asserts that a

@@ -239,9 +239,12 @@ pub(crate) fn must_copy(
         // already reserves this class for "copy=False but a copy is needed", and a
         // caller catching it from __array__ should catch the same thing here.
         return Err(crate::errors::CopyRequiredError::new_err(format!(
+            // The message names the remedy, not just the problem: a caller who reached
+            // for copy=False wants the copy gone, and hurray.aligned_allocator() is how.
             "{what} is {alignment}-byte aligned, below the {MIN_BUFFER_ALIGNMENT}-byte minimum \
              the format requires; pass copy=None (the default) to copy it into an aligned \
-             allocation, or allocate the source 64-byte aligned"
+             allocation, or allocate the source inside a `with hurray.aligned_allocator():` \
+             block so no copy is needed"
         )));
     }
     Ok(true)

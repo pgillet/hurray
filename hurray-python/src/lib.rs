@@ -23,6 +23,7 @@ mod interop;
 pub(crate) mod layout;
 mod metadata;
 mod native_protocol;
+mod numpy_allocator;
 mod print_options;
 pub(crate) mod quantization;
 mod scipy_interop;
@@ -60,6 +61,8 @@ mod tensor;
 /// | `hurray.FileError` / `hurray.StreamError` | exceptions | 8b |
 /// | `hurray.set_print_options` / `hurray.get_print_options` | functions | 8e |
 /// | `hurray.print_options` | context-manager factory | 8e |
+/// | `hurray.aligned_allocator` | context-manager factory | ADR-037 |
+/// | `hurray.AlignedAllocatorCtx` | context manager | ADR-037 |
 /// | `hurray.PrintOptionsCtx` | context manager | 8e |
 #[pymodule]
 fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -74,6 +77,7 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     scipy_interop::register(m)?;
     stream::register(m)?;
     native_protocol::register(m)?;
+    numpy_allocator::register(m)?;
     buffer_handle::register(m)?;
     composite::register(m)?;
     creation::register(m)?;
