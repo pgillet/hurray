@@ -119,3 +119,67 @@ with hurray.StreamWriter() as writer:
     writer.write(outer)
 (back,) = list(hurray.StreamReader(writer.getvalue()))
 print(f"  nested tree survives a round trip: {back == outer}")
+
+# ── An overlay: a base plus corrections ───────────────────────────────────────
+
+print("\n=== An overlay ===")
+
+SIZE = 32
+
+# The base spans the whole index space. In an SpQR-style model this is the
+# quantized weight matrix; here it is plain float32 to keep the example short.
+base = hurray.Tensor(
+    bytes(4 * SIZE * SIZE),
+    hurray.float32,
+    [SIZE, SIZE],
+    shard=hurray.Shard([SIZE, SIZE], [0, 0]),
+)
+
+# The correction is sparse: the outliers quantization would have ruined.
+correction = hurray.Tensor(
+    bytes(4 * 16),
+    hurray.float32,
+    [SIZE, SIZE],
+    aux_buffers=[bytes(16 * 2 * 8)],       # packed [nnz, rank] uint64 indices
+    layout=hurray.CooLayout(nnz=16, is_sorted=True),
+    shard=hurray.Shard([SIZE, SIZE], [0, 0]),
+)
+
+weights = hurray.Composite(
+    "overlay",
+    shape=[SIZE, SIZE],
+    dtype=hurray.float32,
+    members=[base, correction],
+    combine_op="replace",
+)
+
+print(f"  {weights!r}")
+print(f"  roles: {weights.member_roles}")
+print(f"  combine_op: {weights.layout.combine_op}")
+
+print("\n  You do not say which member is the base. The format fixes the roles by")
+print("  position — member 0 is the base and must span the index space, the rest")
+print("  are corrections — so stating them would only be a way to get them wrong.")
+
+print("\n  The roles are read from the composite, not from a member: a tensor has")
+print("  no role; a tensor inside an overlay does.")
+print(f"    the base is still your own object: {weights.members[0] is base}")
+print(f"    and it has no role of its own:     {not hasattr(base, 'member_role')}")
+
+with hurray.StreamWriter() as writer:
+    writer.write(weights)
+(returned,) = list(hurray.StreamReader(writer.getvalue()))
+
+print(f"\n  survives a round trip: {returned == weights}")
+print(f"  with its roles intact: {returned.member_roles}")
+
+# "add" combines by summation instead of precedence.
+summed = hurray.Composite(
+    "overlay",
+    shape=[SIZE, SIZE],
+    dtype=hurray.float32,
+    members=[base, correction],
+    combine_op="add",
+)
+print(f"\n  combine_op='add': the value is base + correction where the correction")
+print(f"  is present, and just the base outside it ({summed.layout.combine_op})")

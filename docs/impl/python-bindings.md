@@ -798,6 +798,30 @@ nest.
   members as top-level entries. A member requested explicitly by name MUST still be
   returned.
 
+### Overlay member roles
+
+An overlay's members carry a role — the first is the base and spans the whole index
+space, the rest are corrections. The format fixes this by position, so `hurray.Composite`
+MUST derive the roles rather than accept them: a parameter would ask the caller to restate
+what the rule already determines, and give them a way to state it wrongly.
+
+This is not inference in ADR-032 § 4's sense. Nothing is read out of the buffers; the role
+follows from the composition rule and the member's position, both of which the caller
+stated.
+
+A member that already carries a role — one decoded from the wire — MUST keep it, so a
+round trip cannot relabel it.
+
+The roles MUST be readable as `Composite.member_roles`, a tuple of `"base"` /
+`"correction"` / `None`, and MUST NOT be exposed on the member tensor: a tensor has no
+role, a tensor *within an overlay* does. Reading from the composite also makes an authored
+overlay and a decoded one answer identically.
+
+Because the role lives on the composite rather than on the caller's tensor, the descriptor
+a member presents to its parent differs from the one on its tensor. Implementations MUST
+use the former when validating, when writing, and when comparing composites for equality —
+a composite that does not equal its own round trip is the symptom of getting this wrong.
+
 ### Not on the native protocol
 
 `Composite` MUST NOT implement `__hurray__`. That capsule carries a buffer list and one
