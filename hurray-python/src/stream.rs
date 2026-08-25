@@ -32,7 +32,9 @@ use pyo3::types::{PyBytes, PyModule, PyTuple};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::runtime::Runtime;
 
-use hurray_io::stream::{StreamItem, StreamReader as IoReader, StreamWriter as IoWriter};
+use hurray_io::stream::{
+    StreamItem, StreamReader as IoReader, StreamReaderOptions, StreamWriter as IoWriter,
+};
 
 use crate::buffer::BufferStore;
 use crate::composite::{composite_from_parts, owned_tree, with_stream_nodes};
@@ -141,9 +143,15 @@ fn fileno_of(obj: &Bound<'_, PyAny>) -> PyResult<RawFd> {
 struct SharedBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
 
 impl SharedBuffer {
-    fn take(&self) -> Vec<u8> {
+    /// Copy out the bytes written so far, leaving the buffer intact.
+    ///
+    /// Not `mem::take`: `getvalue()` is named after `io.BytesIO.getvalue()`, which can be
+    /// called twice. Draining made the second call return `b""` — and worse, made
+    /// `list(StreamReader(writer.getvalue()))` after any earlier `getvalue()` read an
+    /// empty stream and report a clean end of it, which is data loss wearing a success.
+    fn snapshot(&self) -> Vec<u8> {
         match self.0.lock() {
-            Ok(mut guard) => std::mem::take(&mut *guard),
+            Ok(guard) => guard.clone(),
             // A poisoned lock means a writer thread panicked mid-write; the bytes are
             // not trustworthy, so report empty rather than a torn stream.
             Err(_) => Vec::new(),
@@ -226,6 +234,25 @@ pub struct StreamReader {
 impl StreamReader {
     /// Open a stream for reading.
     ///
+    /// ## Limits
+    ///
+    /// The keyword arguments bound what a single frame may claim, which matters when the
+    /// stream is not one you produced: a descriptor's length field is read before its
+    /// contents, so a hostile one can ask a reader to allocate any amount it likes. They
+    /// are keyword arguments rather than an options object because Python has keyword
+    /// arguments.
+    ///
+    /// - `max_descriptor_bytes` — largest single descriptor. Default 16 MiB.
+    /// - `max_buffer_bytes` — largest single buffer. Default unbounded, because a
+    ///   legitimate tensor can be enormous; set it when the peer is not trusted.
+    /// - `max_composite_depth` — deepest composite nesting. Default 64.
+    /// - `cross_machine` — reject any buffer whose `sync_mode` is not `producer_synced`.
+    ///   A device event or a stream handle means nothing on the far side of a network, so
+    ///   a descriptor that carries one across is wrong; this refuses it on arrival rather
+    ///   than leaving a consumer to wait on an event that does not exist.
+    ///
+    /// Exceeding a limit raises `hurray.StreamError`.
+    ///
     /// ## Errors
     ///
     /// - `TypeError` — `source` is not a path, bytes, or an object with `fileno()`.
@@ -238,13 +265,45 @@ impl StreamReader {
     ///
     /// reader = hurray.StreamReader(b"")     # an empty stream yields nothing
     /// assert list(reader) == []
+    ///
+    /// # Reading from a peer you do not control:
+    /// guarded = hurray.StreamReader(
+    ///     b"",
+    ///     max_descriptor_bytes=1 << 20,     # 1 MiB
+    ///     max_buffer_bytes=512 << 20,       # 512 MiB
+    ///     cross_machine=True,
+    /// )
     /// ```
     #[new]
-    pub fn new(py: Python<'_>, source: &Bound<'_, PyAny>) -> PyResult<Self> {
+    #[pyo3(signature = (
+        source,
+        *,
+        max_descriptor_bytes = None,
+        max_buffer_bytes = None,
+        max_composite_depth = None,
+        cross_machine = false,
+    ))]
+    pub fn new(
+        py: Python<'_>,
+        source: &Bound<'_, PyAny>,
+        max_descriptor_bytes: Option<u64>,
+        max_buffer_bytes: Option<u64>,
+        max_composite_depth: Option<usize>,
+        cross_machine: bool,
+    ) -> PyResult<Self> {
         let runtime = build_runtime()?;
         let boxed = resolve_source(py, source, &runtime)?;
+        // Start from core's defaults so an unset argument keeps whatever the format
+        // considers sensible, rather than freezing today's numbers into this binding.
+        let defaults = StreamReaderOptions::default();
+        let options = StreamReaderOptions {
+            max_descriptor_bytes: max_descriptor_bytes.unwrap_or(defaults.max_descriptor_bytes),
+            max_buffer_bytes: max_buffer_bytes.unwrap_or(defaults.max_buffer_bytes),
+            max_composite_depth: max_composite_depth.unwrap_or(defaults.max_composite_depth),
+            enforce_cross_machine_sync: cross_machine,
+        };
         Ok(Self {
-            inner: Some(IoReader::new(boxed)),
+            inner: Some(IoReader::with_options(boxed, options)),
             runtime,
         })
     }
@@ -387,8 +446,12 @@ impl StreamWriter {
     /// assert writer.getvalue() == b""       # an empty stream is empty
     /// ```
     #[new]
-    #[pyo3(signature = (destination = None))]
-    pub fn new(py: Python<'_>, destination: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
+    #[pyo3(signature = (destination = None, *, cross_machine = false))]
+    pub fn new(
+        py: Python<'_>,
+        destination: Option<&Bound<'_, PyAny>>,
+        cross_machine: bool,
+    ) -> PyResult<Self> {
         let runtime = build_runtime()?;
         let (sink, memory): (BoxedSink, Option<SharedBuffer>) = match destination {
             None => {
@@ -413,7 +476,11 @@ impl StreamWriter {
             }
         };
         Ok(Self {
-            inner: Some(IoWriter::new(sink)),
+            inner: Some(if cross_machine {
+                IoWriter::cross_machine(sink)
+            } else {
+                IoWriter::new(sink)
+            }),
             runtime,
             memory,
             finished: false,
@@ -530,6 +597,9 @@ impl StreamWriter {
 
     /// The encoded stream, for a writer with no destination.
     ///
+    /// Repeatable, like `io.BytesIO.getvalue()`: the bytes stay in the writer, so calling
+    /// it twice returns the same stream both times.
+    ///
     /// ## Errors
     ///
     /// - `hurray.StreamError` — this writer has a destination, so there is nothing to
@@ -542,7 +612,9 @@ impl StreamWriter {
     ///
     /// with hurray.StreamWriter() as writer:
     ///     writer.write(hurray.Tensor(bytes(16), hurray.float32, [4]))
+    ///
     /// assert len(writer.getvalue()) > 0
+    /// assert writer.getvalue() == writer.getvalue()
     /// ```
     pub fn getvalue(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
         let Some(memory) = self.memory.as_ref() else {
@@ -551,7 +623,7 @@ impl StreamWriter {
                  not buffered in memory",
             ));
         };
-        Ok(PyBytes::new(py, &memory.take()).unbind())
+        Ok(PyBytes::new(py, &memory.snapshot()).unbind())
     }
 
     /// Writers are context managers; the stream is finished on exit.
@@ -776,7 +848,8 @@ mod tests {
         let wire = composite_stream();
         Python::attach(|py| {
             let bytes = pyo3::types::PyBytes::new(py, &wire);
-            let mut reader = StreamReader::new(py, bytes.as_any()).expect("reader opens");
+            let mut reader = StreamReader::new(py, bytes.as_any(), None, None, None, false)
+                .expect("reader opens");
 
             let first = reader
                 .__next__(py)

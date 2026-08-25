@@ -52,3 +52,34 @@ try:
 
 finally:
     os.unlink(path)
+
+# ── File metadata ─────────────────────────────────────────────────────────────
+
+print("\n=== The KV section ===")
+
+kv_path = os.path.join(tempfile.mkdtemp(), "annotated.hrry")
+
+hurray.save(
+    kv_path,
+    {"layer0.weight": hurray.Tensor(bytes(64), hurray.float32, [4, 4])},
+    kv={
+        "model": "demo-v1",
+        "layers": 12,
+        "lr": 0.001,
+        "quantized": False,
+        "signature": b"\x01\x02\x03",
+        "block_shape": [16, 16],
+    },
+)
+
+for key, value in hurray.load_kv(kv_path).items():
+    print(f"  {key:12} = {value!r}")
+
+print("\n  load_kv is a separate call from load: it answers a different question")
+print("  and returns a different thing, and a flag that changed load's return")
+print("  type would make every caller unpack a tuple to ask about tensors.")
+print("  It costs a footer read, not a scan — the tensors are never touched.")
+
+print(f"\n  round trips exactly: {hurray.load_kv(kv_path)['block_shape'] == [16, 16]}")
+print("  (one asymmetry: Python's int writes as int64, so a value written from")
+print("   Python never uses the uint64 tag; one written by Rust reads back as int)")

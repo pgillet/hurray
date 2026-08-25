@@ -833,6 +833,26 @@ waits on its transport. An `asyncio` surface is deliberately absent; see ADR-035
 - With no destination, MUST build the stream in memory and return it from `getvalue()`.
   `getvalue()` on a writer that has a destination MUST raise `hurray.StreamError`.
 
+### Reader limits
+
+`hurray.StreamReader` MUST accept keyword arguments bounding what a single frame may
+claim: `max_descriptor_bytes`, `max_buffer_bytes`, and `max_composite_depth`, each
+defaulting to `hurray-io`'s own default. Exceeding one MUST raise `hurray.StreamError`.
+
+These are not optional hygiene. A descriptor's length field is read before its contents,
+so a stream from an untrusted peer can ask a reader to allocate an arbitrary amount.
+
+They MUST be keyword arguments rather than an options object: Python has keyword
+arguments, and an options class here would be a Rust shape in Python clothing.
+
+### Cross-machine transport
+
+`hurray.StreamReader` and `hurray.StreamWriter` MUST accept `cross_machine: bool = False`,
+enforcing that every buffer's `sync_mode` is `producer_synced`. A device event or stream
+handle is meaningless on the far side of a network, so a descriptor that carries one
+across is unsatisfiable by construction; the check refuses it at the boundary rather than
+leaving a consumer to wait on an event that does not exist.
+
 ### Transports
 
 | Argument | Meaning |
@@ -861,6 +881,28 @@ guessable from a bare type error.
 > A stream truncated **mid-frame** therefore raises `hurray.StreamError`, while one
 > truncated exactly **on a frame boundary** is indistinguishable from a shorter stream
 > and yields no error. That is a property of the format, not of the binding.
+
+### File metadata
+
+`hurray.load_kv(path) -> dict` MUST return a file's key-value section, and MUST be the
+exact inverse of what `save(path, tensors, kv=...)` writes: a dict saved and reloaded
+MUST compare equal. A file with no KV section MUST read as an empty dict.
+
+It MUST be a separate call rather than an argument to `load`, which answers a different
+question and returns a different thing.
+
+`bool` MUST be tested before `int` in both directions, since Python's `bool` is a subclass
+of `int`. Python's `int` writes as `int64`, so a value written from Python never carries
+the `uint64` tag; a `uint64` written by another producer MUST read back as `int`.
+
+A `KvValue` variant this build does not recognise MUST raise rather than being dropped:
+a metadata dict with a silent hole in it is worse than a refusal.
+
+### Writer output
+
+`StreamWriter.getvalue()` MUST be repeatable, like `io.BytesIO.getvalue()`. A destructive
+implementation makes the second call return empty, which turns a later read into a
+*clean* end of stream — data loss reported as success.
 
 ## Error Handling
 

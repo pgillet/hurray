@@ -12,7 +12,6 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
-#[cfg(test)]
 use pyo3::IntoPyObjectExt;
 
 use hurray_io::file::{FileItem, FileReader, FileTensor, FileWriter, KvValue};
@@ -142,6 +141,33 @@ fn py_to_kv_value(val: &Bound<'_, PyAny>) -> PyResult<KvValue> {
     )))
 }
 
+/// Convert a `KvValue` back to the Python object it came from.
+///
+/// The exact inverse of [`py_to_kv_value`], so a dict written with `save(kv=...)` comes
+/// back equal — `Uint64` is the one wire type Python cannot produce (its `int` maps to
+/// `Int64`), and it decodes to `int` as well.
+fn kv_value_to_py(py: Python<'_>, value: &KvValue) -> PyResult<Py<PyAny>> {
+    match value {
+        KvValue::Bool(v) => v.into_py_any(py),
+        KvValue::Int64(v) => v.into_py_any(py),
+        KvValue::Uint64(v) => v.into_py_any(py),
+        KvValue::Float64(v) => v.into_py_any(py),
+        KvValue::String(v) => v.into_py_any(py),
+        KvValue::Bytes(v) => Ok(PyBytes::new(py, v).into_any().unbind()),
+        KvValue::Array(elements) => {
+            let items: PyResult<Vec<Py<PyAny>>> =
+                elements.iter().map(|e| kv_value_to_py(py, e)).collect();
+            Ok(PyList::new(py, items?)?.into_any().unbind())
+        }
+        // KvValue is non_exhaustive: a value type added to the format after this build
+        // reaches here. Refusing names the situation; returning None for it would put a
+        // hole in a metadata dict and call it success.
+        other => Err(FileError::new_err(format!(
+            "KV value type not supported by this build of hurray: {other:?}"
+        ))),
+    }
+}
+
 fn py_dict_to_kv(kv_dict: &Bound<'_, PyDict>) -> PyResult<Vec<(String, KvValue)>> {
     kv_dict
         .iter()
@@ -183,6 +209,63 @@ fn py_dict_to_kv(kv_dict: &Bound<'_, PyDict>) -> PyResult<Vec<(String, KvValue)>
 /// # Load only specific tensors
 /// subset = hurray.load("model.hrry", names=["embeddings", "bias"])
 /// ```
+/// Read a Hurray file's key-value metadata section.
+///
+/// The other half of `save(path, tensors, kv=...)`: what that writes, this reads back.
+/// Returns an empty dict for a file with no KV section.
+///
+/// A separate call rather than an argument to [`load`] because it answers a different
+/// question and returns a different thing — a flag that changed `load`'s return type
+/// would make every caller unpack a tuple to ask about tensors. Reading it costs a footer
+/// seek, not a scan of the file.
+///
+/// ## Value types
+///
+/// The seven wire types map back to the Python objects that produced them: `bool`, `int`
+/// (from both `int64` and `uint64`), `float`, `str`, `bytes`, and `list` of any of those.
+///
+/// ## Errors
+///
+/// - `hurray.FileError` — the file is missing, truncated, or its KV section is malformed.
+///
+/// ## Examples
+///
+/// ```python
+/// import hurray
+///
+/// hurray.save(
+///     "model.hrry",
+///     {"w": hurray.Tensor(bytes(16), hurray.float32, [4])},
+///     kv={"model": "demo", "layers": 12, "quantized": False},
+/// )
+///
+/// meta = hurray.load_kv("model.hrry")
+/// assert meta == {"model": "demo", "layers": 12, "quantized": False}
+/// ```
+#[pyfunction]
+pub fn load_kv(py: Python<'_>, path: String) -> PyResult<Bound<'_, PyDict>> {
+    // Release the GIL for the open and the footer read, as `load` does.
+    let pairs = py
+        .detach(|| -> hurray_io::Result<Vec<(String, KvValue)>> {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(hurray_io::Error::Io)?
+                .block_on(async {
+                    let file = tokio::fs::File::open(&path).await?;
+                    let reader = FileReader::open(file).await?;
+                    Ok(reader.kv().to_vec())
+                })
+        })
+        .map_err(io_err_to_py)?;
+
+    let out = PyDict::new(py);
+    for (key, value) in &pairs {
+        out.set_item(key, kv_value_to_py(py, value)?)?;
+    }
+    Ok(out)
+}
+
 #[pyfunction]
 #[pyo3(signature = (path, *, names = None))]
 pub fn load(
@@ -420,6 +503,7 @@ pub fn save(
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(load, m)?)?;
+    m.add_function(wrap_pyfunction!(load_kv, m)?)?;
     m.add_function(wrap_pyfunction!(save, m)?)?;
     Ok(())
 }

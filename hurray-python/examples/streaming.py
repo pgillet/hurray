@@ -121,3 +121,56 @@ except hurray.StreamError as exc:
 
 print("  (a cut exactly on a frame boundary reads as a shorter stream instead —")
 print("   frames are self-delimiting and EOF is the only end marker there is)")
+
+# ── Reading a stream you did not produce ──────────────────────────────────────
+
+print("\n=== Limits ===")
+
+tensor = hurray.Tensor(bytes(4096), hurray.float32, [1024])
+with hurray.StreamWriter() as writer:
+    writer.write(tensor)
+wire = writer.getvalue()
+
+print(f"  a {len(wire)}-byte stream carrying one 4 KiB tensor")
+
+# A descriptor's length field is read before its contents, so a hostile stream
+# can ask a reader to allocate whatever it likes. The limits bound one frame.
+try:
+    list(hurray.StreamReader(wire, max_buffer_bytes=1024))
+except hurray.StreamError as exc:
+    print(f"  max_buffer_bytes=1024: {exc}")
+
+try:
+    list(hurray.StreamReader(wire, max_descriptor_bytes=8))
+except hurray.StreamError as exc:
+    print(f"  max_descriptor_bytes=8: {exc}")
+
+guarded = hurray.StreamReader(
+    wire,
+    max_descriptor_bytes=1 << 20,   # 1 MiB
+    max_buffer_bytes=512 << 20,     # 512 MiB
+    cross_machine=True,
+)
+print(f"  sensible limits: {len(list(guarded))} tensor read")
+
+print("\n  max_descriptor_bytes defaults to 16 MiB; max_buffer_bytes is unbounded,")
+print("  because a legitimate tensor can be enormous. Set it when the peer is")
+print("  not one you control.")
+
+# ── Across a machine boundary ─────────────────────────────────────────────────
+
+print("\n=== cross_machine ===")
+
+with hurray.StreamWriter(cross_machine=True) as strict:
+    strict.write(tensor)
+
+print(f"  writer accepted it: {len(strict.getvalue())} bytes")
+print(f"  reader accepted it: {len(list(hurray.StreamReader(wire, cross_machine=True)))}")
+print("\n  A device event or a stream handle means nothing on the far side of a")
+print("  network, so a descriptor carrying one across is wrong. Both ends assert")
+print("  producer_synced rather than leaving a consumer to wait on an event that")
+print("  does not exist. Everything this binding builds is producer_synced already,")
+print("  so it costs a Python producer nothing — it states the assumption.")
+
+# getvalue is repeatable, like io.BytesIO.getvalue().
+assert writer.getvalue() == wire
