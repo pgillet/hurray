@@ -21,6 +21,8 @@ tensors written immediately after the head (ADR-027 § Binding; `docs/spec/file-
 
 Each node carries a **name** because every tensor gets its own index entry:
 
+<div class="lang-tabs">
+
 ```rust,no_run
 use hurray_core::{
     layout::{CompositeLayout, CompositionRule},
@@ -51,10 +53,25 @@ writer.finish(vec![]).await?;
 # }
 ```
 
+```python
+import hurray
+
+# A composite is one named entry, like any other tensor.
+hurray.save("model.hrry", {"weight": weight, "bias": bias})
+```
+
+</div>
+
+Every tensor in a file gets an index entry, head and member alike, so a composite's
+members are named `"{head}.{index}"` — `weight.0`, `weight.1`. Those names are an artifact
+of the container rather than of the composite, so Python generates them for you.
+
 ## Reading a composite from a file
 
 `read_composite` takes the head's name and returns the reassembled group. Members remain
 individually readable by name with `read_tensor`:
+
+<div class="lang-tabs">
 
 ```rust,no_run
 use hurray_io::file::{FileItem, FileReader};
@@ -78,6 +95,21 @@ let left = reader.read_tensor("weight.left").await?;
 # }
 ```
 
+```python
+import hurray
+
+loaded = hurray.load("model.hrry")
+
+loaded["weight"]            # a hurray.Composite
+loaded["weight"].members    # its tiles, in write order
+
+# The head's name is the only top-level entry: on the wire the members belong
+# to it, so they do not also come back on their own. Asking still works:
+tile = hurray.load("model.hrry", names=["weight.0"])["weight.0"]
+```
+
+</div>
+
 ## Recovery is independent of index sort order
 
 The file writer's `sorted_index` option sorts the *index array* by name for binary search,
@@ -99,37 +131,19 @@ a maliciously deep composite.
 - `Error::Core` — composite validation failed (member-count mismatch, partition coverage,
   overlay ordering).
 
-## From Python
-
-`hurray.save` takes a composite as a named entry and `hurray.load` returns one
-(ADR-036):
-
-```python
-import hurray
-
-hurray.save("model.hrry", {"weight": weight, "bias": bias})
-
-loaded = hurray.load("model.hrry")
-loaded["weight"]            # a hurray.Composite
-loaded["weight"].members    # its tiles, in write order
-```
-
-Every tensor in a file gets an index entry, head and member alike, so a composite's
-members are named `"{head}.{index}"` — `weight.0`, `weight.1`. Those names are an
-artifact of the container rather than of the composite, so they are generated for you.
-
-`load` returns the composite under its head's name and does **not** also return its
-members as top-level entries; on the wire they belong to the head. Asking for one
-explicitly still works:
-
-```python
-tile = hurray.load("model.hrry", names=["weight.0"])["weight.0"]
-```
-
 ## Runnable example
+
+<div class="lang-tabs">
 
 ```text
 cargo run --example composite_file --features tokio -p hurray-io
 ```
 
-See `hurray-io/examples/composite_file.rs` for the full program.
+```text
+python hurray-python/examples/composites.py
+```
+
+</div>
+
+See `hurray-io/examples/composite_file.rs` and `hurray-python/examples/composites.py` for
+the full programs.

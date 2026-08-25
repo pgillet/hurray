@@ -704,6 +704,24 @@ violate an extent constraint.
 The result MUST agree with what `hurray.Tensor` enforces at construction — the two are
 the same rule reached by two doors.
 
+### Block-paged validation
+
+`BlockPagedLayout` MUST expose two checks:
+
+- `validate_index_buffers(seq_ptr, block_table)` — the four storage invariants of
+  `block-paged.md` § Storage. `num_pages` and `num_seqs` come from the layout, so only the
+  buffers are passed. Aliasing MUST be accepted: two sequences naming one page is how a
+  shared prefix is represented.
+- `validate_quantization_compatibility(quantization)` — that a scheme and the paging can
+  go together. It MUST take the quantization descriptor object, not a scheme tag.
+
+Both raise `hurray.InvalidDescriptorError`. They matter because a descriptor *describes*
+its index buffers rather than containing them: their contents are unchecked at
+construction, and they are what stands between a consumer and an out-of-bounds read.
+
+Element addressing (`element_offset`) is deliberately **not** exposed. Resolving one
+logical coordinate at a time is indexing, which this package does not do.
+
 ### Composite, private, and unknown
 
 - `CompositeLayout` MUST be readable in full, so a composite head decoded from a stream
