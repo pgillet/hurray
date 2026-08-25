@@ -26,6 +26,8 @@ A layout descriptor tells a reader how the elements of a tensor are arranged in 
 
 Unit variants need no constructor:
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::layout::LayoutDescriptor;
 
@@ -35,7 +37,23 @@ assert_eq!(rm.tag(), 0x01);
 assert_eq!(cm.tag(), 0x02);
 ```
 
+```python
+import hurray
+
+rm = hurray.RowMajorLayout()
+cm = hurray.ColMajorLayout()
+assert rm.tag == 0x01
+assert cm.tag == 0x02
+```
+
+</div>
+
+Python spells each layout as its own class rather than a tag byte (ADR-032); the
+tag is still there on every one of them.
+
 Strided layout — explicit per-dimension strides in logical elements. Negative strides reverse a dimension; zero strides broadcast (virtual dimension, no physical replication):
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{LayoutDescriptor, StridedLayout};
@@ -50,9 +68,28 @@ let reversed = LayoutDescriptor::Strided(StridedLayout::new(vec![-4, 1]));
 let broadcast = LayoutDescriptor::Strided(StridedLayout::new(vec![0, 1]));
 ```
 
+```python
+import hurray
+
+# Row-major strides for a 3x4 tensor: last dim varies fastest.
+rm_strides = hurray.StridedLayout([4, 1])
+
+# Same tensor with first dimension reversed.
+reversed_ = hurray.StridedLayout([-4, 1])
+
+# Broadcast along dimension 0: all rows map to row 0.
+broadcast = hurray.StridedLayout([0, 1])
+
+assert rm_strides.strides == (4, 1)
+```
+
+</div>
+
 ## Tiled / blocked layout
 
 2×4 tiles with row-major outer ordering and column-major inner ordering:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{LayoutDescriptor, TiledLayout};
@@ -69,7 +106,24 @@ let tiled = LayoutDescriptor::Tiled(Box::new(
 ));
 ```
 
+```python
+import hurray
+
+tiled = hurray.TiledLayout(
+    [2, 4],                    # tile_shape
+    outer_layout="row_major",
+    inner_layout="col_major",
+)
+```
+
+</div>
+
+The nested layouts are named, not tagged: `"row_major"` rather than `0x01`. Python
+reads the tag back off `layout.tag` when it needs the wire value.
+
 Strided tile grid — outer_strides must be provided when `outer_layout == 0x03`:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{LayoutDescriptor, OuterStrides, TiledLayout};
@@ -86,7 +140,22 @@ let tiled_strided = LayoutDescriptor::Tiled(Box::new(
 ));
 ```
 
+```python
+import hurray
+
+tiled_strided = hurray.TiledLayout(
+    [2, 2],
+    outer_layout="strided",            # tile-grid strides required
+    inner_layout="row_major",
+    outer_strides=[2, 1],              # in units of tiles
+)
+```
+
+</div>
+
 Recursive tiling (two levels of blocking, useful for hierarchical GEMM caches):
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::TiledLayout;
@@ -102,11 +171,27 @@ let outer = TiledLayout::new(
 ).unwrap();
 ```
 
+```python
+import hurray
+
+inner = hurray.TiledLayout([4, 4], "row_major", "row_major")
+outer = hurray.TiledLayout(
+    [32, 32],
+    outer_layout="row_major",
+    inner_layout="tiled",              # the inner layout is itself tiled
+    inner_tiled=inner,
+)
+```
+
+</div>
+
 Maximum recursion depth is 8 levels; deeper nesting returns `Error::InvalidLayout`.
 
 ## Sparse layouts
 
 COO — two buffers (values + flat index array):
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{CooLayout, LayoutDescriptor};
@@ -118,7 +203,21 @@ let coo = LayoutDescriptor::Coo(CooLayout::new(
 assert_eq!(coo.buffer_count().map(|n| n.get()), Some(2));
 ```
 
+```python
+import hurray
+
+coo = hurray.CooLayout(
+    nnz=42,
+    is_sorted=True,     # non-zeros in lexicographic order
+)
+assert coo.buffer_count == 2
+```
+
+</div>
+
 CSR — three buffers (values + col_indices + row_ptr), rank-2 only:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{CsrLayout, LayoutDescriptor};
@@ -127,7 +226,18 @@ let csr = LayoutDescriptor::Csr(CsrLayout::new(100)); // nnz = 100
 assert_eq!(csr.buffer_count().map(|n| n.get()), Some(3));
 ```
 
+```python
+import hurray
+
+csr = hurray.CsrLayout(nnz=100)
+assert csr.buffer_count == 3
+```
+
+</div>
+
 CSC — three buffers (values + row_indices + col_ptr), rank-2 only:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{CscLayout, LayoutDescriptor};
@@ -136,11 +246,22 @@ let csc = LayoutDescriptor::Csc(CscLayout::new(100));
 assert_eq!(csc.buffer_count().map(|n| n.get()), Some(3));
 ```
 
+```python
+import hurray
+
+csc = hurray.CscLayout(nnz=100)
+assert csc.buffer_count == 3
+```
+
+</div>
+
 CSF (Compressed Sparse Fiber) — the rank-N (rank ≥ 3) generalization of CSR/CSC, with
 `2·rank + 1` buffers (`values` plus a `pos`/`crd` pair per level). The buffer count is
 derived from the rank, which `CsfLayout` carries via its `mode_order` permutation
 (`mode_order[L]` is the logical dimension stored at level `L`). Writers SHOULD prefer
 CSR/CSC for rank-2 sparse matrices and reserve CSF for rank ≥ 3:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{CsfLayout, LayoutDescriptor};
@@ -159,12 +280,33 @@ assert!(csf
     .is_err());
 ```
 
+```python
+import hurray
+
+# Rank-3 sparse tensor, identity mode order, 4 non-zeros.
+csf = hurray.CsfLayout(nnz=4, mode_order=[0, 1, 2])
+assert csf.tag == 0x09
+assert csf.buffer_count == 7        # 2*3 + 1
+
+# rank >= 3 only; CSR/CSC own rank-2.
+csf.validate_against_shape([2, 3, 4])
+try:
+    csf.validate_against_shape([3, 4])
+    raise AssertionError("rank-2 should be refused")
+except hurray.InvalidDescriptorError:
+    pass
+```
+
+</div>
+
 See [CSF (Compressed Sparse Fiber)](../spec/layouts/csf.md) for the full per-level buffer layout and lookup.
 
 ## Space-filling curve layouts
 
 Morton (Z-order) — per-dimension bit counts control how many index bits are
 interleaved per dimension. Each `shape[k]` must satisfy `shape[k] <= 2^morton_bits[k]`:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{LayoutDescriptor, MortonLayout};
@@ -176,7 +318,19 @@ let shape = Shape::new(vec![4, 4]).unwrap();
 morton.validate_against_shape(&shape).unwrap();
 ```
 
+```python
+import hurray
+
+# 4x4 tensor: each dim needs 2 bits (4 <= 2^2).
+morton = hurray.MortonLayout([2, 2])
+morton.validate_against_shape([4, 4])
+```
+
+</div>
+
 Hilbert curve — all dims must equal `2^hilbert_order`; rank must be >= 2:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{HilbertLayout, LayoutDescriptor};
@@ -188,7 +342,19 @@ let shape = Shape::new(vec![8, 8, 8]).unwrap();
 hilbert.validate_against_shape(&shape).unwrap();
 ```
 
+```python
+import hurray
+
+# 8x8x8 tensor: order=3 (8 = 2^3), rank=3.
+hilbert = hurray.HilbertLayout(hilbert_order=3, hilbert_rank=3)
+hilbert.validate_against_shape([8, 8, 8])
+```
+
+</div>
+
 ## Tag introspection and validation
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{
@@ -223,11 +389,47 @@ assert!(matches!(UnknownLayout::new(0x07, vec![]), Err(Error::NamedLayoutTag(0x0
 assert!(matches!(UnknownLayout::new(0xF0, vec![]), Err(Error::PrivateLayoutTag(0xF0))));
 ```
 
+```python
+import hurray
+
+# Classify a tag without constructing a descriptor. The four categories partition
+# the byte space, so one call answers the question four predicates would.
+assert hurray.layout_tag_kind(0x07) == "named"      # CSR
+assert hurray.layout_tag_kind(0x10) == "reserved"
+assert hurray.layout_tag_kind(0xF3) == "private"
+assert hurray.layout_tag_kind(0x00) == "invalid"
+
+# Permissive mode: wrap an unrecognised tag for passthrough.
+# The reader must NOT dereference the tensor data buffer for an Unknown layout.
+unknown = hurray.UnknownLayout(0x10, b"")
+assert unknown.tag == 0x10
+assert unknown.buffer_count is None
+
+# Only genuinely unrecognised tags: "unknown" is a claim, and it has to be true.
+# A named tag wrapped this way would skip every check its own class applies while
+# still encoding to that tag on the wire.
+for taken in (0x07, 0xF0):
+    try:
+        hurray.UnknownLayout(taken, b"")
+        raise AssertionError(f"0x{taken:02X} is not unknown")
+    except ValueError as exc:
+        print(exc)
+```
+
+</div>
+
+The four kinds call for different reactions, which is why the classification is worth
+having: **reserved** most likely means the producer is newer than this reader, so relaying
+the tensor on is reasonable while interpreting its bytes is not; **private** belongs to an
+out-of-band agreement; **invalid** means corruption or a framing error.
+
 ## Validating a descriptor against a tensor shape
 
 `validate_against_shape` is called by Layer 4 (tensor descriptor) to enforce
 layout-specific rank and dimension constraints. Call it explicitly when building
 descriptors to catch mismatches early:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{CsrLayout, LayoutDescriptor};
@@ -242,9 +444,32 @@ assert!(csr.validate_against_shape(&Shape::new(vec![4, 5]).unwrap()).is_ok());
 assert!(csr.validate_against_shape(&Shape::new(vec![2, 3, 4]).unwrap()).is_err());
 ```
 
+```python
+import hurray
+
+csr = hurray.CsrLayout(nnz=5)
+
+# Rank-2: valid.
+csr.validate_against_shape([4, 5])
+
+# Rank-3: rejected - CSR is only defined for rank-2 tensors.
+try:
+    csr.validate_against_shape([2, 3, 4])
+    raise AssertionError("rank-3 should be refused")
+except hurray.InvalidDescriptorError:
+    pass
+```
+
+</div>
+
+`hurray.Tensor` runs this for you at construction. Call it directly when you are
+choosing a layout for a shape you have not built a tensor for yet.
+
 ## Private extension layouts
 
 For hardware-specific panel/pack formats agreed out of band:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::layout::{LayoutDescriptor, PrivateExtensionLayout};
@@ -259,3 +484,17 @@ let private = LayoutDescriptor::PrivateExtension(
 // buffer_count is None: the format doesn't know how many buffers this needs.
 assert!(private.buffer_count().is_none());
 ```
+
+```python
+import hurray
+
+private = hurray.PrivateExtensionLayout(
+    0xF0,                       # tag: must be 0xF0-0xFE
+    0xDEAD_BEEF_0000_0001,      # implementation-defined layout ID
+    b"\x01\x00\x04",            # opaque metadata
+)
+# buffer_count is None: the format doesn't know how many buffers this needs.
+assert private.buffer_count is None
+```
+
+</div>

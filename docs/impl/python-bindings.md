@@ -682,6 +682,28 @@ Inference belongs to the array-shaped constructors — `hurray.sparse_coo`,
 For every constructible layout, rebuilding a tensor from another tensor's `layout`,
 `quantization`, `statistics`, `shard` and buffers MUST produce an equal descriptor.
 
+### Tag classification
+
+The module MUST expose `hurray.layout_tag_kind(tag) -> str`, returning `"named"`,
+`"reserved"`, `"private"`, or `"invalid"`. The four MUST partition the whole byte space.
+
+A single function rather than the four predicates `hurray-core` exposes: the caller's
+purpose is to branch on the answer, and the four categories are mutually exclusive. The
+distinction is actionable — a reserved tag suggests a producer newer than this reader, so
+relaying the tensor is reasonable while interpreting its buffer is not; a private tag
+refers to an out-of-band agreement; an invalid tag cannot appear in a conformant
+descriptor at all.
+
+### Checking a layout against a shape
+
+`Layout.validate_against_shape(shape)` MUST apply the layout's own rank and extent
+constraints, raising `hurray.InvalidDescriptorError` when the pair cannot go together.
+It MUST accept a dynamic dimension without complaint: an unresolved extent cannot
+violate an extent constraint.
+
+The result MUST agree with what `hurray.Tensor` enforces at construction — the two are
+the same rule reached by two doors.
+
 ### Composite, private, and unknown
 
 - `CompositeLayout` MUST be readable in full, so a composite head decoded from a stream
