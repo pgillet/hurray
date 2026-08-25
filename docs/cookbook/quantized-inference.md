@@ -91,12 +91,27 @@ descriptor references actually exist in the buffer table.
 
 ## Reading quantized tensors elsewhere
 
-The Python bindings cannot yet construct quantized tensors. This is a current limitation,
-not a design boundary: `hurray-python` is meant to expose everything `hurray-core` and
-`hurray-io` can express. The blocker is that the bindings are single-buffer end to end,
-while per-channel, NF4, and MXFP descriptors reference a separate scale buffer — tracked
-in [#146](https://github.com/pgillet/hurray/issues/146). Per-tensor affine is the one
-scheme that survives the trip today, because its scale and zero point are inline.
+Python authors and reads every scheme — per-tensor, per-channel, per-block, NF4 and MXFP
+— and the multi-buffer descriptors the last four need. See
+[Authoring Quantized Tensors](authoring-quantized-tensors.md) for the constructors and
+[Python: Layouts](hurray-python-layouts.md) for how a tensor carries its parameter
+buffers.
+
+```python
+import hurray
+
+weights = hurray.Tensor(
+    weight_bytes,
+    hurray.dtype.int8,
+    [1024, 512],
+    aux_buffers=[scale_bytes],
+    quantization=hurray.PerChannelAffine.symmetric(axis=0, scale_buffer_index=1),
+)
+assert weights.quantization.axis == 0
+```
+
+What Python does **not** do is dequantize: applying the formula above is the consuming
+framework's job, not the codec's.
 
 To inspect a quantized descriptor byte by byte (scheme, axis, block size, buffer indices),
 use the CLI:

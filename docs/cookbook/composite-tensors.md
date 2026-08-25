@@ -32,6 +32,8 @@ Build a `[8, 8]` head split into two `[8, 4]` members:
 
 <div class="lang-tabs">
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::{
     composite::CompositeTensor,
@@ -66,6 +68,36 @@ let member = |offset: u64| {
 let composite = CompositeTensor::new(head, vec![member(0), member(4)]).unwrap();
 assert_eq!(composite.member_count(), 2);
 ```
+
+```python
+import hurray
+
+def tile(offset, width):
+    return hurray.Tensor(
+        bytes(4 * 8 * width),
+        hurray.float32,
+        [8, width],
+        shard=hurray.Shard([8, 8], [0, offset]),
+    )
+
+# Two 8x3 tiles cannot cover an 8x8 head: columns 6 and 7 are left out.
+try:
+    hurray.Composite(
+        "partition",
+        shape=[8, 8],
+        dtype=hurray.float32,
+        members=[tile(0, 3), tile(3, 3)],
+    )
+    raise AssertionError("a coverage gap should be refused")
+except hurray.InvalidDescriptorError as exc:
+    print(exc)
+```
+
+</div>
+
+Validation is core's, not the binding's: the same checks run whichever language builds
+the composite, and the head is a declaration checked against its members rather than
+derived from them.
 
 ```python
 import hurray
@@ -109,6 +141,12 @@ win. Two combine operations are supported:
 
 Example: `float16` logical view with `int4` per-block-affine quantized base and `float16`
 COO sparse outlier correction:
+
+> **Note (non-normative):** overlays are the one composition rule `hurray-python` cannot
+> author. A member's role — base or correction — has no Python spelling, so
+> `hurray.Composite("overlay", …)` is refused. Partition and group work from Python.
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::{
@@ -176,11 +214,30 @@ let composite = CompositeTensor::new(head, vec![base, correction]).unwrap();
 assert_eq!(composite.member_count(), 2);
 ```
 
+```python
+# Not yet expressible in Python.
+#
+# An overlay's members carry a role — one base, then corrections — and
+# hurray.Composite has no way to state it: it takes members positionally with
+# no per-member descriptor, so the constructor refuses an overlay outright.
+# Partition and group compose fine; this is the one rule that does not.
+#
+# Tracked as a gap in hurray-python's coverage of ADR-036.
+```
+
+</div>
+
+Python states the combine operation as `combine_op="replace"` on the composite rather
+than inside the rule. Member roles are positional: the first member of an overlay is the
+base.
+
 The merged logical view is: for each index, the correction's outlier value if present
 (within its COO sparse structure), otherwise the dequantized base value. The consumer
 computes this merge; it is not zero-copy at the composite level.
 
 Contrast with `Add` combine for residual-correction overlays:
+
+<div class="lang-tabs">
 
 ```rust
 // Head with add combine instead of replace.
@@ -196,6 +253,13 @@ let head = TensorDescriptor::new(
 // The logical value is: base_value + correction_value (at indices
 // where the correction is present; outside it, just the base).
 ```
+
+```python
+# Not yet expressible in Python — see the note above. `combine_op="add"` is
+# accepted by the constructor, but an overlay cannot be built to use it.
+```
+
+</div>
 
 ## Group: Heterogeneous Multi-Output
 

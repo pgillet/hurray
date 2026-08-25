@@ -26,6 +26,24 @@ use hurray_core::{
 };
 
 use super::{layout_err, variant_mismatch, Layout};
+use crate::errors::InvalidDescriptorError;
+
+/// The `(axis, block_size)` a scheme applies at, for the block-paged compatibility check.
+///
+/// The two scalars are all `validate_quantization_compatibility` looks at; per-tensor
+/// affine has neither, and reports `(0, 0)`, which no rule constrains.
+fn quantization_axis_and_block_size(
+    descriptor: &hurray_core::QuantizationDescriptor,
+) -> (u32, u32) {
+    use hurray_core::QuantizationDescriptor as Q;
+    match descriptor {
+        Q::PerTensorAffine(_) => (0, 0),
+        Q::PerChannelAffine(q) => (q.axis(), 0),
+        Q::PerBlockAffine(q) => (q.axis(), q.block_size()),
+        Q::Nf4(q) => (q.axis(), q.block_size()),
+        Q::Mxfp(q) => (q.axis(), q.block_size()),
+    }
+}
 
 // ── BlockPagedLayout ──────────────────────────────────────────────────────────
 
@@ -198,6 +216,113 @@ impl BlockPagedLayout {
     #[getter]
     pub fn block_table_index_type(slf: PyRef<'_, Self>) -> PyResult<&'static str> {
         Ok(index_type_name(paged_of(&slf)?.block_table_index_type))
+    }
+
+    /// Check this cache's two index buffers against the four storage invariants.
+    ///
+    /// A block-paged tensor's `block_table` and `seq_ptr` are the only thing standing
+    /// between a consumer and an out-of-bounds read, and nothing about their *contents*
+    /// is checked when the descriptor is built — the descriptor describes them, it does
+    /// not contain them. So a producer assembling a KV cache checks them here, before
+    /// shipping.
+    ///
+    /// The invariants, from `block-paged.md` § Storage:
+    ///
+    /// 1. `seq_ptr[0] == 0`
+    /// 2. `seq_ptr` is non-decreasing
+    /// 3. `seq_ptr[num_seqs] == len(block_table)`
+    /// 4. every `block_table[k] < num_pages`
+    ///
+    /// `num_pages` and `num_seqs` come from the layout, so only the two buffers are
+    /// passed. An empty batch (`num_seqs == 0`, `seq_ptr == [0]`) is valid.
+    ///
+    /// Aliasing is *not* an error: two sequences naming the same page is how a shared
+    /// prefix is represented, and it is the point of the layout.
+    ///
+    /// ## Errors
+    ///
+    /// - `hurray.InvalidDescriptorError` — an invariant does not hold.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// layout = hurray.BlockPagedLayout(page_size=4, num_pages=5, paged_axis=0, num_seqs=2)
+    ///
+    /// # Sequence 1's page 0 aliases sequence 0's page 0 — a shared prefix.
+    /// layout.validate_index_buffers(seq_ptr=[0, 2, 3], block_table=[0, 1, 0])
+    ///
+    /// try:
+    ///     layout.validate_index_buffers(seq_ptr=[0, 2, 3], block_table=[0, 5, 0])
+    /// except hurray.InvalidDescriptorError:
+    ///     pass    # page 5 == num_pages, one past the end of the pool
+    /// ```
+    #[pyo3(signature = (seq_ptr, block_table))]
+    pub fn validate_index_buffers(
+        slf: PyRef<'_, Self>,
+        seq_ptr: Vec<u64>,
+        block_table: Vec<u64>,
+    ) -> PyResult<()> {
+        let layout = paged_of(&slf)?;
+        // Always the u64 checker: the invariants are about values, not widths, and
+        // widening a u32 buffer cannot change whether they hold. The layout's declared
+        // index type governs how the buffer is *encoded*, which is not what this asks.
+        hurray_core::layout::addressing::block_paged::validate_index_buffers_u64(
+            layout.num_pages,
+            layout.num_seqs,
+            &seq_ptr,
+            &block_table,
+        )
+        .map_err(|e| InvalidDescriptorError::new_err(format!("invalid index buffers: {e}")))
+    }
+
+    /// Check a quantization scheme against this cache's paging.
+    ///
+    /// A paged KV cache is usually fp8 or int8, and the two interact: per-block-affine
+    /// requires `axis == 0` and `block_size == page_size`, so that scales stay
+    /// per-page-slot and a shared page carries its own. Per-channel must not be applied
+    /// to the paged axis at all.
+    ///
+    /// Takes the quantization object rather than a scheme tag: the caller already has
+    /// one, and a raw `0x03` is a byte to look up rather than a thing to pass.
+    ///
+    /// ## Errors
+    ///
+    /// - `hurray.InvalidDescriptorError` — the scheme and the paging cannot go together.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// layout = hurray.BlockPagedLayout(page_size=4, num_pages=5, paged_axis=0, num_seqs=2)
+    ///
+    /// layout.validate_quantization_compatibility(
+    ///     hurray.PerBlockAffine.symmetric(axis=0, block_size=4, scale_buffer_index=3)
+    /// )
+    ///
+    /// try:
+    ///     layout.validate_quantization_compatibility(
+    ///         hurray.PerBlockAffine.symmetric(axis=0, block_size=8, scale_buffer_index=3)
+    ///     )
+    /// except hurray.InvalidDescriptorError:
+    ///     pass    # block_size 8 != page_size 4
+    /// ```
+    pub fn validate_quantization_compatibility(
+        slf: PyRef<'_, Self>,
+        quantization: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let layout = paged_of(&slf)?;
+        let descriptor = crate::quantization::extract_quantization(quantization)?;
+        let (axis, block_size) = quantization_axis_and_block_size(&descriptor);
+        layout
+            .validate_quantization_compatibility(descriptor.scheme_tag() as u8, axis, block_size)
+            .map_err(|e| {
+                InvalidDescriptorError::new_err(format!(
+                    "quantization is not compatible with this block-paged layout: {e}"
+                ))
+            })
     }
 
     /// ## Examples

@@ -22,6 +22,8 @@ ordinary tensor (ADR-027 § Binding; `docs/spec/interchange.md`).
 Build the head (a descriptor with a `Composite` layout and no buffers) and the members
 (ordinary descriptors), then hand them to `write_composite` as `CompositeNode`s:
 
+<div class="lang-tabs">
+
 ```rust,no_run
 use hurray_core::{
     buffer_size_bytes,
@@ -54,10 +56,32 @@ writer.finish().await?;
 # }
 ```
 
+```python
+import hurray
+
+def tile(offset):
+    return hurray.Tensor(
+        bytes(128), hurray.float32, [8, 4], shard=hurray.Shard([8, 8], [0, offset])
+    )
+
+weight = hurray.Composite(
+    "partition", shape=[8, 8], dtype=hurray.float32, members=[tile(0), tile(4)]
+)
+plain = hurray.Tensor(bytes(16), hurray.float32, [4])
+
+with hurray.StreamWriter(destination) as writer:
+    writer.write(plain)
+    writer.write(weight)     # takes a composite exactly as it takes a tensor
+```
+
+</div>
+
 ## Reading a composite
 
 `next_item` returns a `StreamItem` — either a plain `Tensor` or a `Composite` with its
 members already grouped and validated:
+
+<div class="lang-tabs">
 
 ```rust,no_run
 use hurray_io::stream::{StreamItem, StreamReader};
@@ -81,6 +105,23 @@ while let Some(item) = reader.next_item().await? {
 # Ok(())
 # }
 ```
+
+```python
+import hurray
+
+for item in hurray.StreamReader(source):
+    if isinstance(item, hurray.Composite):
+        print(item.layout.composition_rule, item.member_count)
+    else:
+        print(item.shape)
+```
+
+</div>
+
+A stream carrying one composite of two members yields **one** item, not three. The Python
+reader uses `next_item` for exactly the reason this page gives: `next_tensor` would hand
+back the head as an empty tensor and its members as top-level ones, losing the composition
+without raising.
 
 ## Nested composites
 
@@ -107,41 +148,6 @@ composite-aware layer on top.
 - `Error::CompositeNestingTooDeep` — nesting exceeded `max_composite_depth`.
 - `Error::Core` — composite validation failed (member-count mismatch, partition does not
   cover the index space, overlay ordering).
-
-## From Python
-
-`hurray.StreamWriter` takes a composite exactly as it takes a tensor, and
-`hurray.StreamReader` yields one — a composite is **one** item, not a head plus loose
-members (ADR-036):
-
-```python
-import hurray
-
-def tile(offset):
-    return hurray.Tensor(
-        bytes(128), hurray.float32, [8, 4], shard=hurray.Shard([8, 8], [0, offset])
-    )
-
-weight = hurray.Composite(
-    "partition", shape=[8, 8], dtype=hurray.float32, members=[tile(0), tile(4)]
-)
-plain = hurray.Tensor(bytes(16), hurray.float32, [4])
-
-with hurray.StreamWriter(destination) as writer:
-    writer.write(plain)
-    writer.write(weight)
-
-for item in hurray.StreamReader(source):
-    if isinstance(item, hurray.Composite):
-        print(item.layout.composition_rule, item.member_count)
-    else:
-        print(item.shape)
-```
-
-A stream carrying one composite of two members yields **one** item, not three. The
-Python reader uses `next_item` for exactly the reason this page gives: `next_tensor`
-would hand back the head as an empty tensor and its members as top-level ones, losing
-the composition without raising.
 
 ## Runnable example
 
