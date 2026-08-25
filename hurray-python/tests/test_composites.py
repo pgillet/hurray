@@ -277,3 +277,156 @@ def test_save_still_refuses_anything_else(tmp_path):
     with pytest.raises(hurray.UnsupportedError) as exc:
         hurray.save(path, {"x": "not a tensor"})
     assert "hurray.Composite" in str(exc.value)
+
+
+# ── Overlays (the SpQR case) ──────────────────────────────────────────────────
+
+
+def _base(size: int = 32):
+    return hurray.Tensor(
+        bytes(4 * size * size),
+        hurray.float32,
+        [size, size],
+        shard=hurray.Shard([size, size], [0, 0]),
+    )
+
+
+def _correction(nnz: int = 16, size: int = 32):
+    return hurray.Tensor(
+        bytes(4 * nnz),
+        hurray.float32,
+        [size, size],
+        aux_buffers=[bytes(nnz * 2 * 8)],  # packed [nnz, rank] uint64 indices
+        layout=hurray.CooLayout(nnz=nnz, is_sorted=True),
+        shard=hurray.Shard([size, size], [0, 0]),
+    )
+
+
+def _overlay(combine_op: str = "replace"):
+    return hurray.Composite(
+        "overlay",
+        shape=[32, 32],
+        dtype=hurray.float32,
+        members=[_base(), _correction()],
+        combine_op=combine_op,
+    )
+
+
+def test_an_overlay_can_be_authored():
+    """It could not be, before: an overlay's members carry a role, and Python had no
+    way to state one, so core's validator refused the rule outright."""
+    overlay = _overlay()
+    assert overlay.member_count == 2
+    assert overlay.layout.composition_rule == "overlay"
+    assert overlay.layout.combine_op == "replace"
+
+
+def test_the_roles_are_positional():
+    """The format fixes them — member 0 is the base and spans the index space, the rest
+    are corrections — so the binding attaches them rather than asking."""
+    assert _overlay().member_roles == ("base", "correction")
+
+
+def test_a_rule_without_roles_reports_none():
+    assert _group().member_roles == (None, None)
+    assert _partition().member_roles == (None, None)
+
+
+def test_the_roles_belong_to_the_composite_not_the_tensors():
+    """A tensor has no role; a tensor inside an overlay does. The caller's own objects
+    are handed back unchanged, which is why the role is read from the composite."""
+    base = _base()
+    overlay = hurray.Composite(
+        "overlay",
+        shape=[32, 32],
+        dtype=hurray.float32,
+        members=[base, _correction()],
+        combine_op="replace",
+    )
+    assert overlay.members[0] is base
+    assert not hasattr(base, "member_role")
+
+
+def test_a_base_that_does_not_span_is_refused():
+    """The first member must cover the whole index space; core checks it."""
+    with pytest.raises(hurray.InvalidDescriptorError):
+        hurray.Composite(
+            "overlay",
+            shape=[32, 32],
+            dtype=hurray.float32,
+            members=[
+                hurray.Tensor(
+                    bytes(4 * 16 * 32),
+                    hurray.float32,
+                    [16, 32],
+                    shard=hurray.Shard([32, 32], [0, 0]),
+                ),
+                _correction(),
+            ],
+            combine_op="replace",
+        )
+
+
+@pytest.mark.parametrize("combine_op", ["replace", "add"])
+def test_an_overlay_round_trips_through_a_stream(combine_op):
+    original = _overlay(combine_op)
+    with hurray.StreamWriter() as writer:
+        writer.write(original)
+
+    (back,) = list(hurray.StreamReader(writer.getvalue()))
+    assert back == original, "an overlay must equal its own round trip"
+    assert back.member_roles == ("base", "correction")
+    assert back.layout.combine_op == combine_op
+
+
+def test_an_overlay_round_trips_through_a_file(tmp_path):
+    path = str(tmp_path / "m.hrry")
+    original = _overlay()
+    hurray.save(path, {"weight": original})
+
+    loaded = hurray.load(path)["weight"]
+    assert loaded == original
+    assert loaded.member_roles == ("base", "correction")
+
+
+def test_the_written_bytes_carry_the_roles():
+    """The write path must use the composite's wire-ready descriptors, not the members'
+    own: emitting a member without its role produces a stream a conformant reader
+    rejects, and the only place that shows up is on the far side."""
+    with hurray.StreamWriter() as writer:
+        writer.write(_overlay())
+
+    # cross_machine is irrelevant here; a strict reader is simply another decoder.
+    (back,) = list(hurray.StreamReader(writer.getvalue(), cross_machine=True))
+    assert back.member_roles == ("base", "correction")
+
+
+def test_a_nested_overlay_keeps_its_roles():
+    inner = _overlay()
+    outer = hurray.Composite(
+        "group", shape=[32, 32], dtype=hurray.float32, members=[inner]
+    )
+    with hurray.StreamWriter() as writer:
+        writer.write(outer)
+
+    (back,) = list(hurray.StreamReader(writer.getvalue()))
+    assert back == outer
+    assert back.members[0].member_roles == ("base", "correction")
+
+
+def test_every_python_block_in_the_composite_cookbook_runs():
+    """Blocks on one page share names the way a reader reads them, so they run in one
+    namespace rather than in isolation."""
+    import pathlib
+    import re
+
+    page = pathlib.Path(__file__).parents[2] / "docs/cookbook/composite-tensors.md"
+    if not page.exists():
+        pytest.skip("cookbook not present")
+
+    blocks = re.findall(r"```python\n(.*?)```", page.read_text(), re.S)
+    assert len(blocks) >= 5, "the page lost its Python tabs"
+
+    namespace: dict = {}
+    for index, block in enumerate(blocks):
+        exec(compile(block, f"{page.name}#python[{index}]", "exec"), namespace)

@@ -28,9 +28,13 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyModule, PyTuple};
+use pyo3::IntoPyObjectExt;
 
 use hurray_core::{
-    composite::CompositeTensor, layout::CompositeLayout, LayoutDescriptor, TensorDescriptor,
+    composite::CompositeTensor,
+    descriptor::{CompositeMemberDescriptor, MemberRole},
+    layout::{CompositeLayout, CompositionRule},
+    LayoutDescriptor, TensorDescriptor,
 };
 
 use crate::dtype::Dtype;
@@ -89,6 +93,15 @@ pub struct Composite {
     pub(crate) head: TensorDescriptor,
     /// Members in wire order.
     pub(crate) members: Vec<Member>,
+    /// Each member's descriptor **as it goes on the wire**, which for an overlay carries
+    /// the Composite Member section naming its role.
+    ///
+    /// Kept beside `members` rather than written into them: `members` hands back the very
+    /// objects the caller passed, and a constructor that mutated them would make a
+    /// tensor's identity depend on what it was later put inside. The two must stay in
+    /// step — the validator and the writer both read from here, so a member descriptor
+    /// assembled once is the one that is checked and the one that is emitted.
+    pub(crate) member_descriptors: Vec<TensorDescriptor>,
     /// Python-side dtype handle, so `composite.dtype is hurray.float32` holds.
     dtype_py: Py<Dtype>,
 }
@@ -134,6 +147,7 @@ impl Composite {
         combine_op: Option<&str>,
     ) -> PyResult<Self> {
         let rule = crate::layout::parse_composition_rule(composition_rule, combine_op)?;
+        let is_overlay = matches!(rule, CompositionRule::Overlay(_));
 
         // Static only: a head is checked against what its members cover, and an unknown
         // extent cannot be covered by anything.
@@ -169,18 +183,83 @@ impl Composite {
         )
         .map_err(|e| InvalidDescriptorError::new_err(format!("invalid composite head: {e}")))?;
 
+        // An overlay's member roles are positional — member 0 is the base and spans the
+        // index space, the rest are corrections — so the binding attaches them rather
+        // than asking the caller to restate what the rule already fixes. This is not
+        // inference in ADR-032 § 4's sense: nothing is read out of the buffers. The role
+        // follows from the rule and the position, both of which the caller stated.
+        let member_descriptors: Vec<TensorDescriptor> = members
+            .iter()
+            .enumerate()
+            .map(|(index, member)| {
+                let descriptor = member.descriptor(py);
+                match (is_overlay, descriptor.composite_member.is_some()) {
+                    // Already role-bearing: a member decoded from the wire keeps what its
+                    // producer said, so a round trip cannot quietly relabel it.
+                    (_, true) | (false, _) => descriptor,
+                    (true, false) => descriptor.with_composite_member(
+                        CompositeMemberDescriptor::new(if index == 0 {
+                            MemberRole::Base
+                        } else {
+                            MemberRole::Correction
+                        }),
+                    ),
+                }
+            })
+            .collect();
+
         // Every rule core enforces — per-member boxes, partition coverage, overlay
         // ordering, member count — runs here. The binding keeps no second copy.
-        let member_descriptors: Vec<TensorDescriptor> =
-            members.iter().map(|m| m.descriptor(py)).collect();
-        CompositeTensor::new(head.clone(), member_descriptors)
+        CompositeTensor::new(head.clone(), member_descriptors.clone())
             .map_err(|e| InvalidDescriptorError::new_err(e.to_string()))?;
 
         Ok(Self {
             head,
             members,
+            member_descriptors,
             dtype_py: dtype.clone().unbind(),
         })
+    }
+
+    /// Each member's role, for an overlay: `"base"` then `"correction"`, in wire order.
+    ///
+    /// `None` for every member of a partition or a group, where the rule assigns no
+    /// roles.
+    ///
+    /// The role belongs to *membership*, not to the tensor — a tensor has no role, a
+    /// tensor inside an overlay does — so it is read from the composite rather than from
+    /// `members[i]`. That also makes an authored overlay and a decoded one answer
+    /// identically, which a per-tensor accessor could not: the caller's own tensor object
+    /// never carries a role, since the composite supplies it.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// group = hurray.Composite(
+    ///     "group", shape=[4], dtype=hurray.float32,
+    ///     members=[hurray.Tensor(bytes(16), hurray.float32, [4])],
+    /// )
+    /// assert group.member_roles == (None,)
+    /// ```
+    #[getter]
+    pub fn member_roles(&self, py: Python<'_>) -> PyResult<Py<PyTuple>> {
+        let items: Vec<Py<PyAny>> = self
+            .member_descriptors
+            .iter()
+            .map(|descriptor| match &descriptor.composite_member {
+                Some(cm) => match cm.member_role {
+                    MemberRole::Base => "base".into_py_any(py),
+                    MemberRole::Correction => "correction".into_py_any(py),
+                    // MemberRole is non_exhaustive: a role added to the format after this
+                    // build reports None rather than being guessed at or renamed.
+                    _ => Ok(py.None()),
+                },
+                None => Ok(py.None()),
+            })
+            .collect::<PyResult<_>>()?;
+        Ok(PyTuple::new(py, items)?.unbind())
     }
 
     /// The members, in wire order.
@@ -305,10 +384,18 @@ impl Composite {
         self.members
             .iter()
             .zip(other.members.iter())
-            .all(|(a, b)| match (a, b) {
-                (Member::Tensor(x), Member::Tensor(y)) => {
-                    x.borrow(py).descriptor == y.borrow(py).descriptor
-                }
+            .zip(
+                self.member_descriptors
+                    .iter()
+                    .zip(&other.member_descriptors),
+            )
+            .all(|((a, b), (da, db))| match (a, b) {
+                // The *wire-ready* descriptors, not the tensors' own: an overlay member
+                // authored in Python carries no role on its tensor, because the composite
+                // supplies it, while the same member decoded from a stream carries one on
+                // its descriptor. Comparing the tensors directly would make a composite
+                // unequal to its own round trip.
+                (Member::Tensor(_), Member::Tensor(_)) => da == db,
                 (Member::Composite(x), Member::Composite(y)) => {
                     x.borrow(py).__eq__(py, y.bind(py).as_any())
                 }
@@ -424,17 +511,21 @@ pub(crate) fn owned_tree(py: Python<'_>, composite: &Composite) -> OwnedTree {
         members: composite
             .members
             .iter()
-            .map(|m| owned_node(py, m))
+            .zip(&composite.member_descriptors)
+            .map(|(member, descriptor)| owned_node(py, member, descriptor))
             .collect(),
     }
 }
 
-fn owned_node(py: Python<'_>, member: &Member) -> OwnedNode {
+/// `descriptor` is the member's wire-ready descriptor from its parent, not the one on
+/// its tensor: for an overlay the two differ by the Composite Member section, and
+/// emitting the tensor's own would produce a stream every conformant reader rejects.
+fn owned_node(py: Python<'_>, member: &Member, descriptor: &TensorDescriptor) -> OwnedNode {
     match member {
         Member::Tensor(t) => {
             let tensor = t.borrow(py);
             OwnedNode::Tensor {
-                descriptor: tensor.descriptor.clone(),
+                descriptor: descriptor.clone(),
                 buffers: tensor
                     .buffers()
                     .map(|store| {
@@ -448,8 +539,15 @@ fn owned_node(py: Python<'_>, member: &Member) -> OwnedNode {
         Member::Composite(c) => {
             let nested = c.borrow(py);
             OwnedNode::Composite {
-                head: nested.head.clone(),
-                members: nested.members.iter().map(|m| owned_node(py, m)).collect(),
+                // The nested head as its parent sees it — role-bearing when the parent is
+                // an overlay — with the nested composite's own members below it.
+                head: descriptor.clone(),
+                members: nested
+                    .members
+                    .iter()
+                    .zip(&nested.member_descriptors)
+                    .map(|(m, d)| owned_node(py, m, d))
+                    .collect(),
             }
         }
     }
@@ -542,11 +640,15 @@ pub(crate) fn composite_from_parts(
             inner: head.element_type,
         },
     )?;
+    // Decoded members already carry whatever their producer declared, roles included.
+    let member_descriptors: Vec<TensorDescriptor> =
+        members.iter().map(|m| m.descriptor(py)).collect();
     Ok(Py::new(
         py,
         Composite {
             head,
             members,
+            member_descriptors,
             dtype_py,
         },
     )?
@@ -587,19 +689,29 @@ pub(crate) fn named_tree(
     let members = composite
         .members
         .iter()
+        .zip(&composite.member_descriptors)
         .enumerate()
-        .map(|(index, member)| named_node(py, member, &format!("{head_name}.{index}")))
+        .map(|(index, (member, descriptor))| {
+            named_node(py, member, descriptor, &format!("{head_name}.{index}"))
+        })
         .collect();
     (composite.head.clone(), members)
 }
 
-fn named_node(py: Python<'_>, member: &Member, name: &str) -> NamedNode {
+/// `descriptor` is the member's wire-ready descriptor from its parent — see
+/// [`owned_node`], which makes the same distinction for the streaming path.
+fn named_node(
+    py: Python<'_>,
+    member: &Member,
+    descriptor: &TensorDescriptor,
+    name: &str,
+) -> NamedNode {
     match member {
         Member::Tensor(t) => {
             let tensor = t.borrow(py);
             NamedNode::Tensor {
                 name: name.to_string(),
-                descriptor: tensor.descriptor.clone(),
+                descriptor: descriptor.clone(),
                 // SAFETY: the GIL is held, so every store and its base are alive.
                 buffers: tensor
                     .buffers()
@@ -611,12 +723,13 @@ fn named_node(py: Python<'_>, member: &Member, name: &str) -> NamedNode {
             let nested = c.borrow(py);
             NamedNode::Composite {
                 name: name.to_string(),
-                head: nested.head.clone(),
+                head: descriptor.clone(),
                 members: nested
                     .members
                     .iter()
+                    .zip(&nested.member_descriptors)
                     .enumerate()
-                    .map(|(index, m)| named_node(py, m, &format!("{name}.{index}")))
+                    .map(|(index, (m, d))| named_node(py, m, d, &format!("{name}.{index}")))
                     .collect(),
             }
         }

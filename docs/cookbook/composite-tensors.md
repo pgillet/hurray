@@ -142,10 +142,6 @@ win. Two combine operations are supported:
 Example: `float16` logical view with `int4` per-block-affine quantized base and `float16`
 COO sparse outlier correction:
 
-> **Note (non-normative):** overlays are the one composition rule `hurray-python` cannot
-> author. A member's role — base or correction — has no Python spelling, so
-> `hurray.Composite("overlay", …)` is refused. Partition and group work from Python.
-
 <div class="lang-tabs">
 
 ```rust
@@ -215,17 +211,46 @@ assert_eq!(composite.member_count(), 2);
 ```
 
 ```python
-# Not yet expressible in Python.
-#
-# An overlay's members carry a role — one base, then corrections — and
-# hurray.Composite has no way to state it: it takes members positionally with
-# no per-member descriptor, so the constructor refuses an overlay outright.
-# Partition and group compose fine; this is the one rule that does not.
-#
-# Tracked as a gap in hurray-python's coverage of ADR-036.
+import hurray
+
+# The base spans the whole index space; the correction is a sparse overlay.
+base = hurray.Tensor(
+    bytes(4096 * 4096 // 2),                # int4: two elements per byte
+    hurray.dtype.int4,
+    [4096, 4096],
+    aux_buffers=[bytes(4096 * 4096 // 64 * 4)],
+    quantization=hurray.PerBlockAffine.symmetric(
+        axis=0, block_size=64, scale_buffer_index=1, scale_type=hurray.float32
+    ),
+    shard=hurray.Shard([4096, 4096], [0, 0]),
+)
+
+correction = hurray.Tensor(
+    bytes(2 * 16),                          # 16 float16 outlier values
+    hurray.float16,
+    [4096, 4096],
+    aux_buffers=[bytes(16 * 2 * 8)],        # packed [nnz, rank] uint64 indices
+    layout=hurray.CooLayout(nnz=16, is_sorted=True),
+    shard=hurray.Shard([4096, 4096], [0, 0]),
+)
+
+weights = hurray.Composite(
+    "overlay",
+    shape=[4096, 4096],
+    dtype=hurray.float16,
+    members=[base, correction],
+    combine_op="replace",
+)
+
+assert weights.member_roles == ("base", "correction")
 ```
 
 </div>
+
+Python does not ask which member is the base: the format fixes the roles by position —
+member 0 is the base and must span the index space, the rest are corrections — so the
+constructor attaches them. They are read back from the composite rather than from a
+member, because a tensor has no role; a tensor *inside an overlay* does.
 
 Python states the combine operation as `combine_op="replace"` on the composite rather
 than inside the rule. Member roles are positional: the first member of an overlay is the
@@ -255,8 +280,20 @@ let head = TensorDescriptor::new(
 ```
 
 ```python
-# Not yet expressible in Python — see the note above. `combine_op="add"` is
-# accepted by the constructor, but an overlay cannot be built to use it.
+import hurray
+
+# The same members, combined by addition instead of replacement.
+weights = hurray.Composite(
+    "overlay",
+    shape=[4096, 4096],
+    dtype=hurray.float16,
+    members=[base, correction],
+    combine_op="add",
+)
+
+# The logical value is base + correction where the correction is present,
+# and just the base outside it.
+assert weights.layout.combine_op == "add"
 ```
 
 </div>
