@@ -281,17 +281,13 @@ pub fn sparse_coo(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,
     indices: &Bound<'_, PyAny>,
-    shape: Vec<i64>,
+    shape: Vec<Option<i64>>,
     copy: Option<bool>,
 ) -> PyResult<Tensor> {
-    if shape.iter().any(|&d| d < 0) {
-        return Err(InvalidDescriptorError::new_err(
-            "shape must have non-negative dimensions",
-        ));
-    }
+    // Static only: the index array's coordinates are checked against the extents, so
+    // there has to be an extent.
     let rank = shape.len();
-    let hurray_shape = Shape::new(shape.iter().map(|&d| d as u64).collect::<Vec<u64>>())
-        .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
+    let hurray_shape = crate::creation::parse_static_shape(shape, "hurray.sparse_coo()")?;
 
     // indices: 2-D, C-contiguous, uint64, [nnz, rank].
     require_c_contiguous(indices, "indices")?;
@@ -669,7 +665,7 @@ pub(crate) mod tests {
                 .call_method("array", (vec![vec![0u64, 0], vec![1, 1]],), Some(&ikw))
                 .unwrap();
 
-            let t = sparse_coo(py, &values, &indices, vec![2, 2], None).unwrap();
+            let t = sparse_coo(py, &values, &indices, vec![Some(2), Some(2)], None).unwrap();
             assert_eq!(crate::layout::layout_name(&t.descriptor.layout), "coo");
             assert_eq!(t.ndim(), 2);
             assert_eq!(t.nnz().unwrap(), 2);
@@ -692,7 +688,7 @@ pub(crate) mod tests {
             let indices = np
                 .call_method("array", (vec![vec![0i64, 0]],), Some(&ikw))
                 .unwrap();
-            let err = sparse_coo(py, &values, &indices, vec![2, 2], None).unwrap_err();
+            let err = sparse_coo(py, &values, &indices, vec![Some(2), Some(2)], None).unwrap_err();
             assert!(err.is_instance_of::<UnsupportedError>(py));
         });
     }
@@ -1462,7 +1458,7 @@ pub(crate) mod tests {
                     py,
                     py_buf.as_any(),
                     dtype.bind(py),
-                    vec![4],
+                    vec![Some(4)],
                     None,
                     None,
                     None,

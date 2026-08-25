@@ -674,7 +674,7 @@ mod tests {
                 py,
                 data.as_any(),
                 dtype.bind(py),
-                vec![2, 4],
+                vec![Some(2), Some(4)],
                 None,
                 Some(vec![scales.into_any().unbind()]),
                 None,
