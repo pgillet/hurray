@@ -172,6 +172,45 @@ impl Layout {
         self.inner.is_virtual()
     }
 
+    /// Check this layout against a tensor shape, raising if they cannot go together.
+    ///
+    /// Each layout constrains the shapes it can describe: CSR and CSC are rank-2, a
+    /// tiled layout's tile shape must match the tensor's rank, a block-paged cache
+    /// needs its paged axis to exist. `hurray.Tensor` runs this for you at
+    /// construction — call it directly when you are choosing a layout for a shape you
+    /// have not built a tensor for yet, or checking a layout you decoded against a
+    /// shape you intend to use it with.
+    ///
+    /// A dynamic dimension (`None`) satisfies any extent constraint: there is nothing
+    /// to check until it is resolved.
+    ///
+    /// ## Errors
+    ///
+    /// - `hurray.InvalidDescriptorError` — the shape is not one this layout can describe.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// csr = hurray.CsrLayout(nnz=5)
+    /// csr.validate_against_shape([4, 5])          # rank-2: fine
+    ///
+    /// try:
+    ///     csr.validate_against_shape([2, 3, 4])   # CSR is rank-2 only
+    /// except hurray.InvalidDescriptorError:
+    ///     pass
+    /// ```
+    pub fn validate_against_shape(&self, shape: Vec<Option<i64>>) -> PyResult<()> {
+        let shape = crate::creation::parse_shape(shape)?;
+        self.inner.validate_against_shape(&shape).map_err(|e| {
+            crate::errors::InvalidDescriptorError::new_err(format!(
+                "layout '{}' cannot describe this shape: {e}",
+                layout_name(&self.inner)
+            ))
+        })
+    }
+
     /// Value equality: two layouts are equal when their descriptors are.
     ///
     /// Comparing a layout to a string is always `False`. `t.layout == "csr"` was the
@@ -388,7 +427,54 @@ pub(crate) fn layout_err(e: hurray_core::Error) -> PyErr {
 
 // ── Registration ──────────────────────────────────────────────────────────────
 
+/// Which category of the layout tag space `tag` falls in.
+///
+/// Returns `"named"`, `"reserved"`, `"private"`, or `"invalid"`.
+///
+/// The four call for different reactions, which is the whole reason to ask. A **named**
+/// tag is one this build understands. A **reserved** tag is one a future version of the
+/// format may assign — most likely the producer is newer than this reader, so relaying
+/// the tensor on is reasonable while interpreting its bytes is not. A **private** tag
+/// (`0xF0`–`0xFE`) belongs to an out-of-band agreement between a particular producer and
+/// consumer. An **invalid** tag can never appear in a conformant descriptor, so it means
+/// corruption or a framing error.
+///
+/// One function rather than the four predicates `hurray-core` exposes: a caller wants to
+/// branch on the answer, not ask four yes/no questions in sequence.
+///
+/// ## Examples
+///
+/// ```python
+/// import hurray
+///
+/// assert hurray.layout_tag_kind(0x07) == "named"      # CSR
+/// assert hurray.layout_tag_kind(0x10) == "reserved"
+/// assert hurray.layout_tag_kind(0xF3) == "private"
+/// assert hurray.layout_tag_kind(0x00) == "invalid"
+///
+/// # What a relay does with a tag it does not recognise:
+/// tag = 0x10
+/// if hurray.layout_tag_kind(tag) == "reserved":
+///     pass    # pass the tensor on; do not touch its buffer
+/// ```
+#[pyfunction]
+pub fn layout_tag_kind(tag: u8) -> &'static str {
+    use hurray_core::layout::{is_invalid_tag, is_named_tag, is_private_tag};
+    if is_invalid_tag(tag) {
+        "invalid"
+    } else if is_named_tag(tag) {
+        "named"
+    } else if is_private_tag(tag) {
+        "private"
+    } else {
+        // is_reserved_tag by elimination: the four categories partition the byte space,
+        // so asking a fourth time would only invite them to drift apart.
+        "reserved"
+    }
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(layout_tag_kind, m)?)?;
     m.add_class::<Layout>()?;
     m.add_class::<RowMajorLayout>()?;
     m.add_class::<ColMajorLayout>()?;

@@ -144,3 +144,51 @@ try:
 except ValueError as exc:
     print(f"  rejected: {exc}")
     print("  (calling a known tag 'unknown' would skip every check CsrLayout applies)")
+
+# ── What kind of tag is it? ───────────────────────────────────────────────────
+
+print("\n=== Classifying a tag ===")
+
+for tag in (0x07, 0x10, 0xF3, 0x00):
+    print(f"  0x{tag:02X}: {hurray.layout_tag_kind(tag)}")
+
+print("\n  The four kinds partition the byte space, so one call answers what four")
+print("  yes/no predicates would — and the answer is what you branch on:")
+
+for tag in (0x01, 0x10, 0xF3, 0x00):
+    kind = hurray.layout_tag_kind(tag)
+    action = {
+        "named": "decode it — this build knows the layout",
+        "reserved": "relay it, do not touch the buffer — the producer is newer",
+        "private": "consult the out-of-band agreement, or refuse",
+        "invalid": "reject the input — this cannot appear in a conformant descriptor",
+    }[kind]
+    print(f"    0x{tag:02X} ({kind}): {action}")
+
+# ── Does this layout fit that shape? ──────────────────────────────────────────
+
+print("\n=== Checking a layout against a shape ===")
+
+csr = hurray.CsrLayout(nnz=5)
+csr.validate_against_shape([4, 5])
+print(f"  {csr!r} describes a [4, 5] tensor")
+
+try:
+    csr.validate_against_shape([2, 3, 4])
+except hurray.InvalidDescriptorError as exc:
+    print(f"  but not a [2, 3, 4] one: {exc}")
+
+morton = hurray.MortonLayout([2, 2])
+morton.validate_against_shape([4, 4])
+print(f"\n  {morton!r} covers [4, 4] — each extent fits in its bit count")
+try:
+    morton.validate_against_shape([8, 4])
+except hurray.InvalidDescriptorError as exc:
+    print(f"  but not [8, 4]: {exc}")
+
+print("\n  hurray.Tensor runs this for you at construction. Call it yourself when")
+print("  you are choosing a layout for a shape you have not built a tensor for —")
+print("  or checking a layout you decoded against a shape you mean to use it with.")
+
+csr.validate_against_shape([None, 5])
+print("\n  A dynamic dimension passes: there is nothing to check until it resolves.")
