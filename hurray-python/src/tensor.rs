@@ -153,7 +153,7 @@ impl Tensor {
         py: Python<'_>,
         buffer: &Bound<'_, PyAny>,
         dtype: &Bound<'_, Dtype>,
-        shape: Vec<i64>,
+        shape: Vec<Option<i64>>,
         device: Option<Py<Device>>,
         aux_buffers: Option<Vec<Py<PyAny>>>,
         layout: Option<&Bound<'_, PyAny>>,
@@ -180,21 +180,10 @@ impl Tensor {
         let dtype_py: Py<Dtype> = dtype.clone().unbind();
 
         // ── 2. Parse and validate shape ──────────────────────────────────────
-        let dims: Vec<u64> = shape
-            .iter()
-            .map(|&d| {
-                if d < 0 {
-                    Err(InvalidDescriptorError::new_err(format!(
-                        "shape dimensions must be non-negative, got {d}"
-                    )))
-                } else {
-                    Ok(d as u64)
-                }
-            })
-            .collect::<PyResult<_>>()?;
-
-        let hurray_shape = Shape::new(dims)
-            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
+        // `None` is a dynamic dimension, which this constructor accepts because a
+        // descriptor is a declaration: an input signature with an unknown batch size is
+        // a legitimate thing to write down. Functions that allocate refuse it instead.
+        let hurray_shape = crate::creation::parse_shape(shape)?;
 
         // ── 2b. Resolve the layout ───────────────────────────────────────────
         let layout_desc = match layout {
@@ -229,6 +218,9 @@ impl Tensor {
         // indirect layout's buffer 0 holds nnz values or a page pool instead, and its
         // sizes come from the layout's own parameters in step 6b.
         if is_dense(&layout_desc) {
+            // A dynamic shape has no element count, so there is no size to check against
+            // — 0 makes the check vacuous, which is the only honest option: the whole
+            // point of a dynamic dimension is that the extent is not known yet.
             let element_count = hurray_shape.element_count().unwrap_or(0);
             let expected = buffer_size_bytes(dtype.get().inner, element_count);
             if (buf_bytes.len() as u64) < expected {
@@ -1331,7 +1323,11 @@ impl Tensor {
 
         // Show data values for Tier 1 CPU tensors; fall back on any error (e.g.
         // bfloat16 has no numpy dtype; non-CPU requires a device copy).
-        if is_tier1(et) && is_cpu {
+        //
+        // A dynamic shape falls back too, and must: reshaping to it would hand NumPy a
+        // -1, which means "infer this extent" — so an unresolved batch dimension would
+        // print as an empty tensor rather than as the declaration it is.
+        if is_tier1(et) && is_cpu && !this.descriptor.shape.has_dynamic() {
             if let Ok(data_str) = this.numpy_data_string(py) {
                 return Ok(format!("hurray.Tensor({data_str}, dtype={dtype_name})"));
             }
@@ -1363,9 +1359,13 @@ impl Tensor {
             let this = slf.borrow();
             let et = this.descriptor.element_type;
             let dev = this.device_py.borrow(py);
+            // The dynamic-shape guard is the same one __repr__ carries, and for the
+            // same reason: NumPy would read the DYNAMIC extent as "infer" and print an
+            // empty tensor.
             if is_dense(&this.descriptor.layout)
                 && is_tier1(et)
                 && dev.tag == hurray_core::DeviceTag::Cpu
+                && !this.descriptor.shape.has_dynamic()
             {
                 if let Ok(s) = this.numpy_data_string(py) {
                     return Ok(s);
@@ -1721,7 +1721,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,
@@ -1765,7 +1765,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![8],
+                vec![Some(8)],
                 None,
                 None,
                 None,
@@ -1797,7 +1797,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,
@@ -1828,7 +1828,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![-1, 3],
+                vec![Some(-1), Some(3)],
                 None,
                 None,
                 None,
@@ -1865,7 +1865,7 @@ pub(crate) mod tests {
                     py,
                     py_buf.as_any(),
                     dtype.bind(py),
-                    vec![2, 3],
+                    vec![Some(2), Some(3)],
                     None,
                     None,
                     None,
@@ -1903,7 +1903,7 @@ pub(crate) mod tests {
                     py,
                     py_buf.as_any(),
                     dtype.bind(py),
-                    vec![2, 3],
+                    vec![Some(2), Some(3)],
                     None,
                     None,
                     None,
@@ -1949,7 +1949,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,
@@ -1987,7 +1987,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,
@@ -2027,7 +2027,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2],
+                vec![Some(2)],
                 None,
                 None,
                 None,
@@ -2065,7 +2065,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,
@@ -2102,7 +2102,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,
@@ -2142,7 +2142,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 Some(cuda_device),
                 None,
                 None,
@@ -2225,7 +2225,7 @@ pub(crate) mod tests {
             py,
             data.as_any(),
             dtype.bind(py),
-            vec![2, 4],
+            vec![Some(2), Some(4)],
             None,
             Some(vec![scales.into_any().unbind()]),
             None,
@@ -2294,7 +2294,7 @@ pub(crate) mod tests {
                 py,
                 data.as_any(),
                 dtype.bind(py),
-                vec![2, 4],
+                vec![Some(2), Some(4)],
                 None,
                 None,
                 None,
@@ -2351,7 +2351,7 @@ pub(crate) mod tests {
                 py,
                 data.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,
@@ -2395,7 +2395,7 @@ pub(crate) mod tests {
                 py,
                 data.as_any(),
                 dtype.bind(py),
-                vec![2, 4],
+                vec![Some(2), Some(4)],
                 None,
                 None,
                 None,
@@ -2428,7 +2428,7 @@ pub(crate) mod tests {
                 py,
                 data.as_any(),
                 dtype.bind(py),
-                vec![2, 4],
+                vec![Some(2), Some(4)],
                 None,
                 None,
                 None,
@@ -2488,7 +2488,7 @@ pub(crate) mod tests {
                 py,
                 buf.as_any(),
                 dtype.bind(py),
-                vec![4],
+                vec![Some(4)],
                 None,
                 None,
                 None,
@@ -2544,7 +2544,7 @@ pub(crate) mod tests {
                 py,
                 buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,
@@ -2594,7 +2594,7 @@ pub(crate) mod tests {
                 py,
                 data.as_any(),
                 dtype.bind(py),
-                vec![2, 4],
+                vec![Some(2), Some(4)],
                 None,
                 Some(vec![scales.into_any().unbind()]),
                 None,
@@ -2626,7 +2626,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,
@@ -2658,7 +2658,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,
@@ -2696,7 +2696,7 @@ pub(crate) mod tests {
                     py,
                     py_buf.as_any(),
                     dtype.bind(py),
-                    vec![2, 3],
+                    vec![Some(2), Some(3)],
                     None,
                     None,
                     None,
@@ -2736,7 +2736,7 @@ pub(crate) mod tests {
                     py,
                     py_buf.as_any(),
                     dtype.bind(py),
-                    vec![8],
+                    vec![Some(8)],
                     None,
                     None,
                     None,
@@ -2777,7 +2777,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,
@@ -2806,7 +2806,7 @@ pub(crate) mod tests {
                 py,
                 py_buf.as_any(),
                 dtype.bind(py),
-                vec![2, 3],
+                vec![Some(2), Some(3)],
                 None,
                 None,
                 None,

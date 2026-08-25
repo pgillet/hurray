@@ -30,7 +30,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyModule, PyTuple};
 
 use hurray_core::{
-    composite::CompositeTensor, layout::CompositeLayout, LayoutDescriptor, Shape, TensorDescriptor,
+    composite::CompositeTensor, layout::CompositeLayout, LayoutDescriptor, TensorDescriptor,
 };
 
 use crate::dtype::Dtype;
@@ -128,27 +128,16 @@ impl Composite {
     pub fn new(
         py: Python<'_>,
         composition_rule: &str,
-        shape: Vec<i64>,
+        shape: Vec<Option<i64>>,
         dtype: &Bound<'_, Dtype>,
         members: Vec<Py<PyAny>>,
         combine_op: Option<&str>,
     ) -> PyResult<Self> {
         let rule = crate::layout::parse_composition_rule(composition_rule, combine_op)?;
 
-        let dims: Vec<u64> = shape
-            .iter()
-            .map(|&d| {
-                if d < 0 {
-                    Err(InvalidDescriptorError::new_err(format!(
-                        "shape dimensions must be non-negative, got {d}"
-                    )))
-                } else {
-                    Ok(d as u64)
-                }
-            })
-            .collect::<PyResult<_>>()?;
-        let head_shape = Shape::new(dims)
-            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))?;
+        // Static only: a head is checked against what its members cover, and an unknown
+        // extent cannot be covered by anything.
+        let head_shape = crate::creation::parse_static_shape(shape, "hurray.Composite()")?;
 
         let members: Vec<Member> = members
             .iter()

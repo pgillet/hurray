@@ -126,21 +126,42 @@ fn make_owned_tensor(
     })
 }
 
-/// Parse a Python `list[int]` (or tuple) into a Hurray [`Shape`].
-fn parse_shape(shape: Vec<i64>) -> PyResult<Shape> {
+/// Parse a Python `list[int | None]` (or tuple) into a Hurray [`Shape`].
+///
+/// `None` means a dynamic dimension — an extent not known when the descriptor is
+/// written, such as a batch size resolved at inference time. It is spelled `None` rather
+/// than a `hurray.DYNAMIC` sentinel because `Tensor.shape` already *returns* `None` for
+/// one: a second spelling would be a second thing to learn, and the pair would not round
+/// trip. On the wire it is `DYNAMIC` (`data-model.md` § Dynamic dimensions).
+pub(crate) fn parse_shape(shape: Vec<Option<i64>>) -> PyResult<Shape> {
     let dims: Vec<u64> = shape
         .iter()
-        .map(|&d| {
-            if d < 0 {
-                Err(InvalidDescriptorError::new_err(format!(
-                    "shape dimensions must be non-negative, got {d}"
-                )))
-            } else {
-                Ok(d as u64)
-            }
+        .map(|&d| match d {
+            None => Ok(hurray_core::DYNAMIC),
+            Some(d) if d < 0 => Err(InvalidDescriptorError::new_err(format!(
+                "shape dimensions must be non-negative, got {d}; use None for a dynamic \
+                 dimension"
+            ))),
+            Some(d) => Ok(d as u64),
         })
         .collect::<PyResult<_>>()?;
     Shape::new(dims).map_err(|e| InvalidDescriptorError::new_err(format!("invalid shape: {e}")))
+}
+
+/// [`parse_shape`] for callers that cannot act on an unknown extent.
+///
+/// Anything that allocates a buffer, or validates one against the shape, needs a number.
+/// The refusal names `what` so the caller learns which call cannot take a dynamic
+/// dimension, rather than meeting a bare `TypeError` from the argument conversion.
+pub(crate) fn parse_static_shape(shape: Vec<Option<i64>>, what: &str) -> PyResult<Shape> {
+    if let Some(index) = shape.iter().position(Option::is_none) {
+        return Err(InvalidDescriptorError::new_err(format!(
+            "{what} cannot take a dynamic dimension (None at index {index}): it needs a \
+             known extent. Build the descriptor with hurray.Tensor(...), which accepts \
+             None, and resolve the shape before allocating."
+        )));
+    }
+    parse_shape(shape)
 }
 
 // ── Buffer fill helpers ────────────────────────────────────────────────────────
@@ -369,14 +390,14 @@ pub(crate) fn to_numpy_dtype_name(et: ElementType) -> Option<&'static str> {
 #[pyo3(signature = (shape, *, dtype = None, device = None))]
 pub fn zeros(
     py: Python<'_>,
-    shape: Vec<i64>,
+    shape: Vec<Option<i64>>,
     dtype: Option<&Bound<'_, PyAny>>,
     device: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Tensor> {
     let et = resolve_dtype(dtype)?;
     check_tier1(et)?;
     let (dtag, mc) = resolve_device(device)?;
-    let s = parse_shape(shape)?;
+    let s = parse_static_shape(shape, "hurray.zeros()")?;
     let n = s.element_count().unwrap_or(0);
     let buf = vec![0u8; buffer_size_bytes(et, n) as usize];
     make_owned_tensor(py, buf, et, s, dtag, mc)
@@ -399,14 +420,14 @@ pub fn zeros(
 #[pyo3(signature = (shape, *, dtype = None, device = None))]
 pub fn ones(
     py: Python<'_>,
-    shape: Vec<i64>,
+    shape: Vec<Option<i64>>,
     dtype: Option<&Bound<'_, PyAny>>,
     device: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Tensor> {
     let et = resolve_dtype(dtype)?;
     check_tier1(et)?;
     let (dtag, mc) = resolve_device(device)?;
-    let s = parse_shape(shape)?;
+    let s = parse_static_shape(shape, "hurray.ones()")?;
     let n = s.element_count().unwrap_or(0);
     let buf = fill_ones(et, n);
     make_owned_tensor(py, buf, et, s, dtag, mc)
@@ -430,7 +451,7 @@ pub fn ones(
 #[pyo3(signature = (shape, fill_value, *, dtype = None, device = None))]
 pub fn full(
     py: Python<'_>,
-    shape: Vec<i64>,
+    shape: Vec<Option<i64>>,
     fill_value: &Bound<'_, PyAny>,
     dtype: Option<&Bound<'_, PyAny>>,
     device: Option<&Bound<'_, PyAny>>,
@@ -442,7 +463,7 @@ pub fn full(
     };
     check_tier1(et)?;
     let (dtag, mc) = resolve_device(device)?;
-    let s = parse_shape(shape)?;
+    let s = parse_static_shape(shape, "hurray.full()")?;
     let n = s.element_count().unwrap_or(0);
     let buf = fill_scalar(et, fill_value, n)?;
     make_owned_tensor(py, buf, et, s, dtag, mc)
@@ -465,14 +486,14 @@ pub fn full(
 #[pyo3(signature = (shape, *, dtype = None, device = None))]
 pub fn empty(
     py: Python<'_>,
-    shape: Vec<i64>,
+    shape: Vec<Option<i64>>,
     dtype: Option<&Bound<'_, PyAny>>,
     device: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Tensor> {
     let et = resolve_dtype(dtype)?;
     check_tier1(et)?;
     let (dtag, mc) = resolve_device(device)?;
-    let s = parse_shape(shape)?;
+    let s = parse_static_shape(shape, "hurray.empty()")?;
     let n = s.element_count().unwrap_or(0);
     // Zero-fill is a safe default; the contents of an "empty" tensor are unspecified.
     let buf = vec![0u8; buffer_size_bytes(et, n) as usize];
@@ -1053,7 +1074,7 @@ mod tests {
         init();
         Python::attach(|py| {
             let _m = build_module(py);
-            let t = zeros(py, vec![2, 3], None, None).unwrap();
+            let t = zeros(py, vec![Some(2), Some(3)], None, None).unwrap();
             assert_eq!(t.descriptor.element_type, ElementType::Float64);
             assert_eq!(t.descriptor.shape.dims(), &[2, 3]);
             let buf_size = buffer_size_bytes(ElementType::Float64, 6) as usize;
@@ -1077,7 +1098,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let t = ones(py, vec![2], Some(dtype_obj.bind(py).as_any()), None).unwrap();
+            let t = ones(py, vec![Some(2)], Some(dtype_obj.bind(py).as_any()), None).unwrap();
             // Each 4-byte element should be [0x00, 0x00, 0x80, 0x3f] = 1.0f32 LE.
             let slice = unsafe { t.buffer.as_slice() };
             assert_eq!(&slice[0..4], &[0x00, 0x00, 0x80, 0x3f]);
@@ -1098,7 +1119,7 @@ mod tests {
             )
             .unwrap();
             // 9 True elements → 2 bytes: first byte 0xFF, second byte 0x01.
-            let t = ones(py, vec![9], Some(dtype_obj.bind(py).as_any()), None).unwrap();
+            let t = ones(py, vec![Some(9)], Some(dtype_obj.bind(py).as_any()), None).unwrap();
             let slice = unsafe { t.buffer.as_slice() };
             assert_eq!(slice.len(), 2);
             assert_eq!(slice[0], 0xFF); // 8 True bits
@@ -1122,7 +1143,7 @@ mod tests {
             .unwrap();
             let t = full(
                 py,
-                vec![3],
+                vec![Some(3)],
                 fill_val,
                 Some(dtype_obj.bind(py).as_any()),
                 None,
@@ -1249,7 +1270,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let result = zeros(py, vec![4], Some(dtype_obj.bind(py).as_any()), None);
+            let result = zeros(py, vec![Some(4)], Some(dtype_obj.bind(py).as_any()), None);
             assert!(result.is_err());
             assert!(result.unwrap_err().is_instance_of::<UnsupportedError>(py));
         });
@@ -1261,7 +1282,7 @@ mod tests {
         Python::attach(|py| {
             let _m = build_module(py);
             // Shape [0] → 0 elements → empty buffer is valid.
-            let t = zeros(py, vec![0], None, None).unwrap();
+            let t = zeros(py, vec![Some(0)], None, None).unwrap();
             assert_eq!(t.buffer.len(), 0);
         });
     }

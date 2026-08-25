@@ -733,7 +733,7 @@ mod tests {
                 py,
                 &buf,
                 dtype.bind(py),
-                vec![4],
+                vec![Some(4)],
                 None,
                 None,
                 None,

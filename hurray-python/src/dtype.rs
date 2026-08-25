@@ -19,8 +19,27 @@ use pyo3::prelude::*;
 use pyo3::types::PyModule;
 
 use hurray_core::ElementType;
+use pyo3::sync::PyOnceLock;
+use std::collections::HashMap;
 
 use crate::errors::InvalidDescriptorError;
+
+/// Every `Dtype` singleton, keyed by wire tag.
+///
+/// `Dtype` documents that `hurray.float32 is hurray.dtype.float32`, so the lookups have
+/// to hand back the same objects rather than build new ones — otherwise `from_name` and
+/// `from_tag` would quietly return something that compares equal but is not identical,
+/// which is exactly the kind of near-miss that shows up as a puzzling `is` failure.
+static SINGLETONS: PyOnceLock<HashMap<u8, Py<Dtype>>> = PyOnceLock::new();
+
+/// The singleton for `ty`, or a fresh object if the module has not been imported yet
+/// (which cannot happen through the Python API, but keeps this total).
+fn singleton(py: Python<'_>, ty: ElementType) -> PyResult<Py<Dtype>> {
+    match SINGLETONS.get(py).and_then(|m| m.get(&ty.tag())) {
+        Some(obj) => Ok(obj.clone_ref(py)),
+        None => Py::new(py, Dtype { inner: ty }),
+    }
+}
 
 /// A Hurray element type descriptor.
 ///
@@ -169,10 +188,55 @@ impl Dtype {
         self.inner.tier() == 1
     }
 
+    /// This type's wire tag: the byte that identifies it in an encoded descriptor.
+    ///
+    /// The tags are normative (`element-types.md` § Type Tags), so this is what a
+    /// producer writes and a consumer reads — and what `hurray-inspect` prints.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.float32.tag == 0x03
+    /// assert hurray.Dtype.from_tag(hurray.float32.tag) is hurray.float32
+    /// ```
+    #[getter]
+    pub fn tag(&self) -> u8 {
+        self.inner.tag()
+    }
+
+    /// The natural alignment of a single element, in bytes.
+    ///
+    /// This is the element's own alignment, not the buffer's: a `float32` buffer starts
+    /// on a 64-byte boundary (`hurray.MIN_BUFFER_ALIGNMENT`) but its elements are
+    /// 4-aligned within it. Sub-byte types report `1`, since a packed element has no
+    /// address of its own.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.float32.element_alignment == 4
+    /// assert hurray.float64.element_alignment == 8
+    /// assert hurray.dtype.int4.element_alignment == 1     # packed, two per byte
+    /// ```
+    #[getter]
+    pub fn element_alignment(&self) -> usize {
+        self.inner.element_alignment()
+    }
+
     // ── Dunders ──────────────────────────────────────────────────────────────
 
     fn __repr__(&self) -> String {
-        format!("hurray.Dtype('{}')", element_type_name(self.inner))
+        match self.inner {
+            // Every private extension type is named "extension" — the spec gives them no
+            // name, since their semantics travel out of band — so the repr carries the
+            // tag, which is the only thing that tells two of them apart.
+            ElementType::Extension(tag) => format!("hurray.Dtype('extension', tag=0x{tag:02X})"),
+            other => format!("hurray.Dtype('{}')", element_type_name(other)),
+        }
     }
 
     fn __str__(&self) -> &'static str {
@@ -206,8 +270,8 @@ impl Dtype {
     /// ```python
     /// import hurray
     ///
-    /// assert hurray.Dtype.from_name("float32") == hurray.float32
-    /// assert hurray.Dtype.from_name("int4") == hurray.dtype.int4
+    /// assert hurray.Dtype.from_name("float32") is hurray.float32
+    /// assert hurray.Dtype.from_name("int4") is hurray.dtype.int4
     ///
     /// try:
     ///     hurray.Dtype.from_name("not_a_type")
@@ -215,12 +279,65 @@ impl Dtype {
     ///     pass
     /// ```
     #[classmethod]
-    pub fn from_name(_cls: &Bound<'_, pyo3::types::PyType>, name: &str) -> PyResult<Dtype> {
+    pub fn from_name(cls: &Bound<'_, pyo3::types::PyType>, name: &str) -> PyResult<Py<Dtype>> {
         let inner = element_type_from_name(name).ok_or_else(|| {
             InvalidDescriptorError::new_err(format!("unknown element type name: '{name}'"))
         })?;
-        Ok(Dtype { inner })
+        singleton(cls.py(), inner)
     }
+
+    /// Parse a `Dtype` from its wire tag — the inverse of [`Dtype::tag`].
+    ///
+    /// This is what a decoder does with the byte it read. Reserved tags (assigned to no
+    /// type in this version of the format) and the permanently invalid sentinels `0x00`
+    /// and `0xFF` are both refused, and the error says which: a reserved tag may mean the
+    /// producer is newer than this reader, while an invalid one is a corrupt descriptor.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.Dtype.from_tag(0x03) is hurray.float32
+    /// assert hurray.Dtype.from_tag(0x48) is hurray.dtype.int4
+    ///
+    /// try:
+    ///     hurray.Dtype.from_tag(0xFF)
+    /// except hurray.InvalidDescriptorError:
+    ///     pass
+    /// ```
+    #[classmethod]
+    pub fn from_tag(cls: &Bound<'_, pyo3::types::PyType>, tag: u8) -> PyResult<Py<Dtype>> {
+        let inner = ElementType::from_tag(tag)
+            .map_err(|e| InvalidDescriptorError::new_err(format!("invalid element type: {e}")))?;
+        singleton(cls.py(), inner)
+    }
+}
+
+// ── hurray.buffer_size_bytes ──────────────────────────────────────────────────
+
+/// The number of bytes a buffer needs to hold `count` elements of `dtype`.
+///
+/// Not `count * dtype.bit_width // 8`: sub-byte types pack, and the packing rules differ
+/// per width (`memory-layout.md` § Sub-byte packing). `int4` fits two elements per byte
+/// and rounds up; `bool` fits eight; the 6-bit float types pack four elements into three
+/// bytes. Getting this wrong produces a buffer that is one byte short of the last
+/// element, which the descriptor validator catches and the caller then has to debug.
+///
+/// ## Examples
+///
+/// ```python
+/// import hurray
+///
+/// assert hurray.buffer_size_bytes(hurray.float32, 100) == 400
+/// assert hurray.buffer_size_bytes(hurray.dtype.int4, 7) == 4        # ceil(7 / 2)
+/// assert hurray.buffer_size_bytes(hurray.bool, 9) == 2              # ceil(9 / 8)
+/// assert hurray.buffer_size_bytes(hurray.dtype.float6_e2m3, 100) == 75  # ceil(100/4)*3
+/// assert hurray.buffer_size_bytes(hurray.float32, 0) == 0
+/// ```
+#[pyfunction]
+pub fn buffer_size_bytes(dtype: &Dtype, count: u64) -> u64 {
+    hurray_core::buffer_size_bytes(dtype.inner, count)
 }
 
 // ── Name ↔ ElementType helpers ────────────────────────────────────────────────
@@ -345,13 +462,18 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     let py = m.py();
 
     m.add_class::<Dtype>()?;
+    m.add_function(wrap_pyfunction!(buffer_size_bytes, m)?)?;
 
     // Create the `hurray.dtype` submodule.
     let dtype_mod = PyModule::new(py, "dtype")?;
 
+    let mut singletons: HashMap<u8, Py<Dtype>> = HashMap::with_capacity(ALL_ELEMENT_TYPES.len());
+
     for &ty in ALL_ELEMENT_TYPES {
         let name = element_type_name(ty);
         let obj = Py::new(py, Dtype { inner: ty })?;
+
+        singletons.insert(ty.tag(), obj.clone_ref(py));
 
         // Always add to `hurray.dtype.*`.
         dtype_mod.add(name, obj.clone_ref(py))?;
@@ -361,6 +483,11 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
             m.add(name, obj)?;
         }
     }
+
+    // Ignore a second registration: importing the module twice into one interpreter
+    // would otherwise fail here, and the first set of singletons is as good as the
+    // second.
+    let _ = SINGLETONS.set(py, singletons);
 
     // Register `hurray.dtype` in `sys.modules` so `from hurray.dtype import int4` works.
     let sys = py.import("sys")?;

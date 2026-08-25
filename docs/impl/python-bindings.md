@@ -92,6 +92,45 @@ namespace (see ADR-029).
 | `device` | MUST return a device object consistent with `__dlpack_device__`. |
 | `T` | MUST return a transposed view without copying for rank-2 tensors. MUST raise `ValueError` if the tensor is not rank-2. |
 
+### Dtype surface
+
+`hurray.Dtype` MUST expose, in addition to `name`, `bit_width`, `tier`, and the
+`is_float` / `is_integer` / `is_signed` / `is_sub_byte` predicates:
+
+| Member | Requirement |
+|---|---|
+| `tag` | MUST return the type's normative wire tag (`element-types.md` § Type Tags). |
+| `element_alignment` | MUST return the natural alignment of one element in bytes. Sub-byte types MUST report `1`. |
+| `Dtype.from_tag(tag)` | MUST return the type for a wire tag, and MUST raise `hurray.InvalidDescriptorError` for the permanently invalid sentinels (`0x00`, `0xFF`) and for tags reserved by this version. A tag in the private-extension range (`0xF0`–`0xFE`) is **not** an error; it MUST resolve to an extension type that preserves the tag. |
+
+`Dtype.from_tag` and `Dtype.from_name` MUST return the singleton for the type, not a new
+object: the class documents `hurray.float32 is hurray.dtype.float32`, and a lookup that
+returned an equal-but-not-identical object would break that quietly.
+
+Because every private extension type shares the name `"extension"`, `repr` MUST include
+the tag, which is the only thing distinguishing two of them.
+
+### Buffer sizing
+
+The module MUST expose `hurray.buffer_size_bytes(dtype, count) -> int`, applying the
+packing rules of `memory-layout.md` § Sub-byte packing. `count * dtype.bit_width // 8` is
+not a substitute: it is wrong for every sub-byte type.
+
+### Dynamic dimensions
+
+A dynamic dimension MUST be spelled `None` in a shape passed to `hurray.Tensor`, matching
+what `Tensor.shape` returns for one, so that a shape read from a tensor can be passed
+back to build an equal descriptor (ADR-032 § 4). Implementations MUST NOT also expose a
+sentinel constant for it.
+
+Functions that allocate a buffer or validate one against the shape — `zeros`, `ones`,
+`empty`, `full`, `sparse_coo`, `Composite` — MUST refuse a dynamic dimension with
+`hurray.InvalidDescriptorError`, naming the call and the offending index.
+
+A tensor with a dynamic dimension MUST NOT render its buffer as data in `repr` or `str`:
+the wire sentinel reaches NumPy as `-1`, which means "infer this extent", so an
+unresolved dimension would print as an empty tensor.
+
 ### Tier 1 dtype interop correspondence
 
 > **Note (non-normative):** Tier 1 element types use the standard numeric vocabulary,
