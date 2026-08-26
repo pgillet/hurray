@@ -87,6 +87,13 @@ jobs:
                 cargo run -q -p "$pkg" --example "$example" || exit 1
                 echo "::endgroup::"
               done
+      # Same argument as the examples above, for the other body of Rust people copy:
+      # the cookbook's fenced blocks. rustdoc --test compiles each one and runs it
+      # unless the fence says no_run/ignore. Lives here rather than in docs-check.yml
+      # because the blocks rot when the *API* moves, and that workflow only fires on
+      # changes under docs/ and website/ (#187).
+      - name: Compile cookbook Rust blocks
+        run: python3 website/check-rust-blocks.py
 
   python-conformance:
     name: Python conformance
