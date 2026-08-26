@@ -369,6 +369,50 @@ Consumers MUST discover support by probing
 `hasattr(obj, '__hurray__')`. There is no separate capability flag on the
 `hurray` namespace.
 
+## Descriptor Encoding
+
+> This section uses RFC 2119 key words: MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT,
+> SHOULD, SHOULD NOT, RECOMMENDED, MAY, and OPTIONAL.
+
+The descriptor is the format's central artifact. `hurray-python` MUST be able to produce
+and consume it, or a Python program cannot carry a Hurray tensor in a container of its own
+nor read one that arrived out of band.
+
+### `hurray.Descriptor`
+
+A `Descriptor` is what a tensor declares, without its data. It MUST expose `dtype`,
+`shape`, `ndim`, `size`, `layout`, `buffer_handles`, `buffer_count`, `device`,
+`quantization`, `shard`, `statistics`, `byte_offset`, `version`, and `encoded_len`, and
+MUST agree with the tensor it came from on every one of them.
+
+It MUST NOT be constructible from Python: a constructor would duplicate `hurray.Tensor`'s
+entire parameter list to build the half of it that carries no data. Descriptors come from
+`Tensor.descriptor`, from `Composite.descriptor` (the head — the one descriptor that is
+*only* a descriptor), or from `Descriptor.decode`.
+
+`decode` MUST return a `Descriptor` and MUST NOT return a `Tensor`: a decoded descriptor
+has no buffers, and a `Tensor` holding none would be the same class of false statement
+ADR-037 removed from `alignment`.
+
+### Encoding
+
+- `Descriptor.encode()` MUST produce the binary descriptor exactly as it appears on the
+  wire, and `Descriptor.decode(bytes)` MUST recover an equal descriptor from it.
+- `decode` MUST accept trailing bytes and ignore them. The descriptor carries its own
+  length; in a stream what follows it is the data it describes.
+- `encoded_len` MUST equal `len(encode())`.
+
+### Standalone quantization sections
+
+Each quantization class MUST expose `encode()`, and the module MUST expose
+`hurray.decode_quantization(bytes)` returning whichever class the section's scheme tag
+names — a caller reads the bytes without knowing in advance which scheme wrote them.
+
+The classes MUST compare by value, like every other descriptor value object in this
+binding. A class carrying a floating-point field MUST NOT define `__hash__`: `NaN` would
+break the hash/equality contract, and being unhashable is the correct outcome rather than
+an omission.
+
 ## Buffer Lifetime and Ownership
 
 Zero-copy interop requires that the source object's buffer remains valid for the

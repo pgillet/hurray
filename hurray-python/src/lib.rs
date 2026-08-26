@@ -14,6 +14,7 @@ pub(crate) mod buffer;
 mod buffer_handle;
 mod composite;
 mod creation;
+mod descriptor;
 mod device;
 pub(crate) mod dlpack;
 mod dtype;
@@ -63,6 +64,7 @@ mod tensor;
 /// | `hurray.print_options` | context-manager factory | 8e |
 /// | `hurray.aligned_allocator` | context-manager factory | ADR-037 |
 /// | `hurray.AlignedAllocatorCtx` | context manager | ADR-037 |
+/// | `hurray.Descriptor` | class | #147 |
 /// | `hurray.PrintOptionsCtx` | context manager | 8e |
 #[pymodule]
 fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -81,6 +83,7 @@ fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     buffer_handle::register(m)?;
     composite::register(m)?;
     creation::register(m)?;
+    descriptor::register(m)?;
     file_io::register(m)?;
     print_options::register(m)?;
     quantization::register(m)?;

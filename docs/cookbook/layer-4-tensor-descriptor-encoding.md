@@ -31,9 +31,11 @@ Runnable example: `cargo run --example encode_decode_descriptor`
 The spec's worked example — `float32 [3, 4]` row-major, one CPU buffer — encodes to exactly
 61 bytes:
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::{
-    BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
     descriptor::TensorDescriptor,
     layout::LayoutDescriptor,
 };
@@ -42,7 +44,7 @@ let shape  = Shape::new(vec![3u64, 4]).unwrap();
 // 192 = 3 × 64 bytes (one cache line per row) — the spec's worked example allocation.
 // The tensor data itself needs only 3×4×4 = 48 bytes; byte_size records the physical
 // allocation which may exceed the data footprint. In real code use buffer_size_bytes().
-let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+let buffer = BufferHandle::new(192, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
 
 let desc = TensorDescriptor::new(
     1, 0,                      // version_major, version_minor
@@ -65,15 +67,39 @@ let decoded = TensorDescriptor::decode(&bytes).unwrap();
 assert_eq!(decoded, desc);
 ```
 
+```python
+import hurray
+
+# A descriptor comes from a tensor rather than being built on its own: it is the
+# half of a tensor that travels first, not a separate thing to assemble.
+tensor = hurray.Tensor(bytes(192), hurray.float32, [3, 4])
+descriptor = tensor.descriptor
+
+wire = descriptor.encode()
+assert len(wire) == 61          # spec worked example
+
+# Decode back — byte-exact round trip.
+assert hurray.Descriptor.decode(wire) == descriptor
+```
+
+</div>
+
+`Descriptor` is not constructible from Python: a constructor would duplicate
+`hurray.Tensor`'s whole parameter list to build the half of it that carries no data.
+Descriptors come from a tensor, from a composite head (`Composite.descriptor`), or from
+`decode`.
+
 ## Advisory statistics
 
 Attach pre-computed statistics (value range, NaN/Inf presence, etc.) using
 `Statistics` and `StatisticsMask`. Only the bits set in `computed_mask` carry
 valid values; all other fields are zero and MUST be ignored by readers:
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::{
-    BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
     descriptor::{Statistics, StatisticsMask, TensorDescriptor},
     layout::LayoutDescriptor,
 };
@@ -98,7 +124,7 @@ let stats = Statistics {
 };
 
 let shape  = Shape::new(vec![8u64, 8]).unwrap();
-let buffer = BufferHandle::new(128, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+let buffer = BufferHandle::new(128, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
 
 let desc = TensorDescriptor::new(
     1, 0, ElementType::Float16, shape, 0,
@@ -114,22 +140,46 @@ assert!(s.computed_mask.value_range_valid());
 assert!(!s.has_nan);
 ```
 
+```python
+import hurray
+
+# Python derives computed_mask from which arguments you pass, so a value can
+# never be present with its validity bit unset.
+# value_min, value_max and value_abs_max share one validity bit, so they are
+# supplied together — Python enforces that rather than letting you set a bit
+# for a value you did not compute.
+stats = hurray.Statistics(
+    value_min=-1.0, value_max=1.0, value_abs_max=1.0, has_nan=False, has_inf=False
+)
+
+tensor = hurray.Tensor(bytes(128), hurray.float16, [8, 8], statistics=stats)
+
+decoded = hurray.Descriptor.decode(tensor.descriptor.encode())
+
+assert decoded.statistics.value_min == -1.0
+assert decoded.statistics.has_nan is False
+```
+
+</div>
+
 ## Shard annotations
 
 When a tensor is a rectangular sub-region of a larger logical tensor (e.g., a row shard of a
 matrix), attach a `ShardDescriptor`. The `parent_shape` rank must match the tensor's rank and
 `shard_offset[k] + shape[k] <= parent_shape[k]` must hold for every dimension `k`:
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::{
-    BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT,
+    BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT,
     descriptor::{ShardDescriptor, TensorDescriptor},
     layout::LayoutDescriptor,
 };
 
 // Shard: rows 2048..3071 of a 4096×1024 parent matrix.
 let shape  = Shape::new(vec![1024u64, 1024]).unwrap();
-let buffer = BufferHandle::new(524_288, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+let buffer = BufferHandle::new(524_288, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
 let shard  = ShardDescriptor::new(
     vec![4096u64, 1024], // parent_shape
     vec![2048u64, 0],    // shard_offset (origin in parent)
@@ -149,19 +199,38 @@ assert_eq!(s.parent_shape, [4096, 1024]);
 assert_eq!(s.shard_offset, [2048, 0]);
 ```
 
+```python
+import hurray
+
+# Shard: rows 2048..3071 of a 4096x1024 parent matrix.
+tensor = hurray.Tensor(
+    bytes(524_288),
+    hurray.dtype.int4,
+    [1024, 1024],
+    shard=hurray.Shard([4096, 1024], [2048, 0]),
+)
+
+decoded = hurray.Descriptor.decode(tensor.descriptor.encode())
+
+assert decoded.shard.parent_shape == (4096, 1024)
+assert decoded.shard.shard_offset == (2048, 0)
+```
+
+</div>
+
 ## Validation errors
 
 `TensorDescriptor::new` rejects invalid combinations:
 
 ```rust
 use hurray_core::{
-    BufferHandle, DeviceTag, ElementType, Shape, MIN_BUFFER_ALIGNMENT, Error,
+    BufferHandle, DeviceTag, ElementType, Shape, SyncMode, MIN_BUFFER_ALIGNMENT, Error,
     descriptor::TensorDescriptor,
     layout::LayoutDescriptor,
 };
 
 let shape  = Shape::new(vec![4u64, 4]).unwrap();
-let buffer = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu).unwrap();
+let buffer = BufferHandle::new(64, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap();
 
 // Empty buffer table is rejected.
 let result = TensorDescriptor::new(
