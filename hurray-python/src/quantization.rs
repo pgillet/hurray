@@ -24,7 +24,7 @@
 //! unrepresentable instead of merely invalid.
 
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
+use pyo3::types::{PyBytes, PyModule};
 
 use hurray_core::{
     Mxfp as CoreMxfp, Nf4 as CoreNf4, PerBlockAffine as CorePerBlockAffine,
@@ -106,6 +106,43 @@ impl PerTensorAffine {
     #[getter]
     pub fn zero_point(&self) -> i32 {
         self.inner.zero_point()
+    }
+
+    /// Value equality: two schemes are equal when they declare the same thing.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.decode_quantization(scheme.encode()) == scheme
+    /// ```
+    pub fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        match other.extract::<PyRef<'_, PerTensorAffine>>() {
+            Ok(other) => self.inner == other.inner,
+            Err(_) => false,
+        }
+    }
+
+    // No __hash__: the scale is an f32, and NaN would break the
+    // hash/equality contract. Defining __eq__ without it makes the class
+    // unhashable, which is the right answer for a float-carrying value.
+
+    /// Encode this scheme to its wire bytes.
+    ///
+    /// The `quantization_descriptor` section as it appears inside a tensor descriptor,
+    /// usable on its own — 16 to 24 bytes, so `encode` allocating is not worth avoiding.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// scheme = hurray.PerTensorAffine(0.5, 0)
+    /// assert hurray.decode_quantization(scheme.encode()) == scheme
+    /// ```
+    pub fn encode(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        encode_scheme(py, QuantizationDescriptor::PerTensorAffine(self.inner))
     }
 
     pub fn __repr__(&self) -> String {
@@ -228,6 +265,47 @@ impl PerChannelAffine {
     #[getter]
     pub fn zero_point_buffer_index(&self) -> Option<u32> {
         self.inner.zero_point_buffer_index()
+    }
+
+    /// Value equality: two schemes are equal when they declare the same thing.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.decode_quantization(scheme.encode()) == scheme
+    /// ```
+    pub fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        match other.extract::<PyRef<'_, PerChannelAffine>>() {
+            Ok(other) => self.inner == other.inner,
+            Err(_) => false,
+        }
+    }
+
+    /// Hash of the declaration, consistent with `__eq__`.
+    pub fn __hash__(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.inner.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Encode this scheme to its wire bytes.
+    ///
+    /// The `quantization_descriptor` section as it appears inside a tensor descriptor,
+    /// usable on its own — 16 to 24 bytes, so `encode` allocating is not worth avoiding.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// scheme = hurray.PerChannelAffine.symmetric(axis=0, scale_buffer_index=1)
+    /// assert hurray.decode_quantization(scheme.encode()) == scheme
+    /// ```
+    pub fn encode(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        encode_scheme(py, QuantizationDescriptor::PerChannelAffine(self.inner))
     }
 
     pub fn __repr__(&self) -> String {
@@ -398,6 +476,47 @@ impl PerBlockAffine {
         )
     }
 
+    /// Value equality: two schemes are equal when they declare the same thing.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.decode_quantization(scheme.encode()) == scheme
+    /// ```
+    pub fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        match other.extract::<PyRef<'_, PerBlockAffine>>() {
+            Ok(other) => self.inner == other.inner,
+            Err(_) => false,
+        }
+    }
+
+    /// Hash of the declaration, consistent with `__eq__`.
+    pub fn __hash__(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.inner.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Encode this scheme to its wire bytes.
+    ///
+    /// The `quantization_descriptor` section as it appears inside a tensor descriptor,
+    /// usable on its own — 16 to 24 bytes, so `encode` allocating is not worth avoiding.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// scheme = hurray.PerBlockAffine.symmetric(axis=0, block_size=64, scale_buffer_index=1, scale_type=hurray.float32)
+    /// assert hurray.decode_quantization(scheme.encode()) == scheme
+    /// ```
+    pub fn encode(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        encode_scheme(py, QuantizationDescriptor::PerBlockAffine(self.inner))
+    }
+
     pub fn __repr__(&self) -> String {
         format!(
             "PerBlockAffine(axis={}, block_size={}, scale_buffer_index={}, \
@@ -487,6 +606,47 @@ impl Nf4 {
         self.inner.scale_buffer_index()
     }
 
+    /// Value equality: two schemes are equal when they declare the same thing.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.decode_quantization(scheme.encode()) == scheme
+    /// ```
+    pub fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        match other.extract::<PyRef<'_, Nf4>>() {
+            Ok(other) => self.inner == other.inner,
+            Err(_) => false,
+        }
+    }
+
+    /// Hash of the declaration, consistent with `__eq__`.
+    pub fn __hash__(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.inner.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Encode this scheme to its wire bytes.
+    ///
+    /// The `quantization_descriptor` section as it appears inside a tensor descriptor,
+    /// usable on its own — 16 to 24 bytes, so `encode` allocating is not worth avoiding.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// scheme = hurray.NF4(axis=0, block_size=64, scale_buffer_index=1)
+    /// assert hurray.decode_quantization(scheme.encode()) == scheme
+    /// ```
+    pub fn encode(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        encode_scheme(py, QuantizationDescriptor::Nf4(self.inner))
+    }
+
     pub fn __repr__(&self) -> String {
         format!(
             "NF4(axis={}, block_size={}, scale_buffer_index={})",
@@ -574,6 +734,47 @@ impl Mxfp {
         self.inner.scale_buffer_index()
     }
 
+    /// Value equality: two schemes are equal when they declare the same thing.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.decode_quantization(scheme.encode()) == scheme
+    /// ```
+    pub fn __eq__(&self, other: &Bound<'_, PyAny>) -> bool {
+        match other.extract::<PyRef<'_, Mxfp>>() {
+            Ok(other) => self.inner == other.inner,
+            Err(_) => false,
+        }
+    }
+
+    /// Hash of the declaration, consistent with `__eq__`.
+    pub fn __hash__(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.inner.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    /// Encode this scheme to its wire bytes.
+    ///
+    /// The `quantization_descriptor` section as it appears inside a tensor descriptor,
+    /// usable on its own — 16 to 24 bytes, so `encode` allocating is not worth avoiding.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// scheme = hurray.MXFP(axis=0, block_size=32, scale_buffer_index=1)
+    /// assert hurray.decode_quantization(scheme.encode()) == scheme
+    /// ```
+    pub fn encode(&self, py: Python<'_>) -> PyResult<Py<PyBytes>> {
+        encode_scheme(py, QuantizationDescriptor::Mxfp(self.inner))
+    }
+
     pub fn __repr__(&self) -> String {
         format!(
             "MXFP(axis={}, block_size={}, scale_buffer_index={})",
@@ -617,6 +818,47 @@ pub(crate) fn extract_quantization(obj: &Bound<'_, PyAny>) -> PyResult<Quantizat
 ///
 /// The inverse of [`extract_quantization`], used when reading a descriptor back
 /// off the wire or off disk.
+/// Encode a quantization descriptor to its wire bytes.
+///
+/// Shared by the five classes' `encode()` methods, so the sections cannot drift apart —
+/// there is no Python base class to hang it on, since these are five façades over five
+/// core types rather than a hierarchy.
+fn encode_scheme(py: Python<'_>, descriptor: QuantizationDescriptor) -> PyResult<Py<PyBytes>> {
+    // encode_to_vec is infallible: a QuantizationDescriptor cannot exist in a state it
+    // cannot encode, since its constructors validate.
+    Ok(PyBytes::new(py, &descriptor.encode_to_vec()).unbind())
+}
+
+/// Decode a standalone `quantization_descriptor` section.
+///
+/// The inverse of each scheme's `encode()`. Returns whichever of the five classes the
+/// section's scheme tag names, so a caller reads the bytes without knowing in advance
+/// which scheme produced them — which is the point of a tagged section.
+///
+/// Trailing bytes are permitted and ignored: the section carries its own length, which
+/// is what lets it sit inside a descriptor with other sections after it.
+///
+/// ## Errors
+///
+/// - `hurray.InvalidDescriptorError` — the bytes are not a valid quantization section.
+///
+/// ## Examples
+///
+/// ```python
+/// import hurray
+///
+/// scheme = hurray.PerTensorAffine(0.5, 0)
+/// wire = scheme.encode()
+///
+/// assert hurray.decode_quantization(wire) == scheme
+/// ```
+#[pyfunction]
+pub fn decode_quantization(py: Python<'_>, data: &[u8]) -> PyResult<Py<PyAny>> {
+    let (descriptor, _read) = QuantizationDescriptor::decode(data)
+        .map_err(|e| InvalidDescriptorError::new_err(format!("cannot decode quantization: {e}")))?;
+    quantization_to_py(py, descriptor)
+}
+
 pub(crate) fn quantization_to_py(
     py: Python<'_>,
     desc: QuantizationDescriptor,
@@ -639,6 +881,7 @@ pub(crate) fn quantization_to_py(
 // ── Registration ──────────────────────────────────────────────────────────────
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(decode_quantization, m)?)?;
     m.add_class::<PerTensorAffine>()?;
     m.add_class::<PerChannelAffine>()?;
     m.add_class::<PerBlockAffine>()?;

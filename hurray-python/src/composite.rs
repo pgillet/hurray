@@ -262,6 +262,33 @@ impl Composite {
         Ok(PyTuple::new(py, items)?.unbind())
     }
 
+    /// The head descriptor: what this composite presents, owning no buffers.
+    ///
+    /// The one descriptor that is *only* a descriptor — a composite head declares a
+    /// shape, a dtype and a composition rule, and its data lives in its members.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// group = hurray.Composite(
+    ///     "group", shape=[4], dtype=hurray.float32,
+    ///     members=[hurray.Tensor(bytes(16), hurray.float32, [4])],
+    /// )
+    /// assert group.descriptor.buffer_count == 0
+    /// assert hurray.Descriptor.decode(group.descriptor.encode()) == group.descriptor
+    /// ```
+    #[getter]
+    pub fn descriptor(&self, py: Python<'_>) -> PyResult<Py<crate::descriptor::Descriptor>> {
+        Py::new(
+            py,
+            crate::descriptor::Descriptor {
+                inner: self.head.clone(),
+            },
+        )
+    }
+
     /// The members, in wire order.
     ///
     /// ## Examples

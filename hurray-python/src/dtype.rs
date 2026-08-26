@@ -34,7 +34,7 @@ static SINGLETONS: PyOnceLock<HashMap<u8, Py<Dtype>>> = PyOnceLock::new();
 
 /// The singleton for `ty`, or a fresh object if the module has not been imported yet
 /// (which cannot happen through the Python API, but keeps this total).
-fn singleton(py: Python<'_>, ty: ElementType) -> PyResult<Py<Dtype>> {
+pub(crate) fn singleton(py: Python<'_>, ty: ElementType) -> PyResult<Py<Dtype>> {
     match SINGLETONS.get(py).and_then(|m| m.get(&ty.tag())) {
         Some(obj) => Ok(obj.clone_ref(py)),
         None => Py::new(py, Dtype { inner: ty }),

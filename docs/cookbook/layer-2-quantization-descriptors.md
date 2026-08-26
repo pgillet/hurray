@@ -8,6 +8,8 @@ Quantization descriptors specify how tensor elements are dequantized when retrie
 
 When a single scale and zero point apply uniformly to all elements (the simplest case):
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::{PerTensorAffine, QuantizationDescriptor};
 
@@ -32,11 +34,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+```python
+import hurray
+
+# scale=0.015625, zero_point=128
+scheme = hurray.PerTensorAffine(0.015625, 128)
+
+wire = scheme.encode()
+assert len(wire) == 16          # 4-byte header + 8 bytes scale/zp + 4 reserved
+
+assert hurray.decode_quantization(wire) == scheme
+
+# Dequantization formula: x_real = scale * (q - zero_point), where q is a raw
+# int8 from storage. Applying it is the consuming framework's job, not the codec's.
+```
+
+</div>
+
 **Use case:** Uniform quantization across an entire weight matrix or activation tensor.
 
 ## Per-Channel Affine Quantization (Output Channel Scaling)
 
 When each output channel has its own scale (typical in INT8 quantized LLM weights):
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::{PerChannelAffine, QuantizationDescriptor, BufferHandle, DeviceTag, MIN_BUFFER_ALIGNMENT};
@@ -69,11 +90,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+```python
+import hurray
+
+scheme = hurray.PerChannelAffine.symmetric(axis=0, scale_buffer_index=1)
+
+assert scheme.axis == 0
+assert hurray.decode_quantization(scheme.encode()) == scheme
+```
+
+</div>
+
 **Use case:** Per-output-channel quantization in transformer weight matrices; achieves better accuracy than per-tensor.
 
 ## Per-Block Affine Quantization (QLoRA-Style)
 
 Divide a tensor into fixed-size blocks along one axis; each block carries its own scale and (optionally) zero point:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::{PerBlockAffine, QuantizationDescriptor, ElementType};
@@ -110,6 +144,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+```python
+import hurray
+
+scheme = hurray.PerBlockAffine.symmetric(
+    axis=0, block_size=64, scale_buffer_index=1, scale_type=hurray.float32
+)
+
+assert scheme.symmetric
+assert hurray.decode_quantization(scheme.encode()) == scheme
+```
+
+</div>
+
 **Scale types:** `Float16`, `BFloat16`, or `Float32` (controlled per descriptor).
 
 **Use case:** QLoRA-style quantization; balances compression and accuracy in large language models.
@@ -117,6 +164,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## NF4 Block Quantization
 
 A non-linear 4-bit scheme with 16 fixed quantization levels (from QLoRA). Each block has a single absolute-maximum scale:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::{Nf4, QuantizationDescriptor, NF4_LUT};
@@ -146,6 +195,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+```python
+import hurray
+
+scheme = hurray.NF4(axis=0, block_size=64, scale_buffer_index=1)
+
+assert scheme.block_size == 64
+assert hurray.decode_quantization(scheme.encode()) == scheme
+```
+
+</div>
+
 **Block size constraint:** Must be a power of two ≥ 8.
 
 **Use case:** Quantization of weight matrices in LLMs using the QLoRA approach; achieves ≤4-bit effective precision with minimal accuracy loss.
@@ -153,6 +213,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## MXFP Block Quantization (OCP Microscaling)
 
 Open Compute Project Microscaling (OCP MX) format: blocks share a single exponent-only scale in float8_e8m0 format. Requires exact divisibility (no partial trailing blocks):
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::{Mxfp, QuantizationDescriptor, CANONICAL_BLOCK_SIZE};
@@ -183,6 +245,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+```python
+import hurray
+
+scheme = hurray.MXFP(axis=0, block_size=32, scale_buffer_index=1)
+
+assert scheme.block_size == 32
+assert hurray.decode_quantization(scheme.encode()) == scheme
+```
+
+</div>
+
 **Block size constraint:** Power of two in `[16, 2048]` (inclusive).
 
 **Divisibility requirement:** `shape[axis]` must be a positive multiple of `block_size`. No partial blocks.
@@ -203,16 +276,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Quantization descriptors reference external buffers (for scales and zero points). Validate placement before building a tensor descriptor:
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::{
-    BufferHandle, DeviceTag, Nf4, QuantizationDescriptor,
+    BufferHandle, DeviceTag, Nf4, QuantizationDescriptor, SyncMode,
     validate_buffer_placement, MIN_BUFFER_ALIGNMENT,
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create buffers on the same device
-    let data_buf = BufferHandle::new(4096, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu)?;
-    let scale_buf = BufferHandle::new(256, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu)?;
+    let data_buf = BufferHandle::new(4096, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced)?;
+    let scale_buf = BufferHandle::new(256, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced)?;
     let buffers = [data_buf, scale_buf];
 
     // Create an NF4 descriptor with scale at buffer index 1
@@ -228,6 +303,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+```python
+import hurray
+
+# Python checks placement when the tensor is built, against the buffers it was
+# actually given — there is no separate descriptor to validate in isolation.
+tensor = hurray.Tensor(
+    bytes(4096),
+    hurray.dtype.int4,
+    [64, 64],
+    aux_buffers=[bytes(256)],
+    quantization=hurray.NF4(axis=0, block_size=64, scale_buffer_index=1),
+)
+assert tensor.buffer_count == 2
+
+# An index that names no buffer is refused.
+try:
+    hurray.Tensor(
+        bytes(4096),
+        hurray.dtype.int4,
+        [64, 64],
+        aux_buffers=[bytes(256)],
+        quantization=hurray.NF4(axis=0, block_size=64, scale_buffer_index=7),
+    )
+    raise AssertionError("buffer 7 does not exist")
+except hurray.InvalidDescriptorError as exc:
+    print(exc)
+```
+
+</div>
+
 **Constraints checked:**
 1. All quantization parameter buffer indices are within `buffers.len()`.
 2. No quantization buffer index equals the data buffer index (no aliasing).
@@ -236,6 +341,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Encoding and Decoding
 
 Use `encode_into` for streaming writers (zero-alloc) or `encode_to_vec` for convenience:
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::{PerTensorAffine, QuantizationDescriptor};
@@ -259,5 +366,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+```python
+import hurray
+
+scheme = hurray.PerTensorAffine(0.5, 0)
+
+# 16 to 24 bytes, so there is no zero-alloc variant to reach for: the section
+# is smaller than the cost of arranging to avoid the allocation.
+wire = scheme.encode()
+assert len(wire) == 16
+
+assert hurray.decode_quantization(wire) == scheme
+```
+
+</div>
+
+`decode_quantization` returns whichever of the five classes the section's scheme tag
+names, so a caller reads the bytes without knowing in advance which scheme wrote them —
+which is what a tagged section is for. Trailing bytes are ignored: the section carries its
+own length, which is what lets it sit inside a descriptor with other sections after it.
 
 **Note:** `encode_into` is preferred in hot paths (streaming readers/writers) because it avoids allocation. The descriptor itself is small (16–24 bytes), so `encode_to_vec` is fine for initialization paths.

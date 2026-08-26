@@ -360,21 +360,7 @@ impl Tensor {
     /// ```
     #[getter]
     pub fn shape(&self, py: Python<'_>) -> PyResult<Py<PyTuple>> {
-        let items: Vec<Py<PyAny>> = self
-            .descriptor
-            .shape
-            .dims()
-            .iter()
-            .map(|&dim| -> PyResult<Py<PyAny>> {
-                if dim == DYNAMIC {
-                    Ok(py.None())
-                } else {
-                    // dim is u64; Python int is arbitrary-precision so no truncation.
-                    dim.into_py_any(py)
-                }
-            })
-            .collect::<PyResult<_>>()?;
-        Ok(PyTuple::new(py, items)?.unbind())
+        shape_tuple(py, &self.descriptor.shape)
     }
 
     /// Number of dimensions (rank) of this tensor.
@@ -796,6 +782,31 @@ impl Tensor {
             InvalidDescriptorError::new_err(format!("failed to decode quantization: {e}"))
         })?;
         crate::quantization::quantization_to_py(py, desc).map(Some)
+    }
+
+    /// This tensor's descriptor: everything it declares, apart from its bytes.
+    ///
+    /// The half of the tensor that travels first and on its own — encode it with
+    /// `descriptor.encode()` to put a Hurray tensor inside a container of your own.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// tensor = hurray.Tensor(bytes(48), hurray.float32, [3, 4])
+    /// wire = tensor.descriptor.encode()
+    ///
+    /// assert hurray.Descriptor.decode(wire) == tensor.descriptor
+    /// ```
+    #[getter]
+    pub fn descriptor(&self, py: Python<'_>) -> PyResult<Py<crate::descriptor::Descriptor>> {
+        Py::new(
+            py,
+            crate::descriptor::Descriptor {
+                inner: self.descriptor.clone(),
+            },
+        )
     }
 
     /// The statistics section, or `None` if the tensor carries none.
@@ -1447,6 +1458,26 @@ pub(crate) fn no_such_attribute(attr: &str, layout: &str) -> PyErr {
     pyo3::exceptions::PyAttributeError::new_err(format!(
         "'Tensor' object has no attribute '{attr}'; this is a {layout} tensor"
     ))
+}
+
+/// A `Shape` as a Python tuple, with `None` for each dynamic dimension.
+///
+/// Shared by `Tensor.shape` and `Descriptor.shape` so the two cannot render the same
+/// shape differently.
+pub(crate) fn shape_tuple(py: Python<'_>, shape: &Shape) -> PyResult<Py<PyTuple>> {
+    let items: Vec<Py<PyAny>> = shape
+        .dims()
+        .iter()
+        .map(|&dim| -> PyResult<Py<PyAny>> {
+            if dim == DYNAMIC {
+                Ok(py.None())
+            } else {
+                // dim is u64; Python int is arbitrary-precision so no truncation.
+                dim.into_py_any(py)
+            }
+        })
+        .collect::<PyResult<_>>()?;
+    Ok(PyTuple::new(py, items)?.unbind())
 }
 
 // ── Synchronisation ───────────────────────────────────────────────────────────
