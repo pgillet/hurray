@@ -23,7 +23,7 @@ pub(crate) const SUPPORTED_VERSION: u8 = 0x01;
 ///
 /// Below 8 elements per block the 16-point NF4 information content provides no
 /// statistical benefit over a plain low-bit linear quantization.
-pub const MIN_BLOCK_SIZE: u32 = 8;
+pub const NF4_MIN_BLOCK_SIZE: u32 = 8;
 
 /// No flags are defined for this scheme; all 16 bits must be zero.
 const RESERVED_FLAGS_MASK: u16 = 0xFFFF;
@@ -138,7 +138,7 @@ impl Nf4 {
     /// # Errors
     ///
     /// - [`Error::InvalidBlockSize`] — `block_size` is not a power of two or is
-    ///   less than [`MIN_BLOCK_SIZE`] (8).
+    ///   less than [`NF4_MIN_BLOCK_SIZE`] (8).
     ///
     /// # Examples
     ///
@@ -363,11 +363,11 @@ impl Nf4 {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn validate_block_size(block_size: u32) -> Result<()> {
-    if !block_size.is_power_of_two() || block_size < MIN_BLOCK_SIZE {
+    if !block_size.is_power_of_two() || block_size < NF4_MIN_BLOCK_SIZE {
         return Err(Error::InvalidBlockSize {
             scheme_tag: SCHEME_TAG,
             block_size,
-            min: MIN_BLOCK_SIZE,
+            min: NF4_MIN_BLOCK_SIZE,
             // NF4 has no upper bound in the spec; use u32::MAX as sentinel.
             max: u32::MAX,
         });
@@ -448,7 +448,7 @@ mod tests {
 
     #[test]
     fn new_block_size_below_min_is_err() {
-        // MIN_BLOCK_SIZE = 8; block_size = 4 is below minimum.
+        // NF4_MIN_BLOCK_SIZE = 8; block_size = 4 is below minimum.
         assert!(matches!(
             Nf4::new(0, 4, 1),
             Err(Error::InvalidBlockSize { .. })
@@ -473,7 +473,7 @@ mod tests {
 
     #[test]
     fn new_valid_min_block_size_is_ok() {
-        assert!(Nf4::new(0, MIN_BLOCK_SIZE, 1).is_ok());
+        assert!(Nf4::new(0, NF4_MIN_BLOCK_SIZE, 1).is_ok());
     }
 
     #[test]
@@ -531,7 +531,7 @@ mod tests {
 
     #[test]
     fn round_trip_min_block_size() {
-        let original = Nf4::new(0, MIN_BLOCK_SIZE, 1).unwrap();
+        let original = Nf4::new(0, NF4_MIN_BLOCK_SIZE, 1).unwrap();
         let decoded = encode_decode(&original);
         assert_eq!(decoded, original);
     }
@@ -603,7 +603,7 @@ mod tests {
         buf[2] = 0;
         buf[3] = 0;
         buf[4..8].copy_from_slice(&0u32.to_le_bytes()); // axis
-                                                        // block_size = 3 (not a power of two, and < MIN_BLOCK_SIZE=8)
+                                                        // block_size = 3 (not a power of two, and < NF4_MIN_BLOCK_SIZE=8)
         buf[8..12].copy_from_slice(&3u32.to_le_bytes());
         buf[12..16].copy_from_slice(&1u32.to_le_bytes()); // scale_buf
         assert!(matches!(

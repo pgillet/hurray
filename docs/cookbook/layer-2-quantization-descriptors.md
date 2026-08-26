@@ -217,13 +217,13 @@ Open Compute Project Microscaling (OCP MX) format: blocks share a single exponen
 <div class="lang-tabs">
 
 ```rust
-use hurray_core::{quantization::CANONICAL_BLOCK_SIZE, Mxfp, QuantizationDescriptor};
+use hurray_core::{Mxfp, QuantizationDescriptor, MXFP_CANONICAL_BLOCK_SIZE};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // MXFP: standard block size from OCP MX spec
     let q = Mxfp::new(
         0,                      // quantization axis
-        CANONICAL_BLOCK_SIZE,   // 32 (canonical OCP MX v1.0 block size)
+        MXFP_CANONICAL_BLOCK_SIZE, // 32 (canonical OCP MX v1.0 block size)
         1,                      // scale buffer index
     )?;
     let desc = QuantizationDescriptor::Mxfp(q);

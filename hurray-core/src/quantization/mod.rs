@@ -38,9 +38,11 @@ pub mod per_block_affine;
 pub mod per_channel_affine;
 pub mod per_tensor_affine;
 
-pub use mxfp::{Mxfp, CANONICAL_BLOCK_SIZE, MAX_BLOCK_SIZE, MIN_BLOCK_SIZE};
-pub use nf4::{Nf4, NF4_LUT};
-pub use per_block_affine::PerBlockAffine;
+// Scheme constants carry their scheme prefix: three schemes each define a minimum block
+// size with a different value, so an unprefixed re-export would silently privilege one.
+pub use mxfp::{Mxfp, MXFP_CANONICAL_BLOCK_SIZE, MXFP_MAX_BLOCK_SIZE, MXFP_MIN_BLOCK_SIZE};
+pub use nf4::{Nf4, NF4_LUT, NF4_MIN_BLOCK_SIZE};
+pub use per_block_affine::{PerBlockAffine, PER_BLOCK_AFFINE_MIN_BLOCK_SIZE};
 pub use per_channel_affine::PerChannelAffine;
 pub use per_tensor_affine::PerTensorAffine;
 
