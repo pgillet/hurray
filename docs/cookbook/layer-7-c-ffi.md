@@ -4,6 +4,12 @@ The `hurray-ffi` crate exposes a stable C ABI over `hurray-core` types.
 All functions return a `HurrayStatus` integer (`0` = OK, negative = error).
 All handles are opaque — never inspect their internals.
 
+> **Note (non-normative):** this page has no Python tabs, and should not. The C ABI is the
+> layer *underneath* a language binding — `hurray-python` is one of its consumers, not a
+> way to call it. A Python program that wants a Hurray tensor uses `hurray.Tensor` and the
+> `__hurray__` protocol; the function table here is for whoever is writing the next
+> binding.
+
 ## ABI version check
 
 Always verify the ABI version at startup so mismatched builds are caught early.
@@ -25,6 +31,7 @@ use hurray_ffi::{hurray_c_abi_version, HURRAY_C_ABI_VERSION};
 
 assert_eq!(unsafe { hurray_c_abi_version() }, HURRAY_C_ABI_VERSION);
 ```
+
 
 ## Creating a buffer with a release callback
 

@@ -37,8 +37,9 @@ hurray-inspect -           # read from stdin
 
 ## Inspecting a file
 
-Write a small Rust program (or use the worked example in `hurray-core`) to produce a binary
-descriptor, save it to disk, then pass it to `hurray-inspect`:
+Produce a binary descriptor, save it to disk, then pass it to `hurray-inspect`:
+
+<div class="lang-tabs">
 
 ```rust
 // src/bin/write_example.rs (or any scratch binary)
@@ -64,6 +65,26 @@ fn main() {
     println!("wrote example.hrry ({} bytes)", desc.encode().unwrap().len());
 }
 ```
+
+```python
+import hurray
+
+# No scratch binary needed: a tensor's descriptor encodes on its own.
+tensor = hurray.Tensor(bytes(192), hurray.float32, [3, 4])
+wire = tensor.descriptor.encode()
+
+with open("example.hrry", "wb") as sink:
+    sink.write(wire)
+
+print(f"wrote example.hrry ({len(wire)} bytes)")
+```
+
+</div>
+
+Python can also do what `hurray-inspect` does — `hurray.Descriptor.decode(wire)` gives
+back every field the CLI prints, as objects rather than as text. The CLI's advantage is
+that it works on a file you cannot import a library to read, and that it renders the byte
+offsets alongside.
 
 Then inspect it:
 
