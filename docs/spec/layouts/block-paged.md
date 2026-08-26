@@ -127,7 +127,7 @@ a trust or tenant boundary.
 
 To retrieve the value at token `t` of sequence `s`, head `h`, dimension `d`:
 
-```
+```text
 page_in_seq    = t / page_size            (integer division)
 offset_in_page = t mod page_size
 phys_page      = block_table[seq_ptr[s] + page_in_seq]
@@ -144,7 +144,7 @@ entry for an asymmetric scheme), per the active scheme in `quantization.md`.
 Two sequences share a prefix when their block-table slices name the same physical page
 IDs for the shared leading positions. For example, with
 
-```
+```text
 seq 0 block-table slice: [12, 5, 7, 9]
 seq 1 block-table slice: [12, 5, 7, 3]
 ```
@@ -264,7 +264,7 @@ A KV cache for layer 3, key role, with 2 sequences, `page_size = 4`, `num_pages 
 `num_heads = 2`, `head_dim = 8`, element type `float16`. Sequence 0 has 6 tokens,
 sequence 1 has 3 tokens, and sequence 1 reuses page 0 (a shared prefix):
 
-```
+```text
 num_seqs    = 2
 seq_ptr     (buffer 2): [0, 2, 3]
 block_table (buffer 1): [0, 1, 0]

@@ -55,13 +55,13 @@ index exceeds `shape`.
 
 Number of tiles per dimension:
 
-```
+```text
 num_tiles[k] = ceil(shape[k] / tile_shape[k])
 ```
 
 Total buffer elements:
 
-```
+```text
 total_tile_elements = product(tile_shape[k] for all k)
 total_tiles        = product(num_tiles[k] for all k)
 buffer_elements    = total_tiles * total_tile_elements

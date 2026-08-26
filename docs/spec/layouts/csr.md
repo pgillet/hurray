@@ -88,7 +88,7 @@ Binary search is valid because column indices within each row are sorted (invari
 
 To iterate over all non-zeros in row `r`:
 
-```
+```text
 for j = row_ptr[r] to row_ptr[r+1] - 1:
     col = col_indices[j]
     val = values[j]
@@ -104,7 +104,7 @@ MUST match the `nnz` field in the CSR descriptor, which is authoritative. The `s
 
 Rank-2 sparse matrix with shape `[4, 5]`, element type `float32`:
 
-```
+```text
 Dense representation:
   row 0: [1.0,  0,   0,  2.0,  0 ]
   row 1: [ 0,   0,  3.0,  0,   0 ]

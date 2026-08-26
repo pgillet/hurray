@@ -33,7 +33,7 @@ All multi-byte fields MUST be encoded in little-endian byte order.
 
 For each storage element `q`:
 
-```
+```text
 x_real = scale * (q - zero_point)
 ```
 

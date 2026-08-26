@@ -133,7 +133,7 @@ Rust API until composite support reaches Python.
 
 ## Runnable example
 
-```
+```bash
 python hurray-python/examples/streaming.py
 ```
 

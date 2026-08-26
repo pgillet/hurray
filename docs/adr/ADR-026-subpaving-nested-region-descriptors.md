@@ -72,7 +72,7 @@ mode per region are **omitted and inherited from the outer descriptor**:
 
 Each region is encoded as a fixed prefix followed by a length-delimited body:
 
-```
+```text
 Region prefix:
 | origin              | uint64[rank] | region start index, inclusive            |
 | region_shape        | uint64[rank] | region extent; every value > 0           |

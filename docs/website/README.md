@@ -39,7 +39,7 @@ the two pinned binaries and the Rust toolchain already used by the workspace.
 
 The site deploys as a single static tree. Paths (relative to the Pages site root):
 
-```
+```text
 /                         Landing / overview            (Zola)
 /faq/                     FAQ                            (Zola)
 /blog/                    Blog index + posts            (Zola)
@@ -104,7 +104,7 @@ deploy. Shape:
 New site sources live under `website/`; published content stays authored in place under
 `docs/`.
 
-```
+```text
 website/
 ├── book/
 │   └── book.toml            # mdBook config; src points at the curated doc tree

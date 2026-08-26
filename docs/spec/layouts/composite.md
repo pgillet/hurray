@@ -114,7 +114,7 @@ shard section (`HAS_SHARD` flag set; see `metadata.md` § Shard Section, and ADR
 `parent_shape` MUST equal the head's logical `shape`, and its `shard_offset` together with
 the member's own `shape` define the member's box in the head's index space:
 
-```
+```text
 member covers, along dimension k, the half-open range
     [ shard_offset[k], shard_offset[k] + shape[k] )
 ```
@@ -200,7 +200,7 @@ dimension `k` (§ Members › Shard section) — contains that index.
 **Non-overlap constraint.** Two members' boxes `A` and `B` overlap if, for every
 dimension `k`:
 
-```
+```text
 A.shard_offset[k] < B.shard_offset[k] + B.shape[k]
 AND
 B.shard_offset[k] < A.shard_offset[k] + A.shape[k]
@@ -310,7 +310,7 @@ as complete.
 A sealed overlay (SpQR-style) with a `float16` logical view of shape `[4096, 4096]`,
 `combine_op = 0x01` (replace), one base and one correction:
 
-```
+```text
 Head (layout_tag = 0x0B):
   shape            = [4096, 4096]
   type_tag         = float16
@@ -342,7 +342,7 @@ at the composite level.
 A partition composite with a `float32` logical view of shape `[8, 8]`, split into two
 `[8, 4]` members:
 
-```
+```text
 Head: shape = [8, 8], type_tag = float32, buffer_count = 0,
       composition_rule = 0x01 (partition), combine_op = 0x00, member_count = 2
 

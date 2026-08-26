@@ -26,7 +26,7 @@ For each dimension `k`, `shape[k]` MUST satisfy `shape[k] <= 2^morton_bits[k]`.
 For element `[i_0, i_1, ..., i_{r-1}]`, the Morton code is computed by interleaving
 bits in round-robin order, starting from the least significant bit of dimension 0:
 
-```
+```text
 morton_code = 0
 for bit_position b = 0, 1, 2, ...:
     for dimension d = 0, 1, ..., rank - 1:

@@ -72,7 +72,7 @@ Affine scheme. Its byte size MUST be exactly `num_blocks * 4`.
 Let `b` be the block index for a storage element `q` at logical position
 `[i_0, ..., i_{rank-1}]` (computed as in Per-Block Affine). Let `s = scale[b]`.
 
-```
+```text
 x_real = s * nf4[q]
 ```
 

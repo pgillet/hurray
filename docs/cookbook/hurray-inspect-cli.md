@@ -94,7 +94,7 @@ hurray-inspect example.hrry
 
 Output:
 
-```
+```text
 Offset  Value (hex)                     Field
 ------  ------------------------------  -----
      0  48 52 52 59                     magic = "HRRY"
@@ -136,7 +136,7 @@ type), those fields appear after the buffer table in spec-mandated order.
 
 Example with statistics attached (flags bit 3 set):
 
-```
+```text
     ...
     44  01                              buffer_count = 1
     45  C0 00 00 00 00 00 00 00         buffer[0].byte_size = 192
@@ -160,7 +160,7 @@ failure, then an error row and a message on stderr:
 echo -n "BAAD" | hurray-inspect -
 ```
 
-```
+```text
 Offset  Value (hex)                     Field
 ------  ------------------------------  -----
      0  42 41 41 44                     magic = "BAAD"

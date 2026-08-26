@@ -208,7 +208,7 @@ Buffer size in bytes for `N` elements: `ceil(N * 6 / 8)` = `ceil(N / 4) * 3`.
 
 Assembling each byte (MSB on the left):
 
-```
+```text
 B0 = 10_000001 = 0x81
 B1 = 0100_0000 = 0x40
 B2 = 001000_00 = 0x20
@@ -334,13 +334,13 @@ Tag `0x47` is reserved for future assignment by this specification. Implementati
 
 For whole-byte types with bit width `W >= 8`, the minimum buffer size in bytes for a contiguous tensor with `N` total elements is:
 
-```
+```text
 buffer_size = N * (W / 8)
 ```
 
 For sub-byte types with bit width `B < 8`, the general minimum buffer size in bytes for a contiguous tensor with `N` total elements is:
 
-```
+```text
 buffer_size = ceil(N * B / 8)
 ```
 

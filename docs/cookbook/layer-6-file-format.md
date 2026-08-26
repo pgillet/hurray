@@ -200,7 +200,7 @@ of it.
 
 ## File layout overview
 
-```
+```text
 [ 64-byte file header  ]  magic "HRRYFILE", version, flags, alignment
 [ Tensor region        ]  per tensor: descriptor → pad → buffer(s) → pad
 [ KV section           ]  optional; count + (key, value) pairs

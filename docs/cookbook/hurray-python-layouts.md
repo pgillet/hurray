@@ -30,7 +30,7 @@ genuinely makes: the layout tag.
 
 ## The class hierarchy
 
-```
+```text
 hurray.Layout                        # base: tag, name, buffer_count, is_dense, is_virtual
 ├── RowMajorLayout   ColMajorLayout
 ├── StridedLayout    TiledLayout     MortonLayout    HilbertLayout
@@ -264,7 +264,7 @@ rebuilt.layout == original.layout    # True
 
 ## Runnable example
 
-```
+```bash
 python hurray-python/examples/layouts.py
 ```
 

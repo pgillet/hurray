@@ -12,7 +12,7 @@ Strides are implicit and MUST NOT be present in the descriptor for this layout t
 
 ## Implicit Strides
 
-```
+```text
 strides[rank - 1] = 1
 strides[i] = shape[i + 1] * strides[i + 1]    for i = rank - 2, ..., 0
 ```
@@ -24,7 +24,7 @@ All strides are in **logical elements**.
 The linear element offset of element `[i_0, i_1, ..., i_{r-1}]` in a row-major
 tensor of rank `r` is:
 
-```
+```text
 offset = sum(i_k * strides[k] for k = 0, ..., r - 1)
 ```
 

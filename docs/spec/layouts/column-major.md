@@ -13,7 +13,7 @@ layout tag.
 
 ## Implicit Strides
 
-```
+```text
 strides[0] = 1
 strides[i] = shape[i - 1] * strides[i - 1]    for i = 1, ..., rank - 1
 ```

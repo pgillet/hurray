@@ -42,7 +42,7 @@ Issue #147 makes this a gap by policy. Two findings make it more than that.
 `hurray.Tensor` hardcoded `MIN_BUFFER_ALIGNMENT` (64) for every non-empty buffer, over
 `Box<[u8]>` allocations made at `align_of::<u8>() == 1`. Measured:
 
-```
+```text
 owned,  256 bytes  -> address % 64 = 32
 owned, 1024 bytes  -> address % 64 = 16
 ```
@@ -55,7 +55,7 @@ PR #179, which over-aligns the allocation so the declaration becomes true.
 **Borrowed** buffers are not fixed, and cannot be without this decision. NumPy's
 alignment, measured over twenty samples per size:
 
-```
+```text
      64 bytes: 10/20 were 64-byte aligned
    1024 bytes:  0/20
    16384 bytes: 0/20
@@ -68,7 +68,7 @@ by `mmap`, which returns a page-aligned block; glibc then places a 16-byte heade
 the pointer it hands back. Measured, and identical for plain `malloc`, so it is the
 allocator rather than NumPy:
 
-```
+```text
 np.zeros(n) address % 4096, ten samples each
    262144 bytes -> [16]
   1048576 bytes -> [16]

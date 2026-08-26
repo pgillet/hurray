@@ -48,7 +48,7 @@ descriptor-specified `block_size`, with the additional MXFP constraint that
 block — see Validity Constraints below). The full count across the whole
 tensor is:
 
-```
+```text
 num_blocks = (shape[axis] / block_size) * product(shape[j] for j ≠ axis)
 ```
 
@@ -65,13 +65,13 @@ Let `b` be the block index for a storage element at logical position
 `[i_0, ..., i_{rank-1}]`. Let `e = scale[b]` be the `float8_e8m0` byte. The
 shared exponent scale is:
 
-```
+```text
 s = 2^(e - 127)
 ```
 
 If the storage type is a float type (`float8_e4m3`, `float8_e5m2`, `float4_e2m1`, `float6_e2m3`, `float6_e3m2`):
 
-```
+```text
 x_real = s * float_value_of(q)
 ```
 
@@ -81,7 +81,7 @@ for the respective type.
 
 If the storage type is an integer type (`int8`, `int4`):
 
-```
+```text
 x_real = s * int_value_of(q)
 ```
 

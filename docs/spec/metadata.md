@@ -31,7 +31,7 @@ A tensor descriptor consists of a **fixed header**, followed by **variable-lengt
 core fields**, followed by **layout-specific fields**, followed by a **buffer table**,
 followed by zero or more **optional sections** selected by the flags field.
 
-```
+```text
 [Fixed Header]         20 bytes
 [shape]                8 × rank bytes
 [byte_offset]          8 bytes
@@ -447,7 +447,7 @@ descriptor entirely if desired.
 A rank-2 `float32` tensor with shape `[3, 4]` in row-major layout, one buffer of
 192 bytes aligned to 64 bytes on CPU, no optional sections:
 
-```
+```text
 Offset  Value (hex)                   Field
 ------  ----------------------------  -----
 0       48 52 52 59                   magic = "HRRY"

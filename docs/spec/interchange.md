@@ -352,7 +352,7 @@ the response buffer according to the following rules, in order:
 
 For every tensor transferred, the server MUST send messages in the following order:
 
-```
+```text
 TENSOR_DESCRIPTOR
 TENSOR_DATA  (zero or more frames)
 TENSOR_DATA_END
@@ -410,7 +410,7 @@ descriptor with `layout_tag = 0x0B` and `buffer_count = 0`, so it is sent as a
 plane — the head owns no buffers). The head's `member_count = N` binds the **next N
 self-delimiting tensors** on the stream, in order, as its members:
 
-```
+```text
 TENSOR_DESCRIPTOR        (head, layout_tag = 0x0B, member_count = N)
 TENSOR_DATA_END          (head has no data buffers)
   TENSOR_DESCRIPTOR      (member 0)
@@ -519,7 +519,7 @@ When both parties have advertised `RDMA_DATA_PLANE`, the server MAY substitute t
 `TENSOR_DATA` / `TENSOR_DATA_END` sequence with an RDMA handshake. The client MUST
 be prepared to handle either path.
 
-```
+```text
 Client                          Server
   |                               |
   |--- TENSOR_REQUEST ----------->|
@@ -635,7 +635,7 @@ For `TENSOR_PUT` (client → server), roles are reversed relative to the
 server-to-client flow: the client is the source-buffer owner and the server is
 the receiver.
 
-```
+```text
 Client                          Server
   |                               |
   |--- TENSOR_PUT --------------->|  (tensor key + descriptor)
@@ -680,7 +680,7 @@ handling) is an implementation concern and is intentionally out of scope.
 
 ### TENSOR_PUT Flow
 
-```
+```text
 Client                          Server
   |--- TENSOR_PUT --------------->|  (tensor key + descriptor)
   |--- TENSOR_DATA (one or more)->|  (data frames)
