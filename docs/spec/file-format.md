@@ -36,7 +36,7 @@ See `docs/adr/ADR-011-file-format-random-access-container.md` for the design dec
 
 A Hurray file has the following structure, in order:
 
-```
+```text
 [ File header          ]   64 bytes, fixed
 [ Padding              ]   0x00 bytes, to first_descriptor_offset
 [ Tensor region        ]   repeated: descriptor → padding → data buffer(s) → padding
@@ -87,7 +87,7 @@ reader supports.
 Following the file header (and any padding to `first_descriptor_offset`), tensors are
 written sequentially. Each tensor occupies the following region:
 
-```
+```text
 [ Tensor descriptor    ]   as defined in metadata.md (begins with HRRY magic)
 [ Padding              ]   0x00 bytes to align next data buffer to data_buffer_alignment
 [ Data buffer 0        ]   tensor data, byte_size bytes

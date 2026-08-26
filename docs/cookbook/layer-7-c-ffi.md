@@ -250,7 +250,7 @@ hurray_buffer_list_destroy(&list);         /* destroys every handle it owns */
 Runnable version, in Rust because that is what this repository builds — but the
 sequence is the one any language follows:
 
-```
+```bash
 cargo run -p hurray-ffi --example tensor_context
 ```
 

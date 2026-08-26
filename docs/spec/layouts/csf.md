@@ -151,7 +151,7 @@ To iterate over all non-zeros, descend the tree in depth-first, leaf order. The
 following sketch accumulates the storage-order coordinate tuple `c[0..rank-1]`; the
 logical index is recovered by placing `c[L]` at dimension `mode_order[L]`:
 
-```
+```text
 def visit(L, p):
     for i = pos_L[p] to pos_L[p+1] - 1:
         c[L] = crd_L[i]
@@ -204,7 +204,7 @@ entries.
 Rank-3 sparse tensor with shape `[2, 3, 4]`, element type `float32`,
 `mode_order = [0, 1, 2]` (identity), 4 non-zeros:
 
-```
+```text
 Non-zeros (logical index -> value):
   (0, 0, 1) -> 1.0
   (0, 2, 3) -> 2.0
@@ -231,7 +231,7 @@ values    (buffer 0): [1.0, 2.0, 3.0, 4.0]
 
 Lookup of `(1, 1, 2)`:
 
-```
+```text
 q = [1, 1, 2]                 # mode_order is identity
 
 Level 0: parent p = 0, slice crd_0[pos_0[0]..pos_0[1]) = crd_0[0..2) = [0, 1]

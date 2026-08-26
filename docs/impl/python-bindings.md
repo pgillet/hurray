@@ -646,7 +646,7 @@ carries parameters — `nnz`, `strides`, `page_size` — that a string cannot.
 
 ### The hierarchy
 
-```
+```text
 hurray.Layout                        # base: holds the core layout descriptor
 ├── RowMajorLayout   ColMajorLayout
 ├── StridedLayout    TiledLayout     MortonLayout    HilbertLayout

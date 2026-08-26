@@ -58,7 +58,7 @@ for `b = 0, ..., p-1` and `d = 0, ..., r-1`.
 
 **`CoordsToHilbert(X[0..r-1], r, p)` → `h`:**
 
-```
+```text
 M = 1 << (p - 1)
 Q = M
 while Q > 1:
@@ -87,7 +87,7 @@ return h
 
 **`HilbertToCoords(h, r, p)` → `X[0..r-1]`:**
 
-```
+```text
 X = [0] * r
 for b = 0 to p-1:
     for d = 0 to r-1:

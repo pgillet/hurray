@@ -273,7 +273,7 @@ assert!(matches!(result, Err(Error::InvalidMagic(_))));
 
 ## Wire format anatomy (61-byte example)
 
-```
+```text
 Offset  Size  Field
 ──────  ────  ─────────────────────────────────────────────────────────────
 0x00    4     magic "HRRY" (0x48 0x52 0x52 0x59)

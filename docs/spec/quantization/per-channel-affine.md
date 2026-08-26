@@ -71,7 +71,7 @@ data (typically `0` for dense layouts).
 
 For a storage element `q` at logical index `[i_0, i_1, ..., i_{rank-1}]`:
 
-```
+```text
 c = i_axis
 x_real = scale[c] * (q - zero_point[c])
 ```
@@ -117,7 +117,7 @@ The tensor descriptor's buffer table carries three buffers:
 
 Quantization descriptor bytes (20 total):
 
-```
+```text
 Offset  Value (hex)                   Field
 ------  ----------------------------  -----
 0       02                            scheme_tag = 0x02 (per-channel affine)
@@ -135,6 +135,6 @@ Section would be `0x00000014` (20).
 
 Dequantization of element `q` at logical position `[c, k]`:
 
-```
+```text
 x_real = scale[c] * (q - zero_point[c])
 ```

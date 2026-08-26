@@ -58,7 +58,7 @@ print(f"Quantized layer [768, 1024] as int4: {quantized} bytes")
 </div>
 
 Output:
-```
+```text
 Weights [768, 3072] as float16: 4718592 bytes
 Activations [32, 768] as float32: 98304 bytes
 Quantized layer [768, 1024] as int4: 393216 bytes

@@ -66,7 +66,7 @@ where the total subpaving recursion depth exceeds 8. This limit matches the
 existing implementation constant `MAX_SUBPAVING_DEPTH`.
 
 In the Rust reference implementation, `RegionDescriptor` gains a new field:
-```
+```text
 inner_layout: Option<Box<LayoutDescriptor>>
 ```
 `None` for tags that carry no additional fields (`0x01`, `0x02`); `Some` for all

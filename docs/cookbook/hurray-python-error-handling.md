@@ -5,7 +5,7 @@ utility for converting Rust panics to typed Python exceptions.
 
 ## Exception class tree
 
-```
+```text
 ValueError
 ├── hurray.InvalidDescriptorError  — parse / validation errors
 └── hurray.BufferError             — buffer size / alignment errors

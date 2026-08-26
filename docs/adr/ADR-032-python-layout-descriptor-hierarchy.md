@@ -47,7 +47,7 @@ of the tensor descriptor with no Python representation of its own.
 
 ### 1. A class hierarchy with a data-carrying base
 
-```
+```text
 hurray.Layout                        # base: holds the core descriptor
 ├── RowMajorLayout   ColMajorLayout
 ├── StridedLayout    TiledLayout     MortonLayout    HilbertLayout

@@ -95,7 +95,7 @@ Binary search is valid because row indices within each column are sorted (invari
 
 To iterate over all non-zeros in column `c`:
 
-```
+```text
 for i = col_ptr[c] to col_ptr[c+1] - 1:
     row = row_indices[i]
     val = values[i]
@@ -117,7 +117,7 @@ MUST match the `nnz` field in the CSC descriptor, which is authoritative. The `s
 
 The same matrix as in the CSR example (shape `[4, 5]`, element type `float32`):
 
-```
+```text
 Dense representation:
   row 0: [1.0,  0,   0,  2.0,  0 ]
   row 1: [ 0,   0,  3.0,  0,   0 ]

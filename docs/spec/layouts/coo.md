@@ -98,7 +98,7 @@ all `shape` values.
 
 Rank-2 sparse tensor with shape `[4, 4]`, element type `float32`, 3 non-zeros:
 
-```
+```text
 Non-zeros: (0, 1) = 1.5,  (2, 0) = -0.5,  (3, 3) = 2.0
 nnz = 3, is_sorted = 0x01
 

@@ -32,7 +32,7 @@ Negative and zero strides are valid. A conforming implementation MUST support th
 
 The linear element offset of element `[i_0, i_1, ..., i_{r-1}]` is:
 
-```
+```text
 offset = sum(i_k * strides[k] for k = 0, ..., r - 1)
 ```
 
@@ -45,7 +45,7 @@ valid element MUST lie within the buffer's bounds.
 
 The minimum buffer size must cover every addressable element:
 
-```
+```text
 max_offset = sum(max(0, strides[k] * (shape[k] - 1)) for all k)
 min_offset = sum(min(0, strides[k] * (shape[k] - 1)) for all k)
 range_elements = max_offset - min_offset + 1

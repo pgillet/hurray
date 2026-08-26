@@ -43,13 +43,13 @@ All multi-byte fields MUST be encoded in little-endian byte order.
 Let `S = shape[axis]` (resolved; MUST NOT be the dynamic dimension sentinel) and
 `K = block_size`. The number of blocks along `axis` is:
 
-```
+```text
 num_blocks_per_axis = ceil(S / K)
 ```
 
 The total number of blocks across the whole tensor is:
 
-```
+```text
 num_blocks = num_blocks_per_axis * product(shape[j] for j != axis)
 ```
 
@@ -57,7 +57,7 @@ Block index `b` at a tensor position `[i_0, ..., i_{rank-1}]` is computed as
 follows. Let `outer` be the linear index formed from all dimensions except
 `axis` using row-major order over those dimensions. Then:
 
-```
+```text
 b = outer * num_blocks_per_axis + floor(i_axis / K)
 ```
 
@@ -99,7 +99,7 @@ Let `b` be the block index for a storage element `q` at logical position
 `[i_0, ..., i_{rank-1}]`, computed as above. Let `s = scale[b]` and, if the
 `SYMMETRIC` flag is set, `z = 0`, else `z = zero_point[b]`.
 
-```
+```text
 x_real = s * (q - z)
 ```
 

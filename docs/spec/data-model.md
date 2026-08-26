@@ -78,7 +78,7 @@ bytes are present in the descriptor.
 For a tensor with no dynamic dimensions, the total number of logical elements
 is:
 
-```
+```text
 element_count = product(shape[i] for i in 0 .. rank-1)
 ```
 

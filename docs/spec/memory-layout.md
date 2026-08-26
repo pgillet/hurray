@@ -129,7 +129,7 @@ For the **virtual layout** (composite head, tag `0x0B`), there is no data buffer
 For element types with bit width ≥ 8, the byte address of the element at linear
 offset `offset` (as computed by the layout-specific addressing formula) is:
 
-```
+```text
 byte_address = byte_offset + offset * (bit_width / 8)
 ```
 
