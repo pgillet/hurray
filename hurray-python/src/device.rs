@@ -71,6 +71,16 @@ impl Device {
 
     /// Create a new `Device`.
     ///
+    /// `kind` and `memory_class` each take a name or a wire byte. The names cover what
+    /// the spec assigns; the bytes are how a private tag is reached, since `0xF0`–`0xFE`
+    /// are agreed out of band and have no name to give them (`buffer-protocol.md`
+    /// § Private Device Tags).
+    ///
+    /// ## Errors
+    ///
+    /// - `hurray.InvalidDescriptorError` — unknown name, or a byte that is reserved
+    ///   for a future version of the format.
+    ///
     /// ## Examples
     ///
     /// ```python
@@ -79,23 +89,25 @@ impl Device {
     /// cpu = hurray.Device("cpu")
     /// gpu = hurray.Device("cuda", 1)
     /// unified = hurray.Device("cuda", 0, "unified")
+    ///
+    /// # A vendor accelerator, and a vendor memory class on it.
+    /// custom = hurray.Device(0xF2, 0, memory_class=0xF1)
+    /// assert custom.kind == "private"
+    /// assert custom.tag == 0xF2
+    /// assert custom.memory_class_tag == 0xF1
     /// ```
     #[new]
     #[pyo3(signature = (kind, device_id = None, memory_class = None))]
-    pub fn new(kind: &str, device_id: Option<i32>, memory_class: Option<&str>) -> PyResult<Self> {
-        let tag = device_tag_from_str(kind).ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "unknown device kind '{kind}'; accepted: cpu, cuda, rocm, metal, \
-                 vulkan, webgpu, hexagon, level_zero, opencl"
-            ))
-        })?;
-
-        let mc = memory_class_from_str(memory_class.unwrap_or("standard")).ok_or_else(|| {
-            InvalidDescriptorError::new_err(format!(
-                "unknown memory_class '{}'; accepted: standard, host_pinned, unified, peer",
-                memory_class.unwrap_or("standard")
-            ))
-        })?;
+    pub fn new(
+        kind: &Bound<'_, PyAny>,
+        device_id: Option<i32>,
+        memory_class: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<Self> {
+        let tag = parse_device_tag(kind)?;
+        let mc = match memory_class {
+            Some(value) => parse_memory_class(value)?,
+            None => MemoryClass::Standard,
+        };
 
         let id = device_id.unwrap_or(0);
         if id < 0 {
@@ -112,6 +124,58 @@ impl Device {
     }
 
     // ── Getters ───────────────────────────────────────────────────────────────
+
+    /// The device tag's wire byte.
+    ///
+    /// The only thing that distinguishes one private device from another: `kind` reports
+    /// `"private"` for every tag in `0xF0`–`0xFE`, because the spec gives them no names.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.Device("cuda").tag == 0x01
+    /// assert hurray.Device(0xF2).tag == 0xF2
+    /// ```
+    #[getter]
+    pub fn tag(&self) -> u8 {
+        self.tag.to_byte()
+    }
+
+    /// The memory class's wire byte, for the same reason as [`Device::tag`].
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.Device("cuda", 0, "unified").memory_class_tag == 0x02
+    /// assert hurray.Device("cuda", 0, 0xF1).memory_class_tag == 0xF1
+    /// ```
+    #[getter]
+    pub fn memory_class_tag(&self) -> u8 {
+        self.memory_class.to_byte()
+    }
+
+    /// Whether this device's tag is in the private range `0xF0`–`0xFE`.
+    ///
+    /// A private tag means an agreement between one producer and one consumer, so a
+    /// reader that does not hold that agreement should refuse the tensor rather than
+    /// guess at it.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.Device(0xF2).is_private
+    /// assert not hurray.Device("cuda").is_private
+    /// ```
+    #[getter]
+    pub fn is_private(&self) -> bool {
+        self.tag.is_private()
+    }
 
     /// The device kind string (e.g. `"cpu"`, `"cuda"`).
     ///
@@ -151,13 +215,10 @@ impl Device {
 
     // ── Dunders ───────────────────────────────────────────────────────────────
 
+    // One implementation, shared with the module-level `device_repr` other classes use,
+    // so a Device cannot print two ways depending on who asked.
     fn __repr__(&self) -> String {
-        format!(
-            "hurray.Device(kind='{}', device_id={}, memory_class='{}')",
-            device_tag_to_str(self.tag),
-            self.device_id,
-            memory_class_to_str(self.memory_class),
-        )
+        device_repr(self)
     }
 
     fn __richcmp__(&self, other: &Device, op: CompareOp) -> PyResult<bool> {
@@ -188,6 +249,57 @@ impl Device {
 }
 
 // ── String ↔ DeviceTag / MemoryClass helpers ──────────────────────────────────
+
+/// A device tag from a name or a wire byte.
+///
+/// Two spellings for one field, which is unusual here and deliberate: the named tags have
+/// names, and the private range does not — `0xF0`–`0xFE` are agreed out of band, so the
+/// byte *is* the identity. Splitting them across two constructors would make a vendor
+/// device a different kind of thing from a CUDA one, which it is not.
+fn parse_device_tag(value: &Bound<'_, PyAny>) -> PyResult<DeviceTag> {
+    if let Ok(name) = value.extract::<&str>() {
+        return device_tag_from_str(name).ok_or_else(|| {
+            InvalidDescriptorError::new_err(format!(
+                "unknown device kind '{name}'; accepted: cpu, cuda, rocm, metal, \
+                 vulkan, webgpu, hexagon, level_zero, opencl — or a wire byte, for a \
+                 private tag in 0xF0-0xFE"
+            ))
+        });
+    }
+    if let Ok(byte) = value.extract::<u8>() {
+        // Core refuses reserved and permanently-invalid bytes, which is what should
+        // happen: a tag this version assigns to nothing is not something to invent a
+        // device for.
+        return DeviceTag::from_byte(byte).map_err(|e| {
+            InvalidDescriptorError::new_err(format!("invalid device tag 0x{byte:02X}: {e}"))
+        });
+    }
+    Err(InvalidDescriptorError::new_err(format!(
+        "device kind must be a name or a wire byte, got {}",
+        value.get_type().name()?
+    )))
+}
+
+/// A memory class from a name or a wire byte, for the same reason as [`parse_device_tag`].
+fn parse_memory_class(value: &Bound<'_, PyAny>) -> PyResult<MemoryClass> {
+    if let Ok(name) = value.extract::<&str>() {
+        return memory_class_from_str(name).ok_or_else(|| {
+            InvalidDescriptorError::new_err(format!(
+                "unknown memory_class '{name}'; accepted: standard, host_pinned, \
+                 unified, peer — or a wire byte, for a private class in 0xF0-0xFE"
+            ))
+        });
+    }
+    if let Ok(byte) = value.extract::<u8>() {
+        return MemoryClass::from_byte(byte).map_err(|e| {
+            InvalidDescriptorError::new_err(format!("invalid memory_class 0x{byte:02X}: {e}"))
+        });
+    }
+    Err(InvalidDescriptorError::new_err(format!(
+        "memory_class must be a name or a wire byte, got {}",
+        value.get_type().name()?
+    )))
+}
 
 fn device_tag_from_str(s: &str) -> Option<DeviceTag> {
     match s {
@@ -258,11 +370,27 @@ const DEVICE_CONSTANTS: &[(&str, &str)] = &[
 /// Return the `repr()` string for a `Device`, usable from sibling modules.
 pub(crate) fn device_repr(dev: &Device) -> String {
     format!(
-        "hurray.Device(kind='{}', device_id={}, memory_class='{}')",
-        device_tag_to_str(dev.tag),
+        "hurray.Device(kind={}, device_id={}, memory_class={})",
+        quoted_or_tagged(device_tag_to_str(dev.tag), dev.tag.to_byte()),
         dev.device_id,
-        memory_class_to_str(dev.memory_class),
+        quoted_or_tagged(
+            memory_class_to_str(dev.memory_class),
+            dev.memory_class.to_byte()
+        ),
     )
+}
+
+/// A name in quotes, or `'private' (0xF2)` when the name does not identify the value.
+///
+/// Every tag in `0xF0`–`0xFE` is called `"private"`, so without the byte two different
+/// vendor devices would print identically — the same hole the extension element types
+/// had before their repr carried the tag.
+fn quoted_or_tagged(name: &str, byte: u8) -> String {
+    if name == "private" {
+        format!("'private' (0x{byte:02X})")
+    } else {
+        format!("'{name}'")
+    }
 }
 
 /// Register `Device` and the `hurray.device` submodule on the parent module.
@@ -307,12 +435,28 @@ mod tests {
     use super::*;
     use pyo3::Python;
 
+    /// `Device::new` from plain strings, which is how the tests want to spell it.
+    ///
+    /// The constructor takes `PyAny` so that a wire byte works too; that is worth having
+    /// at the API and not worth spelling out at forty call sites.
+    fn device(py: Python<'_>, kind: &str, id: Option<i32>, mc: Option<&str>) -> PyResult<Device> {
+        let kind = pyo3::types::PyString::new(py, kind);
+        match mc {
+            Some(mc) => {
+                let mc = pyo3::types::PyString::new(py, mc);
+                Device::new(kind.as_any(), id, Some(mc.as_any()))
+            }
+            None => Device::new(kind.as_any(), id, None),
+        }
+    }
+
     fn init() {
         pyo3::Python::initialize();
     }
 
     #[test]
     fn constructor_succeeds_for_all_known_kinds() {
+        init();
         let kinds = [
             "cpu",
             "cuda",
@@ -324,17 +468,19 @@ mod tests {
             "level_zero",
             "opencl",
         ];
-        for kind in kinds {
-            Device::new(kind, None, None)
-                .unwrap_or_else(|_| panic!("Device::new should succeed for kind='{kind}'"));
-        }
+        Python::attach(|py| {
+            for kind in kinds {
+                device(py, kind, None, None)
+                    .unwrap_or_else(|_| panic!("Device::new should succeed for kind='{kind}'"));
+            }
+        });
     }
 
     #[test]
     fn constructor_fails_unknown_kind() {
         init();
         Python::attach(|py| {
-            let result = Device::new("tpu", None, None);
+            let result = device(py, "tpu", None, None);
             assert!(result.is_err(), "unknown kind should return Err");
             let err = result.unwrap_err();
             assert!(
@@ -348,7 +494,7 @@ mod tests {
     fn constructor_fails_unknown_memory_class() {
         init();
         Python::attach(|py| {
-            let result = Device::new("cpu", None, Some("device_local"));
+            let result = device(py, "cpu", None, Some("device_local"));
             assert!(result.is_err(), "unknown memory_class should return Err");
             let err = result.unwrap_err();
             assert!(
@@ -362,7 +508,7 @@ mod tests {
     fn constructor_fails_negative_device_id() {
         init();
         Python::attach(|py| {
-            let result = Device::new("cuda", Some(-1), None);
+            let result = device(py, "cuda", Some(-1), None);
             assert!(result.is_err(), "negative device_id should return Err");
             let err = result.unwrap_err();
             assert!(
@@ -374,62 +520,74 @@ mod tests {
 
     #[test]
     fn properties_round_trip() {
-        let d = Device::new("cuda", Some(2), Some("unified")).unwrap();
-        assert_eq!(d.kind(), "cuda");
-        assert_eq!(d.device_id(), 2);
-        assert_eq!(d.memory_class(), "unified");
+        init();
+        Python::attach(|py| {
+            let d = device(py, "cuda", Some(2), Some("unified")).unwrap();
+            assert_eq!(d.kind(), "cuda");
+            assert_eq!(d.device_id(), 2);
+            assert_eq!(d.memory_class(), "unified");
+        });
     }
 
     #[test]
     fn eq_covers_all_three_fields() {
-        let a = Device::new("cuda", Some(0), Some("standard")).unwrap();
-        let b = Device::new("cuda", Some(0), Some("standard")).unwrap();
-        let c = Device::new("cuda", Some(1), Some("standard")).unwrap();
-        let d_dev = Device::new("rocm", Some(0), Some("standard")).unwrap();
-        let e = Device::new("cuda", Some(0), Some("unified")).unwrap();
+        init();
+        Python::attach(|py| {
+            let a = device(py, "cuda", Some(0), Some("standard")).unwrap();
+            let b = device(py, "cuda", Some(0), Some("standard")).unwrap();
+            let c = device(py, "cuda", Some(1), Some("standard")).unwrap();
+            let d_dev = device(py, "rocm", Some(0), Some("standard")).unwrap();
+            let e = device(py, "cuda", Some(0), Some("unified")).unwrap();
 
-        // Same triple — equal.
-        assert!(
-            a.__richcmp__(&b, CompareOp::Eq).unwrap(),
-            "same triple should be equal"
-        );
-        // Different device_id.
-        assert!(
-            !a.__richcmp__(&c, CompareOp::Eq).unwrap(),
-            "different device_id should be unequal"
-        );
-        // Different kind.
-        assert!(
-            !a.__richcmp__(&d_dev, CompareOp::Eq).unwrap(),
-            "different kind should be unequal"
-        );
-        // Different memory_class.
-        assert!(
-            !a.__richcmp__(&e, CompareOp::Eq).unwrap(),
-            "different memory_class should be unequal"
-        );
+            // Same triple — equal.
+            assert!(
+                a.__richcmp__(&b, CompareOp::Eq).unwrap(),
+                "same triple should be equal"
+            );
+            // Different device_id.
+            assert!(
+                !a.__richcmp__(&c, CompareOp::Eq).unwrap(),
+                "different device_id should be unequal"
+            );
+            // Different kind.
+            assert!(
+                !a.__richcmp__(&d_dev, CompareOp::Eq).unwrap(),
+                "different kind should be unequal"
+            );
+            // Different memory_class.
+            assert!(
+                !a.__richcmp__(&e, CompareOp::Eq).unwrap(),
+                "different memory_class should be unequal"
+            );
+        });
     }
 
     #[test]
     fn hash_consistent_with_eq() {
-        let a = Device::new("cpu", Some(0), Some("standard")).unwrap();
-        let b = Device::new("cpu", Some(0), Some("standard")).unwrap();
-        assert_eq!(
-            a.__hash__(),
-            b.__hash__(),
-            "equal devices must have equal hashes"
-        );
+        init();
+        Python::attach(|py| {
+            let a = device(py, "cpu", Some(0), Some("standard")).unwrap();
+            let b = device(py, "cpu", Some(0), Some("standard")).unwrap();
+            assert_eq!(
+                a.__hash__(),
+                b.__hash__(),
+                "equal devices must have equal hashes"
+            );
+        });
     }
 
     #[test]
     fn repr_format() {
-        let d = Device::new("cuda", Some(1), Some("unified")).unwrap();
-        let r = d.__repr__();
-        assert!(r.contains("cuda"), "repr should contain kind: got '{r}'");
-        assert!(r.contains('1'), "repr should contain device_id: got '{r}'");
-        assert!(
-            r.contains("unified"),
-            "repr should contain memory_class: got '{r}'"
-        );
+        init();
+        Python::attach(|py| {
+            let d = device(py, "cuda", Some(1), Some("unified")).unwrap();
+            let r = d.__repr__();
+            assert!(r.contains("cuda"), "repr should contain kind: got '{r}'");
+            assert!(r.contains('1'), "repr should contain device_id: got '{r}'");
+            assert!(
+                r.contains("unified"),
+                "repr should contain memory_class: got '{r}'"
+            );
+        });
     }
 }
