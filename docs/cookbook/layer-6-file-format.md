@@ -79,8 +79,27 @@ If a `TensorDescriptor` has multiple `BufferHandle`s (e.g. quantized weight + sc
 
 <div class="lang-tabs">
 
-```rust
+```rust,no_run
+# use hurray_core::{
+#     BufferHandle, DeviceTag, ElementType, LayoutDescriptor, PerChannelAffine,
+#     QuantizationDescriptor, Shape, SyncMode, TensorDescriptor, MIN_BUFFER_ALIGNMENT,
+# };
+# use hurray_io::file::FileWriter;
+# #[tokio::main]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let handle = |len: u64| {
+#     BufferHandle::new(len, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced)
+# };
+# let quant = QuantizationDescriptor::PerChannelAffine(PerChannelAffine::new_symmetric(0, 1)?);
+# let desc = TensorDescriptor::new(
+#     1, 0, ElementType::Int8, Shape::new(vec![2u64, 4])?, 0, LayoutDescriptor::RowMajor,
+#     vec![handle(8)?, handle(8)?], Some(quant.encode_to_vec()), None, None, None,
+# )?;
+# let (weight_data, scale_data) = (vec![0u8; 8], vec![0u8; 8]);
+# let mut writer = FileWriter::new(tokio::fs::File::create("model.hrry").await?).await?;
 writer.write_tensor("q_layer", &desc, &[&weight_data, &scale_data]).await?;
+# Ok(())
+# }
 ```
 
 ```python
@@ -105,7 +124,7 @@ hurray.save("model.hrry", {"q_layer": quantized})
 
 <div class="lang-tabs">
 
-```rust
+```rust,no_run
 use hurray_io::file::{FileReader, KvValue};
 
 #[tokio::main]
@@ -159,9 +178,15 @@ When you only need metadata (shape, element type) without loading the buffer byt
 
 <div class="lang-tabs">
 
-```rust
+```rust,no_run
+# use hurray_io::file::FileReader;
+# #[tokio::main]
+# async fn main() -> Result<(), Box<dyn std::error::Error>> {
+# let mut reader = FileReader::open(tokio::fs::File::open("model.hrry").await?).await?;
 let desc = reader.read_descriptor("layer0.weight").await?;
 println!("element type: {:?}", desc.element_type);
+# Ok(())
+# }
 ```
 
 ```python

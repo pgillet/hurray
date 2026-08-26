@@ -90,7 +90,7 @@ let status = unsafe {
         DeviceTag::Cpu.to_byte(),
         SyncMode::ProducerSynced.to_byte(),
         MemoryClass::Standard.to_byte(),
-        Some(release) as HurrayReleaseCallback,
+        Some(release),
         std::ptr::null_mut(),
         &mut handle,
     )

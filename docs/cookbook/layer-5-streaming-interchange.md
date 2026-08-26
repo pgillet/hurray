@@ -137,6 +137,7 @@ every buffer handle:
 ```rust
 use hurray_io::stream::{StreamReader, StreamWriter};
 
+# let mut wire: Vec<u8> = Vec::new();
 // Writer rejects any buffer whose sync_mode != ProducerSynced.
 let mut writer = StreamWriter::cross_machine(&mut wire);
 
@@ -172,10 +173,13 @@ Use `StreamReaderOptions` to protect against adversarial streams:
 ```rust
 use hurray_io::stream::{StreamReader, StreamReaderOptions};
 
+# let source: &[u8] = &[];
 let options = StreamReaderOptions {
-    max_descriptor_bytes: 1 * 1024 * 1024, // 1 MiB
-    max_buffer_bytes: 512 * 1024 * 1024,   // 512 MiB
+    max_descriptor_bytes: 1024 * 1024,   // 1 MiB
+    max_buffer_bytes: 512 * 1024 * 1024, // 512 MiB
     enforce_cross_machine_sync: true,
+    // Remaining limits keep their defaults; new ones get added over time.
+    ..Default::default()
 };
 let mut reader = StreamReader::with_options(source, options);
 ```
@@ -213,13 +217,18 @@ The default `max_descriptor_bytes` is 16 MiB. `max_buffer_bytes` defaults to
 use tokio::io::duplex;
 use hurray_io::stream::{StreamReader, StreamWriter};
 
+# #[tokio::main]
+# async fn main() {
 let (mut client, mut server) = duplex(64 * 1024);
 
 // Producer task
 let producer = tokio::spawn(async move {
     let mut writer = StreamWriter::new(&mut client);
     // … write tensors …
-    writer.finish().await
+    // finish() hands back the inner writer; drop it rather than returning a
+    // borrow of `client`, which the spawned task would outlive.
+    writer.finish().await?;
+    hurray_io::Result::Ok(())
 });
 
 // Consumer task
@@ -233,6 +242,7 @@ let consumer = tokio::spawn(async move {
 
 producer.await.unwrap().unwrap();
 consumer.await.unwrap().unwrap();
+# }
 ```
 
 ```python

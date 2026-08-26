@@ -265,6 +265,12 @@ Contrast with `Add` combine for residual-correction overlays:
 <div class="lang-tabs">
 
 ```rust
+# use hurray_core::{
+#     descriptor::TensorDescriptor,
+#     layout::{CombineOp, CompositeLayout, CompositionRule, LayoutDescriptor},
+#     ElementType, Shape,
+# };
+# let shape = Shape::new(vec![4096u64, 4096]).unwrap();
 // Head with add combine instead of replace.
 let head = TensorDescriptor::new(
     1, 0, ElementType::Float16, shape.clone(), 0,
