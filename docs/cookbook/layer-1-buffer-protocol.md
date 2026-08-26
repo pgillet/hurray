@@ -170,6 +170,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Private memory classes (`0xF0`–`0xFE`) are available for vendor-specific extensions, following the same pattern as private device tags:
 
+<div class="lang-tabs">
+
 ```rust
 use hurray_core::{BufferHandle, DeviceTag, MemoryClass, SyncMode, MIN_BUFFER_ALIGNMENT};
 
@@ -188,9 +190,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+```python
+import hurray
+
+# A vendor memory class on a vendor device.
+device = hurray.Device(0xF0, 0, memory_class=0xF1)
+
+assert device.memory_class == "private"
+assert device.memory_class_tag == 0xF1
+
+tensor = hurray.Tensor(bytes(2048), hurray.float32, [512], device=device)
+assert tensor.buffer_handles[0].device is tensor.device
+```
+
+</div>
+
 ## Private Device Tags
 
 For experimental or vendor-specific hardware, use the private range (`0xF0`–`0xFE`):
+
+<div class="lang-tabs">
 
 ```rust
 use hurray_core::{BufferHandle, DeviceTag, SyncMode, MIN_BUFFER_ALIGNMENT};
@@ -206,6 +225,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+```python
+import hurray
+
+# A private tag for a custom accelerator (e.g. a TPU, an FPGA).
+custom = hurray.Device(0xF2)
+
+assert custom.is_private
+assert custom.tag == 0xF2
+assert custom.kind == "private"     # the spec gives these no name
+
+tensor = hurray.Tensor(bytes(4096), hurray.float32, [1024], device=custom)
+assert tensor.device.tag == 0xF2
+```
+
+</div>
+
+Python takes a wire byte where the spec has no name to give. `kind` is `"private"` for
+every tag in the range, so `tag` is what tells two apart — and `repr` carries it for the
+same reason.
 
 **Important:** Private tags must not be exchanged between independent implementations without an out-of-band agreement on semantics. Use only when both producer and consumer control the device tag value.
 

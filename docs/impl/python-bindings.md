@@ -192,6 +192,26 @@ The `stream` parameter of `__dlpack__(stream=None)` maps to the tensor's `SyncMo
 | `-1` | The binding layer MUST perform a device-level synchronisation (equivalent to `cudaDeviceSynchronize` on CUDA) before returning the capsule. |
 | Positive integer (stream handle) | If the tensor is `ProducerSynced`, the buffer is already ready; the stream argument MUST be ignored. Tensors with `SyncMode::Event` or `SyncMode::ConsumerStream` are out of scope for the initial Layer 8a implementation; the binding MUST raise `BufferError` for these modes. |
 
+### Private device tags and memory classes
+
+`0xF0`–`0xFE` is the private range in both spaces: an agreement between one producer and
+one consumer, which the spec gives no name.
+
+- `hurray.Device`'s `kind` and `memory_class` MUST each accept a **name or a wire byte**.
+  The names cover what the spec assigns; the byte is how a private value is reached, since
+  there is no name to pass.
+- `Device.tag` and `Device.memory_class_tag` MUST expose the wire bytes, and
+  `Device.is_private` MUST report whether the device tag is in the private range.
+- `kind` and `memory_class` MUST report `"private"` for every value in the range — that
+  is what the spec calls them — so `repr` MUST include the tag. Without it two different
+  vendor devices print identically, which is a reader unable to tell what it is holding.
+- A reserved or permanently-invalid byte MUST be refused rather than accepted as a private
+  one: a later version of the format may assign it, and a descriptor built on a guess
+  would then mean something else.
+
+The same rule governs private element types, whose `repr` carries the tag for the same
+reason (§ Dtype surface).
+
 ### Device ID
 
 DLPack requires a `device_id` integer (e.g., GPU index) that is not stored in the
