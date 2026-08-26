@@ -51,7 +51,9 @@ The `errors::catch_panic` helper wraps a closure in `std::panic::catch_unwind`
 and converts any panic to `hurray.InternalError`. Use it in Rust code that calls
 into potentially-panicking operations:
 
-```rust
+```rust,ignore
+// Not compiled: `#[pyfunction]` only expands inside a PyO3 module, and
+// `compute_something` stands in for whatever the binding calls into.
 use hurray::errors::catch_panic;
 
 #[pyfunction]

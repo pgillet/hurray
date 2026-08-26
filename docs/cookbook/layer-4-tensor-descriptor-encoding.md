@@ -262,13 +262,16 @@ use hurray_core::{descriptor::TensorDescriptor, Error};
 
 // Truncated input.
 let result = TensorDescriptor::decode(&[0x48, 0x52, 0x52, 0x59]);
-assert!(matches!(result, Err(Error::DescriptorTooShort | Error::DescriptorTruncated)));
+assert!(matches!(
+    result,
+    Err(Error::DescriptorTooShort { .. } | Error::DescriptorTruncated { .. })
+));
 
 // Wrong magic bytes.
 let mut bad = vec![0u8; 61];
 bad[0..4].copy_from_slice(b"BAAD");
 let result = TensorDescriptor::decode(&bad);
-assert!(matches!(result, Err(Error::InvalidMagic(_))));
+assert!(matches!(result, Err(Error::InvalidMagic { .. })));
 ```
 
 ## Wire format anatomy (61-byte example)
