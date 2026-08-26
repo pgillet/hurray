@@ -118,7 +118,10 @@ website/
 │   ├── templates/
 │   ├── sass/ or static/
 │   └── static/
-└── theme/                   # shared tokens (colors, fonts) used to keep book + site coherent
+├── theme/                   # shared tokens (colors, fonts) used to keep book + site coherent
+├── build-site.sh            # builds the whole published tree (shell + one book per version)
+├── check-doc-links.py       # CI check: internal .md links resolve on GitHub and on the site
+└── check-rust-blocks.py     # CI check: the cookbook's Rust blocks compile and run
 
 docs/
 ├── SUMMARY.md               # mdBook table of contents — the single reorganization surface
