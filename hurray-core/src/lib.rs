@@ -39,7 +39,9 @@ pub use layout::{
 };
 pub use quantization::{
     validate_axis, validate_buffer_placement, Mxfp, Nf4, PerBlockAffine, PerChannelAffine,
-    PerTensorAffine, QuantizationDescriptor, QuantizationSchemeTag, NF4_LUT,
+    PerTensorAffine, QuantizationDescriptor, QuantizationSchemeTag, MXFP_CANONICAL_BLOCK_SIZE,
+    MXFP_MAX_BLOCK_SIZE, MXFP_MIN_BLOCK_SIZE, NF4_LUT, NF4_MIN_BLOCK_SIZE,
+    PER_BLOCK_AFFINE_MIN_BLOCK_SIZE,
 };
 pub use shape::{Shape, DYNAMIC, MAX_RANK};
 

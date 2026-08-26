@@ -25,7 +25,7 @@ pub(crate) const SUPPORTED_VERSION: u8 = 0x01;
 const ZP_SENTINEL: u32 = 0xFFFF_FFFF;
 
 /// Minimum block size for per-block affine (must be a power of two ≥ 2).
-pub const MIN_BLOCK_SIZE: u32 = 2;
+pub const PER_BLOCK_AFFINE_MIN_BLOCK_SIZE: u32 = 2;
 
 /// No upper bound on block_size is imposed by the spec for per-block affine.
 /// We use `u32::MAX` as a stand-in for "unbounded" in error messages.
@@ -424,11 +424,11 @@ impl PerBlockAffine {
         let scale_type_byte = bytes[OFFSET_SCALE_TYPE];
 
         // block_size must be a power of two and >= 2.
-        if !block_size.is_power_of_two() || block_size < MIN_BLOCK_SIZE {
+        if !block_size.is_power_of_two() || block_size < PER_BLOCK_AFFINE_MIN_BLOCK_SIZE {
             return Err(Error::InvalidBlockSize {
                 scheme_tag: SCHEME_TAG,
                 block_size,
-                min: MIN_BLOCK_SIZE,
+                min: PER_BLOCK_AFFINE_MIN_BLOCK_SIZE,
                 max: MAX_BLOCK_SIZE,
             });
         }
@@ -501,11 +501,11 @@ impl PerBlockAffine {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn validate_block_size(block_size: u32) -> Result<()> {
-    if !block_size.is_power_of_two() || block_size < MIN_BLOCK_SIZE {
+    if !block_size.is_power_of_two() || block_size < PER_BLOCK_AFFINE_MIN_BLOCK_SIZE {
         return Err(Error::InvalidBlockSize {
             scheme_tag: SCHEME_TAG,
             block_size,
-            min: MIN_BLOCK_SIZE,
+            min: PER_BLOCK_AFFINE_MIN_BLOCK_SIZE,
             max: MAX_BLOCK_SIZE,
         });
     }
@@ -549,7 +549,7 @@ mod tests {
 
     #[test]
     fn new_symmetric_block_size_one_is_err() {
-        // MIN_BLOCK_SIZE is 2; block_size=1 is below minimum.
+        // PER_BLOCK_AFFINE_MIN_BLOCK_SIZE is 2; block_size=1 is below minimum.
         assert!(matches!(
             PerBlockAffine::new_symmetric(0, 1, 1, ElementType::Float32),
             Err(Error::InvalidBlockSize { .. })

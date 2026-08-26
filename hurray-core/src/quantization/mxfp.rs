@@ -25,13 +25,13 @@ pub(crate) const SUPPORTED_VERSION: u8 = 0x01;
 ///
 /// Values below 16 have no hardware Tensor Core support and are invalid under
 /// any OCP MX revision.
-pub const MIN_BLOCK_SIZE: u32 = 16;
+pub const MXFP_MIN_BLOCK_SIZE: u32 = 16;
 
 /// Maximum block size for MXFP (inclusive).
-pub const MAX_BLOCK_SIZE: u32 = 2048;
+pub const MXFP_MAX_BLOCK_SIZE: u32 = 2048;
 
 /// OCP MX v1.0 canonical block size.
-pub const CANONICAL_BLOCK_SIZE: u32 = 32;
+pub const MXFP_CANONICAL_BLOCK_SIZE: u32 = 32;
 
 /// No flags are defined for this scheme; all 16 bits must be zero.
 const RESERVED_FLAGS_MASK: u16 = 0xFFFF;
@@ -110,7 +110,7 @@ impl Mxfp {
     /// # Errors
     ///
     /// - [`Error::InvalidBlockSize`] — `block_size` is not a power of two, or
-    ///   lies outside `[`[`MIN_BLOCK_SIZE`]`, `[`MAX_BLOCK_SIZE`]`]` (`[16, 2048]`).
+    ///   lies outside `[`[`MXFP_MIN_BLOCK_SIZE`]`, `[`MXFP_MAX_BLOCK_SIZE`]`]` (`[16, 2048]`).
     ///
     /// # Examples
     ///
@@ -154,7 +154,7 @@ impl Mxfp {
 
     /// Returns the number of logical elements per block along `axis`.
     ///
-    /// Always a power of two in `[`[`MIN_BLOCK_SIZE`]`, `[`MAX_BLOCK_SIZE`]`]`.
+    /// Always a power of two in `[`[`MXFP_MIN_BLOCK_SIZE`]`, `[`MXFP_MAX_BLOCK_SIZE`]`]`.
     ///
     /// # Examples
     ///
@@ -391,12 +391,14 @@ impl Mxfp {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn validate_block_size(block_size: u32) -> Result<()> {
-    if !block_size.is_power_of_two() || !(MIN_BLOCK_SIZE..=MAX_BLOCK_SIZE).contains(&block_size) {
+    if !block_size.is_power_of_two()
+        || !(MXFP_MIN_BLOCK_SIZE..=MXFP_MAX_BLOCK_SIZE).contains(&block_size)
+    {
         return Err(Error::InvalidBlockSize {
             scheme_tag: SCHEME_TAG,
             block_size,
-            min: MIN_BLOCK_SIZE,
-            max: MAX_BLOCK_SIZE,
+            min: MXFP_MIN_BLOCK_SIZE,
+            max: MXFP_MAX_BLOCK_SIZE,
         });
     }
     Ok(())
@@ -413,7 +415,7 @@ mod tests {
 
     #[test]
     fn new_block_size_below_min_is_err() {
-        // MIN_BLOCK_SIZE = 16; block_size = 8 is below.
+        // MXFP_MIN_BLOCK_SIZE = 16; block_size = 8 is below.
         assert!(matches!(
             Mxfp::new(0, 8, 1),
             Err(Error::InvalidBlockSize { .. })
@@ -422,7 +424,7 @@ mod tests {
 
     #[test]
     fn new_block_size_above_max_is_err() {
-        // MAX_BLOCK_SIZE = 2048; block_size = 4096 is above.
+        // MXFP_MAX_BLOCK_SIZE = 2048; block_size = 4096 is above.
         assert!(matches!(
             Mxfp::new(0, 4096, 1),
             Err(Error::InvalidBlockSize { .. })
@@ -439,17 +441,17 @@ mod tests {
 
     #[test]
     fn new_min_block_size_is_ok() {
-        assert!(Mxfp::new(0, MIN_BLOCK_SIZE, 1).is_ok());
+        assert!(Mxfp::new(0, MXFP_MIN_BLOCK_SIZE, 1).is_ok());
     }
 
     #[test]
     fn new_canonical_block_size_is_ok() {
-        assert!(Mxfp::new(0, CANONICAL_BLOCK_SIZE, 1).is_ok());
+        assert!(Mxfp::new(0, MXFP_CANONICAL_BLOCK_SIZE, 1).is_ok());
     }
 
     #[test]
     fn new_max_block_size_is_ok() {
-        assert!(Mxfp::new(0, MAX_BLOCK_SIZE, 1).is_ok());
+        assert!(Mxfp::new(0, MXFP_MAX_BLOCK_SIZE, 1).is_ok());
     }
 
     // ── num_blocks_per_axis ───────────────────────────────────────────────────
@@ -555,21 +557,21 @@ mod tests {
 
     #[test]
     fn round_trip_canonical_block_size() {
-        let original = Mxfp::new(0, CANONICAL_BLOCK_SIZE, 3).unwrap();
+        let original = Mxfp::new(0, MXFP_CANONICAL_BLOCK_SIZE, 3).unwrap();
         let decoded = encode_decode(&original);
         assert_eq!(decoded, original);
     }
 
     #[test]
     fn round_trip_min_block_size() {
-        let original = Mxfp::new(1, MIN_BLOCK_SIZE, 2).unwrap();
+        let original = Mxfp::new(1, MXFP_MIN_BLOCK_SIZE, 2).unwrap();
         let decoded = encode_decode(&original);
         assert_eq!(decoded, original);
     }
 
     #[test]
     fn round_trip_max_block_size() {
-        let original = Mxfp::new(0, MAX_BLOCK_SIZE, 1).unwrap();
+        let original = Mxfp::new(0, MXFP_MAX_BLOCK_SIZE, 1).unwrap();
         let decoded = encode_decode(&original);
         assert_eq!(decoded, original);
     }
