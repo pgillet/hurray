@@ -143,7 +143,7 @@ impl Device {
         self.tag.to_byte()
     }
 
-    /// The memory class's wire byte, for the same reason as [`Device::tag`].
+    /// The memory class's wire byte, for the same reason as `Device.tag`.
     ///
     /// ## Examples
     ///

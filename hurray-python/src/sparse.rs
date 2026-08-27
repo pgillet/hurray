@@ -252,7 +252,7 @@ fn array_shape(arr: &Bound<'_, PyAny>) -> PyResult<Vec<u64>> {
     Ok(dims.iter().map(|&d| d.max(0) as u64).collect())
 }
 
-/// Construct a COO [`Tensor`] from packed component arrays, zero-copy.
+/// Construct a COO `Tensor` from packed component arrays, zero-copy.
 ///
 /// `values` is a 1-D array of `nnz` elements. `indices` is a 2-D `uint64` array of shape
 /// `[nnz, rank]` giving each non-zero's coordinates in row-major (C-contiguous) order —

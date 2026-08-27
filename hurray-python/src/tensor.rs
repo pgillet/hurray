@@ -47,7 +47,7 @@ use crate::layout::{is_dense, layout_name, layout_to_py};
 ///
 /// ## Zero-copy interop
 ///
-/// Use [`hurray.from_numpy`] or [`hurray.from_torch`] to create tensors that share
+/// Use `hurray.from_numpy` or `hurray.from_torch` to create tensors that share
 /// the source buffer without copying. The `Tensor` holds a strong Python reference
 /// to the source object so its buffer remains valid.
 ///

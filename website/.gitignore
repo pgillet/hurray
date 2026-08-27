@@ -3,3 +3,6 @@ book/book/
 
 # Zola build output
 site/public/
+
+# build-site.sh output (the assembled site: shell + every version's book and API docs)
+public/

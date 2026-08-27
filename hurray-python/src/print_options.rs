@@ -133,7 +133,7 @@ pub fn get_print_options(py: Python<'_>) -> PyResult<Py<PyAny>> {
 ///
 /// ## Arguments
 ///
-/// Same keyword arguments as [`set_print_options`].
+/// Same keyword arguments as `set_print_options`.
 ///
 /// ## Examples
 ///
@@ -206,7 +206,7 @@ impl PrintOptionsCtx {
 ///
 /// ## Arguments
 ///
-/// Same keyword arguments as [`set_print_options`].
+/// Same keyword arguments as `set_print_options`.
 ///
 /// ## Examples
 ///
