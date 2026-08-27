@@ -26,6 +26,7 @@ that the reference implementation and language bindings must satisfy.
 | Document | Description |
 |---|---|
 | [Compliance](compliance.md) | Conformance levels, mandatory vs optional feature support, test surface |
+| [Implementation Status](implementation-status.md) | Which of those features each implementation actually provides — generated from the crates, the Python module, and the C header |
 | [Rust Reference](rust-reference.md) | Requirements for `hurray-core` and `hurray-io` |
 | [C FFI](c-ffi.md) | C ABI layer requirements: opaque handles, function table, panic safety |
 | [Python Bindings](python-bindings.md) | Python codec + zero-copy bridge: DLPack, NumPy/PyTorch interop, native Hurray buffer protocol |

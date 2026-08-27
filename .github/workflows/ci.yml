@@ -119,6 +119,12 @@ jobs:
       # Whole directory, not one file: a new test module must not need a CI edit to run.
       - name: Run Python tests
         run: .venv/bin/python -m pytest hurray-python/tests/ -v
+      # The Implementation Status page is regenerated from the crates, the compiled Python
+      # module, and the C header, then diffed against the committed copy (#197). It runs
+      # in this job because this is the only one with the extension importable — the
+      # Python column cannot be probed without it.
+      - name: Check the implementation status matrix
+        run: .venv/bin/python website/check-coverage-matrix.py
 
   semver:
     name: SemVer

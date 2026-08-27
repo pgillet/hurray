@@ -60,3 +60,9 @@ jobs:
         run: bash website/build-site.sh
         env:
           DEV_ONLY: "1"
+
+      # The status matrix is a page in the book, so a docs PR must not be able to leave it
+      # stale (#197). Runs after the build because that step installs the wheel, which is
+      # what makes `hurray` importable for the Python column.
+      - name: Check the implementation status matrix
+        run: python3 website/check-coverage-matrix.py

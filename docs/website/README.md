@@ -131,7 +131,10 @@ website/
 ├── theme/                   # shared tokens (colors, fonts) used to keep book + site coherent
 ├── build-site.sh            # builds the whole published tree (shell + one book per version)
 ├── check-doc-links.py       # CI check: internal .md links resolve on GitHub and on the site
-└── check-rust-blocks.py     # CI check: the cookbook's Rust blocks compile and run
+├── check-rust-blocks.py     # CI check: the cookbook's Rust blocks compile and run
+├── check-coverage-matrix.py # CI check: regenerates the Implementation Status page from the
+│                            #   real crates, the Python module, and the C header
+└── coverage-matrix.toml     # canonical spec-feature list (rows) and implementations (columns)
 
 docs/
 ├── SUMMARY.md               # mdBook table of contents — the single reorganization surface
