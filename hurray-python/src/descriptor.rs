@@ -36,7 +36,7 @@ use crate::errors::InvalidDescriptorError;
 /// What a tensor declares about itself, without its data.
 ///
 /// Obtained from `Tensor.descriptor`, `Composite.descriptor`, or
-/// [`Descriptor::decode`] — never constructed directly.
+/// `Descriptor.decode` — never constructed directly.
 ///
 /// ## Examples (Python)
 ///
@@ -290,7 +290,7 @@ impl Descriptor {
         (self.inner.version_major, self.inner.version_minor)
     }
 
-    /// The number of bytes [`Descriptor::encode`] will produce.
+    /// The number of bytes `Descriptor.encode` will produce.
     ///
     /// The same number the wire's own `descriptor_length` field carries, which is what
     /// makes a descriptor self-delimiting.

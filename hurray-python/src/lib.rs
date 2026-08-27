@@ -32,40 +32,47 @@ mod sparse;
 mod stream;
 mod tensor;
 
-/// Python module entry point.
+/// Python bindings for the Hurray tensor interchange format.
 ///
-/// Registers all public API items: version string, exception classes,
-/// dtype/device submodules, and the `Tensor` class.
+/// `hurray` is a codec and a zero-copy bridge: it produces and consumes Hurray tensors and
+/// hands their buffers to the array ecosystem without copying. It does no arithmetic — the
+/// math belongs to whichever framework the buffer is handed to.
 ///
-/// ## Module layout
+/// ```python
+/// import hurray, numpy as np
 ///
-/// | Name | Kind | Phase |
-/// |------|------|-------|
-/// | `hurray.__version__` | string | 8a.1 |
-/// | `hurray.{Invalid,Buffer,Unsupported,Internal}Error` | exceptions | 8a.1 |
-/// | `hurray.Dtype` | class | 8a.2 |
-/// | `hurray.<tier1_type>` (e.g. `hurray.float32`) | `Dtype` constants | 8a.2 |
-/// | `hurray.dtype` | submodule | 8a.2 |
-/// | `hurray.Device` | class | 8a.2 |
-/// | `hurray.device` | submodule | 8a.2 |
-/// | `hurray.Tensor` | class | 8a.2 |
-/// | `hurray.Layout` and its per-layout subclasses (e.g. `hurray.CsrLayout`) | classes | ADR-032 |
-/// | `hurray.from_scipy` | function | 8a.4 |
-/// | `hurray.sparse_coo` | function | 8a.4 |
-/// | `hurray.from_hurray` | function | 8c |
-/// | `hurray.Tensor.__hurray__` | method | 8c |
-/// | `hurray.zeros` / `hurray.ones` / `hurray.full` / `hurray.empty` | functions | 8a.5 |
-/// | `hurray.zeros_like` / `hurray.ones_like` / `hurray.full_like` / `hurray.empty_like` | functions | 8a.5 |
-/// | `hurray.arange` / `hurray.linspace` / `hurray.eye` | functions | 8a.5 |
-/// | `hurray.asarray` / `hurray.from_dlpack` | functions | 8a.5 |
-/// | `hurray.load` / `hurray.save` | functions | 8b |
-/// | `hurray.FileError` / `hurray.StreamError` | exceptions | 8b |
-/// | `hurray.set_print_options` / `hurray.get_print_options` | functions | 8e |
-/// | `hurray.print_options` | context-manager factory | 8e |
-/// | `hurray.aligned_allocator` | context-manager factory | ADR-037 |
-/// | `hurray.AlignedAllocatorCtx` | context manager | ADR-037 |
-/// | `hurray.Descriptor` | class | #147 |
-/// | `hurray.PrintOptionsCtx` | context manager | 8e |
+/// # Wraps the array's buffer — no copy in, no copy out.
+/// t = hurray.asarray(np.arange(12, dtype=np.float32).reshape(3, 4))
+/// hurray.save("weights.hrry", {"w": t})
+///
+/// w = hurray.load("weights.hrry")["w"]
+/// assert w.shape == (3, 4) and w.dtype == hurray.float32
+/// np.asarray(w)[0]        # array([0., 1., 2., 3.], dtype=float32)
+/// ```
+///
+/// ## The API, by what it is for
+///
+/// | Group | Names |
+/// |-------|-------|
+/// | The tensor | `Tensor`, `Composite`, `Descriptor` |
+/// | Element types | `Dtype`, the type constants (`float32`, `int4`, `bfloat16`, …), the `dtype` submodule |
+/// | Devices | `Device`, the device constants (`cpu`, `cuda`, …), the `device` submodule |
+/// | Construction | `zeros`, `ones`, `full`, `empty` and their `_like` forms, `arange`, `linspace`, `eye` |
+/// | Interop | `asarray`, `from_dlpack`, `from_numpy`, `from_torch`, `from_scipy`, `from_hurray`, `sparse_coo` |
+/// | Layouts | `Layout` and one subclass per layout (`RowMajorLayout`, `CsrLayout`, `BlockPagedLayout`, …) |
+/// | Quantization | `PerTensorAffine`, `PerChannelAffine`, `PerBlockAffine`, `NF4`, `MXFP`, `decode_quantization` |
+/// | Buffers | `BufferHandle`, `aligned_allocator`, `MIN_BUFFER_ALIGNMENT`, `PAGE_ALIGNMENT` |
+/// | Files | `save`, `load` |
+/// | Streaming | `StreamWriter`, `StreamReader` |
+/// | Display | `set_print_options`, `get_print_options`, `print_options` |
+/// | Errors | `InvalidDescriptorError`, `BufferError`, `CopyRequiredError`, `UnsupportedError`, `FileError`, `StreamError`, `InternalError` |
+///
+/// ## Interchange protocols
+///
+/// A `Tensor` is a producer for `__dlpack__`, the NumPy array protocols, and Hurray's own
+/// `__hurray__` protocol, and a consumer of all three. `__hurray__` is the only one that
+/// carries the full descriptor — layout, quantization, multiple buffers — across a process
+/// boundary; DLPack and NumPy carry a single strided buffer, which is all they model.
 #[pymodule]
 fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

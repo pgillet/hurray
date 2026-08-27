@@ -308,7 +308,7 @@ fn handler_capsule(py: Python<'_>) -> PyResult<Py<PyAny>> {
 
 // ── The context manager ───────────────────────────────────────────────────────
 
-/// The context manager returned by [`aligned_allocator`].
+/// The context manager returned by `aligned_allocator`.
 ///
 /// ## Examples
 ///

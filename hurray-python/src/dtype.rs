@@ -286,7 +286,7 @@ impl Dtype {
         singleton(cls.py(), inner)
     }
 
-    /// Parse a `Dtype` from its wire tag — the inverse of [`Dtype::tag`].
+    /// Parse a `Dtype` from its wire tag — the inverse of `Dtype.tag`.
     ///
     /// This is what a decoder does with the byte it read. Reserved tags (assigned to no
     /// type in this version of the format) and the permanently invalid sentinels `0x00`

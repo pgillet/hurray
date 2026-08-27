@@ -172,7 +172,7 @@ pub fn from_numpy(
 ///
 /// `torch` is resolved at call time — `import hurray` does not require PyTorch (D7).
 ///
-/// `copy` means what it means in [`from_numpy`], and applies to the array DLPack hands
+/// `copy` means what it means in `from_numpy`, and applies to the array DLPack hands
 /// back: PyTorch's CPU allocator is 64-byte aligned for most tensors, so `copy=False`
 /// usually succeeds here where it usually fails for arrays NumPy allocated.
 ///

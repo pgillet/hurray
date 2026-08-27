@@ -993,7 +993,7 @@ pub fn asarray(
 /// with the producer. The result is wrapped as a `hurray.Tensor`, sharing the producer's
 /// buffer when its address meets the format's 64-byte alignment floor and copying into an
 /// aligned allocation when it does not — `copy` chooses between those, exactly as in
-/// [`crate::interop::from_numpy`]. `device` is accepted for signature compatibility; only
+/// `hurray.from_numpy`. `device` is accepted for signature compatibility; only
 /// CPU is supported in this version.
 ///
 /// ## Errors

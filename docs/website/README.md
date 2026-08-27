@@ -29,11 +29,14 @@ Goals, in priority order:
 | Versioned technical book | **mdBook** | Spec + impl + cookbook + tutorials. Single Rust binary. Built-in per-book search. |
 | Outer site shell | **Zola** | Landing, FAQ, blog, community. Single Rust binary. |
 | Rust API reference | **`cargo doc`** | Per version, per crate; published under the version path. |
+| Python API reference | **`pdoc`** + **`maturin`** | Per version; `maturin` builds that version's wheel, `pdoc` introspects it (ADR-038). |
 | CI / deploy | **GitHub Actions → GitHub Pages** | Full static-tree deploy. |
 
-Both generators are prebuilt binaries pinned to explicit versions in the workflow. The
-build MUST NOT require Node, npm, or any package-manager network install beyond fetching
-the two pinned binaries and the Rust toolchain already used by the workspace.
+Both site generators are prebuilt binaries pinned to explicit versions in the workflow.
+The build MUST NOT require a Node or npm toolchain, and every tool it installs MUST be
+pinned to an explicit version in the workflow — the two prebuilt binaries, the Rust
+toolchain already used by the workspace, and the Python packages named above. It MUST NOT
+install anything unpinned or resolve a dependency tree at build time.
 
 ## 3. Deployed URL scheme
 
@@ -49,6 +52,7 @@ The site deploys as a single static tree. Paths (relative to the Pages site root
 /docs/dev/                Book built from `main`         (mdBook)
 /docs/<version>/          Book built from tag <version>  (mdBook)   e.g. /docs/0.1.0/
 /docs/<version>/api/      cargo doc for that version     (rustdoc)
+/docs/<version>/python-api/  pdoc for that version's `hurray` module  (pdoc)
 /docs/stable/api/         cargo doc for the stable release
 /docs/dev/api/            cargo doc for `main`
 /versions.json            Version manifest (drives the dropdown)
@@ -56,8 +60,14 @@ The site deploys as a single static tree. Paths (relative to the Pages site root
 
 - Version path segments MUST be the exact git tag name. The tag convention is
   `MAJOR.MINOR.PATCH` with **no leading `v`** (e.g. `0.1.0`); release tags MUST follow it.
-- The API reference for a version MUST live under that version's `api/` subpath so a single
-  version prefix scopes both the book and its API docs.
+- The API reference for a version MUST live under that version's `api/` (Rust) and
+  `python-api/` (Python) subpaths so a single version prefix scopes the book and both API
+  references.
+- Both API reference directory URLs MUST resolve to a landing page. `cargo doc` on a
+  multi-crate workspace emits no root `index.html`, so the build MUST emit one; `pdoc`
+  emits its own.
+- The book MUST carry a navigation entry linking both API references, using links relative
+  to the version path so each version links to its own.
 - `/docs/` MUST redirect to `/docs/stable/` (an emitted `index.html` meta-refresh is
   acceptable, since GitHub Pages does not honour symlinks).
 
@@ -159,14 +169,17 @@ no leading `v`), and manual dispatch.
 
 1. **Checkout** with full history and tags (`fetch-depth: 0`).
 2. **Install pinned tools:** the Rust toolchain, `mdbook` (pinned version), `zola` (pinned
-   version).
+   version), and Python with `maturin` and `pdoc` (pinned versions).
 3. **Build the shell:** `zola build` from `website/site/` into the output root
    (`public/`).
-4. **Build `dev`:** from the current `main` tree, `mdbook build` → `public/docs/dev/`, then
-   `cargo doc --no-deps --workspace` → `public/docs/dev/api/`. Stamp the "unreleased" banner.
+4. **Build `dev`:** from the current `main` tree, `mdbook build` → `public/docs/dev/`,
+   `cargo doc --no-deps --workspace` → `public/docs/dev/api/`, then `maturin build` +
+   `pdoc` → `public/docs/dev/python-api/`. Stamp the "unreleased" banner.
 5. **Build each release version:** for every release tag (semver, no leading `v`), in a
-   detached worktree at that tag, `mdbook build` → `public/docs/<tag>/` and `cargo doc` →
-   `public/docs/<tag>/api/`.
+   detached worktree at that tag, `mdbook build` → `public/docs/<tag>/`, `cargo doc` →
+   `public/docs/<tag>/api/`, and `maturin build` + `pdoc` → `public/docs/<tag>/python-api/`.
+   The Python reference MUST be built from that tag's own tree, and MUST be skipped — not
+   faked from another version — for a tag whose tree has no `hurray-python`.
 6. **Resolve stable:** compute the highest non-prerelease tag; copy its build to
    `public/docs/stable/`. If no release tag exists, make `stable` fall back to `dev`.
 7. **Emit** `public/versions.json` and the `public/docs/` redirect to `stable`.
@@ -176,13 +189,16 @@ The workflow MUST fail the build (not silently skip) if a tagged version fails t
 history stays trustworthy. Pull-request builds SHOULD build the shell + `dev` only (no full
 history) for fast preview.
 
-> **Note (non-normative):** Stage 5 is O(number of release tags). This is acceptable at
+> **Note (non-normative):** Stage 5 is O(number of release tags), and each version now
+> costs a `cargo doc` plus a debug build of the Python extension. This is acceptable at
 > current scale (zero tags today). When it becomes slow, switch to incremental builds that
 > carry prior version outputs forward and rebuild only new/changed tags — see ADR-028.
 
 ## 8. Search
 
 - mdBook's built-in search is enabled per book, giving per-version search for free.
+- Each API reference carries its own generator's search (rustdoc's, pdoc's), scoped to that
+  reference and separate from the book's.
 - Cross-version and whole-site search are out of scope for v1 (ADR-028).
 
 ## 9. Content model
@@ -195,7 +211,9 @@ history) for fast preview.
 | Community (contributing, CoC, governance, mailing lists) | `website/site/content/community/` | core |
 | Spec / impl / cookbook / tutorials book | `docs/` via `docs/SUMMARY.md` | per existing agent ownership |
 | Appendix: ADRs + prior-art | `docs/adr/`, `docs/prior-art.md` via `docs/SUMMARY.md` | per existing agent ownership |
-| API reference | `cargo doc` output | generated |
+| Rust API reference | `cargo doc` output | generated |
+| Python API reference | `pdoc` output, from the bindings' doc comments | generated |
+| API reference index page | `docs/api-reference.md` via `docs/SUMMARY.md` | core |
 
 ## 10. Open questions
 

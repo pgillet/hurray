@@ -6,7 +6,9 @@
 #   public/                     Zola shell (landing, FAQ, blog, community)
 #   public/docs/dev/            book built from the current tree (main)
 #   public/docs/dev/api/        cargo doc for the current tree
-#   public/docs/<tag>/[api/]    book + cargo doc built from each release tag
+#   public/docs/dev/python-api/ pdoc for the current tree's `hurray` Python module
+#   public/docs/<tag>/[api/, python-api/]
+#                               book + cargo doc + pdoc built from each release tag
 #   public/docs/stable/         copy of the highest non-prerelease tag (or a redirect to
 #                               dev before the first release exists)
 #   public/docs/index.html      redirect to stable
@@ -19,7 +21,9 @@
 #   BASE_URL   optional; passed to `zola build --base-url` (CI sets it from the Pages URL).
 #   DEV_ONLY   if non-empty, skip release-tag builds (fast PR preview builds).
 #
-# Requires: git, zola, mdbook, cargo. Run from anywhere inside the repo.
+# Requires: git, zola, mdbook, cargo, and a Python 3 environment with `maturin` and `pdoc`
+# on PATH (ADR-038 — pdoc documents the compiled extension, so each version's wheel is
+# built and installed before its reference is generated). Run from anywhere inside the repo.
 
 set -euo pipefail
 
@@ -68,7 +72,36 @@ build_version() {
   if [ -d "$srcdir/target/doc" ]; then
     mkdir -p "$dest/api"
     cp -R "$srcdir/target/doc/." "$dest/api/"
+    # cargo doc on a multi-crate workspace writes no root index.html, so /api/ would 404.
+    # Land readers on hurray-core, the crate every other one builds on.
+    printf '<!doctype html><meta http-equiv="refresh" content="0; url=hurray_core/index.html">\n' \
+      > "$dest/api/index.html"
   fi
+  build_python_api "$srcdir" "$dest"
+}
+
+# --- helper: build one version's Python API reference ----------------------------------
+# $1 = source directory; $2 = that version's output directory.
+#
+# pdoc documents an *imported* module, so the version's own extension must be compiled and
+# installed first — there is no source-only path for a PyO3 binding. Debug build: the output
+# is docstrings and signatures, which --release would not change.
+build_python_api() {
+  local srcdir="$1" dest="$2"
+  if [ ! -f "$srcdir/hurray-python/Cargo.toml" ]; then
+    echo "==> Skipping Python API reference: no hurray-python in this tree"
+    return 0
+  fi
+  echo "==> Building Python API reference"
+  local wheels
+  wheels="$(mktemp -d)"
+  # A fresh wheel dir per version: every version builds a wheel with the same file name
+  # until the package version changes, and a stale one would document the wrong tag.
+  maturin build -m "$srcdir/hurray-python/Cargo.toml" --out "$wheels"
+  python3 -m pip install --quiet --force-reinstall --no-deps "$wheels"/*.whl
+  rm -rf "$wheels"
+  pdoc --docformat markdown --footer-text "hurray $(basename "$dest")" \
+    --output-directory "$dest/python-api" hurray
 }
 
 # --- 2. dev (current tree) -------------------------------------------------------------

@@ -179,42 +179,12 @@ fn py_dict_to_kv(kv_dict: &Bound<'_, PyDict>) -> PyResult<Vec<(String, KvValue)>
         .collect()
 }
 
-/// Load tensors from a Hurray file.
-///
-/// Opens the HRRYFILE at `path` and returns a `dict` mapping tensor names to
-/// `hurray.Tensor` objects. If `names` is given, only those tensors are loaded;
-/// otherwise every tensor in the file is returned.
-///
-/// The GIL is released during file I/O so other Python threads are not blocked.
-///
-/// # Errors
-///
-/// - `hurray.FileError` — file not found, corrupt HRRYFILE, unexpected EOF,
-///   invalid magic, CRC mismatch, etc.
-/// - `hurray.InvalidDescriptorError` — a tensor descriptor failed to decode.
-/// Multi-buffer tensors load as a `hurray.Tensor` carrying every buffer in
-/// descriptor order (ADR-030). A sparse tensor round-trips its values and index
-/// arrays and comes back with its layout intact — since ADR-031 there is one
-/// tensor class, so no reconstruction into a different type is needed.
-///
-/// # Examples
-///
-/// ```python
-/// import hurray
-///
-/// tensors = hurray.load("model.hrry")
-/// embeddings = tensors["embeddings"]   # hurray.Tensor
-/// print(embeddings.shape, embeddings.dtype)
-///
-/// # Load only specific tensors
-/// subset = hurray.load("model.hrry", names=["embeddings", "bias"])
-/// ```
 /// Read a Hurray file's key-value metadata section.
 ///
 /// The other half of `save(path, tensors, kv=...)`: what that writes, this reads back.
 /// Returns an empty dict for a file with no KV section.
 ///
-/// A separate call rather than an argument to [`load`] because it answers a different
+/// A separate call rather than an argument to `load` because it answers a different
 /// question and returns a different thing — a flag that changed `load`'s return type
 /// would make every caller unpack a tuple to ask about tensors. Reading it costs a footer
 /// seek, not a scan of the file.
@@ -266,6 +236,38 @@ pub fn load_kv(py: Python<'_>, path: String) -> PyResult<Bound<'_, PyDict>> {
     Ok(out)
 }
 
+/// Load tensors from a Hurray file.
+///
+/// Opens the HRRYFILE at `path` and returns a `dict` mapping tensor names to
+/// `hurray.Tensor` objects. If `names` is given, only those tensors are loaded;
+/// otherwise every tensor in the file is returned.
+///
+/// Multi-buffer tensors load as a `hurray.Tensor` carrying every buffer in descriptor
+/// order (ADR-030). A sparse tensor round-trips its values and index arrays and comes
+/// back with its layout intact — there is one tensor class, so nothing is reconstructed
+/// into a different type. A composite comes back as a `hurray.Composite`, and its members
+/// do not also appear under their own names.
+///
+/// The GIL is released during file I/O so other Python threads are not blocked.
+///
+/// ## Errors
+///
+/// - `hurray.FileError` — file not found, corrupt HRRYFILE, unexpected EOF, invalid
+///   magic, CRC mismatch, or a name in `names` that the file does not carry.
+/// - `hurray.InvalidDescriptorError` — a tensor descriptor failed to decode.
+///
+/// ## Examples
+///
+/// ```python
+/// import hurray
+///
+/// tensors = hurray.load("model.hrry")
+/// embeddings = tensors["embeddings"]   # hurray.Tensor
+/// print(embeddings.shape, embeddings.dtype)
+///
+/// # Load only specific tensors
+/// subset = hurray.load("model.hrry", names=["embeddings", "bias"])
+/// ```
 #[pyfunction]
 #[pyo3(signature = (path, *, names = None))]
 pub fn load(

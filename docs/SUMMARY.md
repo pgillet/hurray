@@ -72,6 +72,10 @@
 - [Python: Tensor Display](cookbook/hurray-python-display.md)
 - [Python: Error Handling](cookbook/hurray-python-error-handling.md)
 
+# API Reference
+
+- [Rust and Python API Docs](api-reference.md)
+
 # Tutorials
 
 - [Overview](tutorials/README.md)
