@@ -36,6 +36,7 @@
 
 - [Overview](impl/README.md)
 - [Compliance](impl/compliance.md)
+- [Implementation Status](impl/implementation-status.md)
 - [Rust Reference](impl/rust-reference.md)
 - [C FFI](impl/c-ffi.md)
 - [Python Bindings](impl/python-bindings.md)

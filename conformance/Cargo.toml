@@ -19,3 +19,7 @@ tokio = { workspace = true }
 [[bin]]
 name = "generate-vectors"
 path = "src/bin/generate.rs"
+
+[[bin]]
+name = "support-probe"
+path = "src/bin/support_probe.rs"

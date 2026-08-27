@@ -17,7 +17,7 @@ conformance/
 │   ├── descriptors/*.bin   encoded TensorDescriptors (one per vector)
 │   ├── files/*.hrry        HRRYFILE container vectors
 │   └── manifest.json       expected decoded properties for every vector
-├── src/                    corpus definitions + the generator
+├── src/                    corpus definitions, the generator, and the support probe
 └── tests/verify.rs         Rust conformance check (decode + round-trip vs manifest)
 ```
 
@@ -41,6 +41,19 @@ Then review the diff under `conformance/vectors/` and commit it.
 
 Streaming (network-transport) conformance is covered by the `hurray-io` stream round-trip
 tests.
+
+## Reporting what the Rust implementation supports
+
+```sh
+cargo run -q -p hurray-conformance --bin support-probe
+```
+
+Prints, as JSON, every element type / layout / quantization scheme tag the crates decode
+and the outcome of one round-trip per format capability. It answers "what is implemented"
+the same way the corpus answers "is it implemented correctly" — by running the real code,
+never by consulting a list. `website/check-coverage-matrix.py` turns the report into the
+[Implementation Status](../docs/impl/implementation-status.md) page and fails CI when the
+committed page and the probe disagree.
 
 ## Coverage (current)
 

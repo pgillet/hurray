@@ -38,4 +38,6 @@ It defines two binary formats that share **one tensor descriptor encoding**:
 
 - Use the **Read the docs** button above, or the **Docs** link in the navigation, for the
   full specification, implementation requirements, cookbook, and tutorials.
+- Check the [implementation status matrix](docs/stable/impl/implementation-status.html)
+  to see which spec features the Rust, Python, and C implementations provide today.
 - Browse the [source on GitHub](https://github.com/pgillet/hurray).

@@ -1,0 +1,263 @@
+# Canonical spec-feature list behind the Implementation Status page (issue #197).
+#
+# `website/check-coverage-matrix.py` reads this file, probes each implementation, and
+# regenerates `docs/impl/implementation-status.md`. Rows are spec features, taken from
+# `docs/impl/compliance.md`; columns are implementations. Nothing here states that a
+# feature *is* supported — a cell says how to go and find out.
+#
+# ── Cell grammar ─────────────────────────────────────────────────────────────────────
+#
+# A cell is resolved from the row's `<impl>` key, else the section's `detect.<impl>`, else
+# the column's own `default`. That last fallback is what makes a third-party column one
+# `[[implementations]]` block — `default = "no"`, refined row by row as it grows — rather
+# than an edit to every section. The value is either a detection recipe:
+#
+#   element-type    the row's `tag` is one the implementation's decoder accepts
+#   layout-tag      the row's `tag` is a named layout the implementation knows
+#   quant-scheme    the row's `tag` resolves to a quantization scheme
+#   capability      the row's `capability` round-trip passed in the Rust probe
+#   python-class    every name in the row's `python_class` is a class in `hurray`
+#   python-attr     every dotted path in the row's `python_attrs` exists in `hurray`
+#   c-symbol        every name in the row's `c_symbols` is exported by `hurray.h`
+#
+# … or a declaration, `<status>` or `<status>:<note>`, where `<note>` keys into [notes]:
+#
+#   no          not implemented — the only status that needs no justification, because
+#               it is the only one that cannot overstate what an implementation does
+#   yes         supported, but not mechanically detectable; the note must say why not
+#   partial     partly supported; the note must say which part
+#   n/a         the feature is not this layer's to implement; the note must say why
+#   spec-only   specified and implemented nowhere; the note must point at the spec
+#
+# A `c_symbols` entry may name a symbol that does not exist yet, provided it follows the
+# existing `hurray_<object>_<property>` convention: the cell then flips to supported by
+# itself on the day that symbol is exported, which a hand-written "no" never would.
+
+# ── Columns ──────────────────────────────────────────────────────────────────────────
+
+[[implementations]]
+id = "rust"
+label = "`hurray-core` + `hurray-io`"
+summary = "Rust reference implementation"
+probe = "rust"
+
+[[implementations]]
+id = "python"
+label = "`hurray-python`"
+summary = "Python bindings (PyO3)"
+probe = "python"
+
+[[implementations]]
+id = "ffi"
+label = "`hurray-ffi`"
+summary = "C ABI surface"
+probe = "c-header"
+
+# ── Conformance levels ───────────────────────────────────────────────────────────────
+
+[[sections]]
+id = "conformance-levels"
+title = "Conformance Levels"
+intro = """
+The three levels defined in [Compliance](compliance.md). Level 2 implies Level 1, and
+Level 3 implies Level 2.
+"""
+columns = []
+detect.rust = "capability"
+detect.python = "python-attr"
+detect.ffi = "c-symbol"
+rows = [
+  { id = "level-1", name = "Level 1 — Reader", capability = "descriptor_decode", python_attrs = ["Descriptor.decode"], ffi = "partial:ffi-level-1" },
+  { id = "level-2", name = "Level 2 — Writer", capability = "descriptor_encode", python_attrs = ["Descriptor.encode"], c_symbols = ["hurray_descriptor_encode"] },
+  { id = "level-3", name = "Level 3 — Network transport", rust = "spec-only:transport", python = "spec-only:transport", ffi = "spec-only:transport" },
+]
+
+# ── Element types ────────────────────────────────────────────────────────────────────
+
+[[sections]]
+id = "element-types"
+title = "Element Types"
+intro = """
+Tier 1 types are mandatory for every conforming implementation; Tier 2 types are optional.
+Extension types (`0xF0`–`0xFE`) are listed under [Optional Descriptor
+Sections](#optional-descriptor-sections), since the type tag and its describing section
+are one feature on the wire.
+"""
+columns = ["tag", "tier"]
+detect.rust = "element-type"
+detect.python = "element-type"
+detect.ffi = "n/a:ffi-tag-passthrough"
+rows = [
+  { id = "float16", tag = 0x01, tier = 1 },
+  { id = "bfloat16", tag = 0x02, tier = 1 },
+  { id = "float32", tag = 0x03, tier = 1 },
+  { id = "float64", tag = 0x04, tier = 1 },
+  { id = "int8", tag = 0x10, tier = 1 },
+  { id = "uint8", tag = 0x11, tier = 1 },
+  { id = "int16", tag = 0x12, tier = 1 },
+  { id = "uint16", tag = 0x13, tier = 1 },
+  { id = "int32", tag = 0x14, tier = 1 },
+  { id = "uint32", tag = 0x15, tier = 1 },
+  { id = "int64", tag = 0x16, tier = 1 },
+  { id = "uint64", tag = 0x17, tier = 1 },
+  { id = "bool", tag = 0x20, tier = 1 },
+  { id = "float8_e4m3", tag = 0x40, tier = 2 },
+  { id = "float8_e5m2", tag = 0x41, tier = 2 },
+  { id = "float8_e8m0", tag = 0x42, tier = 2 },
+  { id = "float4_e2m1", tag = 0x43, tier = 2 },
+  { id = "float6_e2m3", tag = 0x44, tier = 2 },
+  { id = "float6_e3m2", tag = 0x45, tier = 2 },
+  { id = "float128", tag = 0x46, tier = 2 },
+  { id = "int4", tag = 0x48, tier = 2 },
+  { id = "uint4", tag = 0x49, tier = 2 },
+  { id = "int2", tag = 0x4A, tier = 2 },
+  { id = "uint2", tag = 0x4B, tier = 2 },
+  { id = "complex64", tag = 0x50, tier = 2 },
+  { id = "complex128", tag = 0x51, tier = 2 },
+]
+
+# ── Layouts ──────────────────────────────────────────────────────────────────────────
+
+[[sections]]
+id = "layouts"
+title = "Memory Layouts"
+intro = """
+Tier 1 layouts (`0x01`–`0x0B`) are mandatory for reading; Hilbert (`0x40`) is Tier 2.
+"""
+columns = ["tag", "tier"]
+detect.rust = "layout-tag"
+detect.python = "python-class"
+detect.ffi = "n/a:ffi-tag-passthrough"
+rows = [
+  { id = "row_major", name = "Row-major", tag = 0x01, tier = 1, python_class = ["RowMajorLayout"] },
+  { id = "col_major", name = "Column-major", tag = 0x02, tier = 1, python_class = ["ColMajorLayout"] },
+  { id = "strided", name = "Strided", tag = 0x03, tier = 1, python_class = ["StridedLayout"] },
+  { id = "tiled", name = "Tiled / blocked", tag = 0x04, tier = 1, python_class = ["TiledLayout"] },
+  { id = "morton", name = "Morton (Z-order)", tag = 0x05, tier = 1, python_class = ["MortonLayout"] },
+  { id = "coo", name = "COO", tag = 0x06, tier = 1, python_class = ["CooLayout"] },
+  { id = "csr", name = "CSR", tag = 0x07, tier = 1, python_class = ["CsrLayout"] },
+  { id = "csc", name = "CSC", tag = 0x08, tier = 1, python_class = ["CscLayout"] },
+  { id = "csf", name = "CSF", tag = 0x09, tier = 1, python_class = ["CsfLayout"] },
+  { id = "block_paged", name = "Block-paged", tag = 0x0A, tier = 1, python_class = ["BlockPagedLayout"] },
+  { id = "composite", name = "Composite / virtual", tag = 0x0B, tier = 1, python_class = ["CompositeLayout"] },
+  { id = "hilbert", name = "Hilbert curve", tag = 0x40, tier = 2, python_class = ["HilbertLayout"] },
+]
+
+# ── Quantization schemes ─────────────────────────────────────────────────────────────
+
+[[sections]]
+id = "quantization-schemes"
+title = "Quantization Schemes"
+intro = """
+Carried in the optional quantization section. Support means encoding and decoding the
+scheme descriptor; performing the dequantization arithmetic is a compute concern and
+outside the format's scope.
+"""
+columns = ["tag", "tier"]
+detect.rust = "quant-scheme"
+detect.python = "python-class"
+detect.ffi = "n/a:ffi-tag-passthrough"
+rows = [
+  { id = "per_tensor_affine", name = "Per-tensor affine", tag = 0x01, tier = 1, python_class = ["PerTensorAffine"] },
+  { id = "per_channel_affine", name = "Per-channel affine", tag = 0x02, tier = 1, python_class = ["PerChannelAffine"] },
+  { id = "per_block_affine", name = "Per-block affine", tag = 0x03, tier = 1, python_class = ["PerBlockAffine"] },
+  { id = "nf4", name = "NF4 (NormalFloat4)", tag = 0x04, tier = 2, python_class = ["NF4"] },
+  { id = "mxfp", name = "MXFP (OCP Microscaling)", tag = 0x05, tier = 2, python_class = ["MXFP"] },
+]
+
+# ── Optional descriptor sections ─────────────────────────────────────────────────────
+
+[[sections]]
+id = "optional-descriptor-sections"
+title = "Optional Descriptor Sections"
+intro = """
+Sections a descriptor may carry beyond the fixed header, each gated by a flag bit. A
+reader that does not understand one skips it using `descriptor_length`, so none of these
+is required at any conformance level.
+"""
+columns = []
+detect.rust = "capability"
+detect.python = "python-attr"
+detect.ffi = "c-symbol"
+rows = [
+  { id = "quantization", name = "Quantization", capability = "section_quantization", python_attrs = ["Descriptor.quantization", "decode_quantization"], c_symbols = ["hurray_descriptor_quantization"] },
+  { id = "shard", name = "Shard", capability = "section_shard", python_attrs = ["Descriptor.shard"], c_symbols = ["hurray_descriptor_shard"] },
+  { id = "statistics", name = "Statistics", capability = "section_statistics", python_attrs = ["Descriptor.statistics"], c_symbols = ["hurray_descriptor_statistics"] },
+  { id = "extension_type", name = "Extension type (`0xF0`–`0xFE`)", capability = "section_extension_type", python_attrs = ["Descriptor.extension_type"], c_symbols = ["hurray_descriptor_extension_type"] },
+  { id = "composite_member", name = "Composite member", capability = "section_composite_member", python_attrs = ["Composite.member_roles"], c_symbols = ["hurray_descriptor_composite_member"] },
+]
+
+# ── Interchange ──────────────────────────────────────────────────────────────────────
+
+[[sections]]
+id = "interchange"
+title = "Streaming and File Interchange"
+intro = """
+The two framings that share the descriptor encoding: the self-delimiting stream format and
+the HRRYFILE container.
+"""
+columns = []
+detect.rust = "capability"
+detect.python = "python-attr"
+detect.ffi = "no"
+rows = [
+  { id = "stream_write", name = "Stream — write", capability = "stream_write", python_attrs = ["StreamWriter"] },
+  { id = "stream_read", name = "Stream — read", capability = "stream_read", python_attrs = ["StreamReader"] },
+  { id = "stream_composite", name = "Stream — composite tensors", capability = "stream_composite", python_attrs = ["Composite", "StreamWriter.write"] },
+  { id = "file_write", name = "File — write", capability = "file_write", python_attrs = ["save"] },
+  { id = "file_read", name = "File — read", capability = "file_read", python_attrs = ["load"] },
+  { id = "file_kv", name = "File — KV metadata section", capability = "file_kv", python_attrs = ["load_kv"] },
+  { id = "file_composite", name = "File — composite tensors", capability = "file_composite", python_attrs = ["Composite", "save"] },
+]
+
+# ── Network transport ────────────────────────────────────────────────────────────────
+
+[[sections]]
+id = "network-transport"
+title = "Network Transport (Level 3)"
+intro = """
+The cross-machine protocol in [Interchange](../spec/interchange.md). Specified in full,
+implemented nowhere — see the note below the table.
+"""
+columns = []
+detect.rust = "spec-only:transport"
+detect.python = "spec-only:transport"
+detect.ffi = "spec-only:transport"
+rows = [
+  { id = "session", name = "Session establishment (`CLIENT_HELLO` / `SERVER_HELLO`)" },
+  { id = "tensor_transfer", name = "Tensor transfer (`TENSOR_REQUEST` / `TENSOR_DESCRIPTOR` / `TENSOR_DATA` / `TENSOR_DATA_END`)" },
+  { id = "control", name = "Control messages (`ERROR` / `PING` / `PONG`)" },
+  { id = "tensor_put", name = "Client push (`TENSOR_PUT` / `TENSOR_PUT_ACK`)" },
+  { id = "layout_negotiation", name = "Layout negotiation (`supported_layouts`, `ALLOW_TRANSCODE`)" },
+  { id = "transcoding", name = "On-the-fly transcoding (`TRANSCODING`)" },
+  { id = "parallel_streams", name = "Parallel shard transfers (`PARALLEL_STREAMS`, `PARALLEL_OK`)" },
+  { id = "rdma", name = "RDMA data plane (`RDMA_DATA_PLANE`, `RDMA_REGISTER`, `RDMA_READY`)" },
+]
+
+# ── Notes ────────────────────────────────────────────────────────────────────────────
+
+[notes]
+
+transport = """
+No crate implements any part of the Level 3 transport: none of the message types,
+capability flags, or the RDMA data plane appear anywhere in `hurray-core`, `hurray-io`,
+`hurray-ffi`, `hurray-python`, or `hurray-inspect`. `hurray-io` implements the stream
+framing and the file container — Levels 1 and 2 — and stops there. The protocol is
+specified so that an implementation has something to build against; scheduling one is
+tracked separately.
+"""
+
+ffi-level-1 = """
+`hurray_descriptor_decode` parses and validates a descriptor through `hurray-core`, so the
+reading itself is complete, but the C surface exposes only the type tag, layout tag, rank,
+shape, byte offset, and buffer table. Layout-specific payload fields — CSR `nnz`, tile
+shape, the block table — have no accessor, so a C caller cannot yet interpret every Tier 1
+layout it can decode.
+"""
+
+ffi-tag-passthrough = """
+The C ABI reports the raw tag byte (`hurray_descriptor_element_type_tag`,
+`hurray_descriptor_layout_tag`) and never interprets it. There is no per-tag support to
+report at this layer: a C caller decides for itself which tags it can handle, and gains a
+new one without any change to `hurray-ffi`.
+"""
