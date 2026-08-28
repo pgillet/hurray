@@ -1,7 +1,8 @@
 # hurray-ffi
 
 The C ABI layer for **[Hurray](https://www.pascalgillet.net/hurray/)** — a zero-copy,
-streamable, language-agnostic tensor interchange format for AI/ML inference.
+streamable, language-agnostic tensor interchange format for AI/ML inference pipelines
+and scientific arrays.
 
 This crate exposes [`hurray-core`](https://crates.io/crates/hurray-core) over a stable C
 ABI — opaque handles, a function table, and buffer release callbacks — so any language that
