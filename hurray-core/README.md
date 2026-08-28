@@ -1,7 +1,8 @@
 # hurray-core
 
 Core types for **[Hurray](https://www.pascalgillet.net/hurray/)** — a zero-copy,
-streamable, language-agnostic tensor interchange format for AI/ML inference.
+streamable, language-agnostic tensor interchange format for AI/ML inference pipelines
+and scientific arrays.
 
 This crate is the no-I/O, no-async foundation: the tensor descriptor, element-type system,
 buffer handle, quantization descriptors, and memory-layout vocabulary (dense, strided,

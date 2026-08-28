@@ -4,7 +4,7 @@ title = "Hurray"
 
 Hurray is a **language-agnostic, zero-copy tensor format** for multi-dimensional data,
 built for the memory-layout diversity, quantization schemes, and access patterns of modern
-AI/ML inference pipelines.
+AI/ML inference pipelines and scientific arrays.
 
 It defines two binary formats that share **one tensor descriptor encoding**:
 

@@ -4,7 +4,7 @@ A command-line tool to inspect **[Hurray](https://www.pascalgillet.net/hurray/)*
 tensor descriptor files as a human-readable, annotated hex table.
 
 Hurray is a zero-copy, streamable, language-agnostic tensor interchange format for AI/ML
-inference.
+inference pipelines and scientific arrays.
 
 ## Install
 

@@ -1,7 +1,8 @@
 # hurray-io
 
 Async streaming and file I/O for **[Hurray](https://www.pascalgillet.net/hurray/)** — a
-zero-copy, streamable, language-agnostic tensor interchange format for AI/ML inference.
+zero-copy, streamable, language-agnostic tensor interchange format for AI/ML inference
+pipelines and scientific arrays.
 
 Built on [`hurray-core`](https://crates.io/crates/hurray-core), this crate provides:
 

@@ -3,7 +3,8 @@
 </p>
 
 <p align="center">
-  A language-agnostic, zero-copy tensor format for AI/ML inference pipelines.<br>
+  A zero-copy, streamable, language-agnostic tensor interchange format for AI/ML inference<br>
+  pipelines and scientific arrays.<br>
   <a href="https://pgillet.github.io/hurray">pgillet.github.io/hurray</a>
 </p>
 

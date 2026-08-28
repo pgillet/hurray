@@ -4,7 +4,8 @@
 
 Hurray is a language-agnostic, zero-copy runtime interchange format for
 multi-dimensional tensor data, optimized for the memory layout diversity,
-quantization schemes, and access patterns of modern AI/ML inference pipelines.
+quantization schemes, and access patterns of modern AI/ML inference pipelines
+and scientific arrays.
 
 ## Scope and Goals
 
