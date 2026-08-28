@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  A zero-copy, streamable, language-agnostic tensor interchange format for<br>
-  AI/ML inference pipelines and scientific arrays.<br>
+  A zero-copy, streamable, language-agnostic tensor interchange format<br>
+  for AI/ML inference pipelines and scientific arrays.<br>
   <a href="https://pgillet.github.io/hurray">pgillet.github.io/hurray</a>
 </p>
 
