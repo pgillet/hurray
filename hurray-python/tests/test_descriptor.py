@@ -258,6 +258,7 @@ def test_a_malformed_section_is_refused():
         ("layer-2-quantization-descriptors.md", 7),
         ("layer-4-tensor-descriptor-encoding.md", 3),
         ("hurray-inspect-cli.md", 1),
+        ("converting-external-quantized-tensors.md", 1),
     ],
 )
 def test_every_python_block_on_the_page_runs(page_name, minimum):
