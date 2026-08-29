@@ -168,6 +168,29 @@ multiple constraint.
 
 ---
 
+## Zero-Point Convention
+
+The affine schemes (`0x01`, `0x02`, `0x03`) dequantize by subtracting
+`zero_point` from the storage value. The stored zero point is the value
+subtracted: Hurray defines no implicit bias, and the descriptor carries no field
+selecting an alternative convention.
+
+A writer converting a tensor from an external quantization toolchain MUST
+normalize that toolchain's zero-point values to this convention before placing
+them in a Hurray buffer.
+
+> **Note (non-normative):** Some external toolchains store a biased zero point
+> and remove the bias in the loader rather than recording it in the file. GPTQ
+> is the widely deployed case: its packed zero-point plane has conventionally
+> held `zero_point - 1`. A descriptor built from un-normalized values is
+> structurally valid — it satisfies every validity constraint of its scheme, and
+> a reader has no way to detect the discrepancy — but dequantizes every affected
+> element off by one scale step. Hurray records the zero point, not the
+> convention that produced it, so this normalization is the writer's
+> responsibility and cannot be recovered downstream.
+
+---
+
 ## Buffer Table Placement Rules
 
 Every scheme that references a buffer (per-channel, per-block, NF4, MXFP) adds
@@ -208,8 +231,16 @@ on the payload format out of band.
 > **Note (non-normative):** Extension schemes are the mechanism for
 > implementation-specific or experimental quantization formats (e.g., GPTQ,
 > AWQ group quantization with per-group permutations, or hardware-vendor-
-> specific packings). Schemes that prove broadly useful SHOULD be proposed for
+> specific packings). Schemes that prove broadly useful are candidates for
 > assignment in the Tier 1 or Tier 2 range through a specification revision.
+>
+> What sends these formats here is the *per-group permutation* — GPTQ
+> activation-order grouping reorders the quantized axis, which per-block affine
+> cannot express. The permutation-free subset is a different case: a
+> group-quantized tensor whose groups are contiguous along one axis is
+> representable under per-block affine (`0x03`) by choosing the appropriate
+> storage type, block size, and flags, and does not need an extension scheme.
+> See § Zero-Point Convention for the normalization such a conversion requires.
 
 ---
 

@@ -44,6 +44,10 @@ is `float32`. A consumer MAY further convert to `float64` or to a
 lower-precision float type; such conversion is out of scope for this
 specification.
 
+`zero_point` is subtracted exactly as stored. See `quantization.md`
+§ Zero-Point Convention for the normalization a writer MUST apply when
+converting from a toolchain that stores a biased zero point.
+
 ## Validity Constraints
 
 - `scale` MUST NOT be zero, NaN, or infinity. A reader MUST reject a descriptor

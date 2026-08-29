@@ -9,9 +9,17 @@
 
 The tensor is divided into fixed-size, contiguous blocks along a specified axis.
 Each block carries its own `scale` (and optionally `zero_point`). This scheme
-covers the GGUF family of linear block-quantized formats (e.g., `Q8_0`, `Q4_0`,
-`Q4_1`) at the descriptor level; specific GGUF-style layouts are representable
-by choosing the appropriate storage type, block size, and flags.
+covers the **single-level** GGUF block-quantized formats — those carrying one
+scale, and optionally one zero point, per block (e.g., `Q8_0`, `Q4_0`, `Q4_1`) —
+at the descriptor level; those layouts are representable by choosing the
+appropriate storage type, block size, and flags.
+
+The GGUF K-quant family (`Q2_K`–`Q6_K`) is **not** expressible under this
+scheme. Those formats apply a second, super-block scaling level: the per-block
+scales are themselves quantized and scaled by a shared factor, which this
+scheme's single `scale` array cannot represent. See `quantization.md` § Open
+Questions, where nested and two-level scale descriptors are deferred to the
+reserved `0x60`–`0x7F` tag range.
 
 ## Binary Encoding
 
@@ -106,6 +114,12 @@ x_real = s * (q - z)
 The multiplication is performed in `float32` arithmetic. If `scale_type_tag` is
 `float16` or `bfloat16`, `s` MUST be widened to `float32` losslessly before the
 multiplication.
+
+`z` is subtracted exactly as stored. See `quantization.md` § Zero-Point
+Convention for the normalization a writer MUST apply when converting from a
+toolchain that stores a biased zero point — the case that arises when a
+group-quantized GPTQ or AWQ tensor without activation-order permutation is
+mapped onto this scheme.
 
 ## Validity Constraints
 
