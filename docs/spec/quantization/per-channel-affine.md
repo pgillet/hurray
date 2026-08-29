@@ -78,6 +78,10 @@ x_real = scale[c] * (q - zero_point[c])
 
 If the `SYMMETRIC` flag is set, `zero_point[c]` is treated as `0` for all `c`.
 
+`zero_point[c]` is subtracted exactly as stored. See `quantization.md`
+§ Zero-Point Convention for the normalization a writer MUST apply when
+converting from a toolchain that stores a biased zero point.
+
 ## Validity Constraints
 
 - `axis` MUST satisfy `axis < rank`.
