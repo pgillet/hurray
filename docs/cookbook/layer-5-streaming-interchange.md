@@ -67,7 +67,7 @@ async fn write_tensors(sink: impl tokio::io::AsyncWrite + Unpin)
 ```python
 import hurray
 
-tensor = hurray.Tensor(bytes(192), hurray.float32, [4, 6, 8])
+tensor = hurray.Tensor(bytes(768), hurray.float32, [4, 6, 8])   # 192 float32
 
 # A path, an object with fileno(), or nothing at all for an in-memory buffer.
 with hurray.StreamWriter("tensors.hrry") as writer:
@@ -186,6 +186,8 @@ let mut reader = StreamReader::with_options(source, options);
 
 ```python
 import hurray
+
+source = b""    # any source: a path, an object with fileno(), or a buffer
 
 reader = hurray.StreamReader(
     source,

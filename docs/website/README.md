@@ -197,6 +197,25 @@ history) for fast preview.
 > current scale (zero tags today). When it becomes slow, switch to incremental builds that
 > carry prior version outputs forward and rebuild only new/changed tags — see ADR-028.
 
+### 7.1 Cookbook code blocks
+
+Every fenced block in `docs/cookbook/` is verified, in both languages, by the `test` and
+`python-conformance` jobs in `ci.yml` — not by the docs workflow, because a block rots
+when the *API* moves and that diff touches no Markdown.
+
+| Language | Runner | Tiers |
+|---|---|---|
+| Rust | `website/check-rust-blocks.py` (`rustdoc --test` per page) | `rust` compiles and runs · `rust,no_run` compiles only · `rust,ignore` is skipped and MUST carry a comment saying why |
+| Python | `hurray-python/tests/test_cookbook_python_blocks.py` | `RUN` executes every block · `COMPILE` parses only and MUST carry a reason |
+
+The Python tiers are a table in the test module rather than a fence annotation, because
+`lang-tabs.js` groups blocks by language: writing ```` ```python,ignore ```` would change
+that tab's identity and break the page. A page with Python blocks that appears in neither
+table fails the suite, so a new page cannot skip the decision.
+
+Within a page, Python blocks share one namespace and one scratch directory: a page is read
+top to bottom, so a later block may use an earlier one's names and the files it wrote.
+
 ## 8. Search
 
 - mdBook's built-in search is enabled per book, giving per-version search for free.

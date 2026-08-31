@@ -98,7 +98,11 @@ Python authors and reads every scheme — per-tensor, per-channel, per-block, NF
 buffers.
 
 ```python
+import struct
 import hurray
+
+weight_bytes = bytes(1024 * 512)                        # your quantizer's output
+scale_bytes = struct.pack("1024f", *[0.02] * 1024)      # one float32 scale per row
 
 weights = hurray.Tensor(
     weight_bytes,

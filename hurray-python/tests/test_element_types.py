@@ -193,22 +193,3 @@ def test_sparse_coo_cannot_be_dynamic():
         hurray.sparse_coo(values, indices, [None, 2])
     assert "hurray.sparse_coo()" in str(exc.value)
 
-
-# ── The page itself ───────────────────────────────────────────────────────────
-
-
-def test_every_python_block_in_the_layer_0_cookbook_runs():
-    """The tabs are documentation people copy, and nothing else executes them. Running
-    them here caught a Rust block on the same page asserting that tag 0xF0 is an error,
-    when the private-extension range has been valid all along."""
-    import pathlib
-    import re
-
-    page = pathlib.Path(__file__).parents[2] / "docs/cookbook/layer-0-element-types-and-shape.md"
-    if not page.exists():  # installed without the repo alongside
-        pytest.skip("cookbook not present")
-
-    blocks = re.findall(r"```python\n(.*?)```", page.read_text(), re.S)
-    assert len(blocks) >= 7, "the page lost its Python tabs"
-    for index, block in enumerate(blocks):
-        exec(compile(block, f"{page.name}#python[{index}]", "exec"), {})

@@ -96,14 +96,18 @@ If a `TensorDescriptor` has multiple `BufferHandle`s (e.g. quantized weight + sc
 #     vec![handle(8)?, handle(8)?], Some(quant.encode_to_vec()), None, None, None,
 # )?;
 # let (weight_data, scale_data) = (vec![0u8; 8], vec![0u8; 8]);
-# let mut writer = FileWriter::new(tokio::fs::File::create("model.hrry").await?).await?;
+# let mut writer = FileWriter::new(tokio::fs::File::create("quantized.hrry").await?).await?;
 writer.write_tensor("q_layer", &desc, &[&weight_data, &scale_data]).await?;
 # Ok(())
 # }
 ```
 
 ```python
+import struct
 import hurray
+
+weight_data = bytes(16)                            # 4x4 int8 weights
+scale_data = struct.pack("4f", *[0.02] * 4)        # one float32 scale per row
 
 # A tensor carries its own buffers, so a multi-buffer one saves like any other.
 quantized = hurray.Tensor(
@@ -111,9 +115,9 @@ quantized = hurray.Tensor(
     hurray.dtype.int8,
     [4, 4],
     aux_buffers=[scale_data],
-    quantization=hurray.PerChannelAffine(axis=0, scale_buffer_index=1),
+    quantization=hurray.PerChannelAffine.symmetric(axis=0, scale_buffer_index=1),
 )
-hurray.save("model.hrry", {"q_layer": quantized})
+hurray.save("quantized.hrry", {"q_layer": quantized})
 ```
 
 </div>

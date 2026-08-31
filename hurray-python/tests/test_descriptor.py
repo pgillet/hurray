@@ -248,39 +248,3 @@ def test_a_malformed_section_is_refused():
     with pytest.raises(hurray.InvalidDescriptorError):
         hurray.decode_quantization(b"\x00\x00\x00\x00")
 
-
-# ── The pages ─────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "page_name, minimum",
-    [
-        ("layer-2-quantization-descriptors.md", 7),
-        ("layer-4-tensor-descriptor-encoding.md", 3),
-        ("hurray-inspect-cli.md", 1),
-        ("converting-external-quantized-tensors.md", 1),
-    ],
-)
-def test_every_python_block_on_the_page_runs(page_name, minimum):
-    import pathlib
-    import re
-
-    page = pathlib.Path(__file__).parents[2] / "docs/cookbook" / page_name
-    if not page.exists():
-        pytest.skip("cookbook not present")
-
-    blocks = re.findall(r"```python\n(.*?)```", page.read_text(), re.S)
-    assert len(blocks) >= minimum, "the page lost its Python tabs"
-
-    # One block writes a file; run from a scratch directory so it does not litter
-    # the working tree.
-    import os
-    import tempfile
-
-    previous = os.getcwd()
-    os.chdir(tempfile.mkdtemp())
-    try:
-        for index, block in enumerate(blocks):
-            exec(compile(block, f"{page_name}#python[{index}]", "exec"), {})
-    finally:
-        os.chdir(previous)

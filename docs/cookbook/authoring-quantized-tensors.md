@@ -96,10 +96,13 @@ perfectly well — the consumer simply finds a dangling index. So it is rejected
 the mistake was made:
 
 ```python
-# No aux_buffers, but the scheme references buffer 1.
-hurray.Tensor(bytes(8), hurray.int8, [2, 4],
-              quantization=hurray.PerChannelAffine.symmetric(0, 1))
-# hurray.InvalidDescriptorError: invalid quantization: ...
+try:
+    # No aux_buffers, but the scheme references buffer 1.
+    hurray.Tensor(bytes(8), hurray.int8, [2, 4],
+                  quantization=hurray.PerChannelAffine.symmetric(0, 1))
+    raise AssertionError("buffer 1 does not exist")
+except hurray.InvalidDescriptorError as exc:
+    print(exc)
 ```
 
 ## Symmetric and asymmetric
@@ -143,7 +146,11 @@ Fields that share one bit on the wire must be supplied together — `value_min` 
 rest:
 
 ```python
-hurray.Statistics(value_min=-1.0)   # InvalidDescriptorError
+try:
+    hurray.Statistics(value_min=-1.0)
+    raise AssertionError("value_max and value_abs_max are missing")
+except hurray.InvalidDescriptorError as exc:
+    print(exc)
 ```
 
 ## Shard
@@ -153,6 +160,25 @@ Records this tensor's position inside a larger logical one:
 ```python
 shard = hurray.Shard(parent_shape=[1024, 512], shard_offset=[512, 0])
 piece = hurray.Tensor(bytes(8), hurray.int8, [2, 4], shard=shard)
+```
+
+## Checking what you built
+
+`save()` writes every buffer, so the scales travel with the weights:
+
+```python
+hurray.save("weights.hrry", {"w": weights})
+```
+
+`hurray-inspect` then shows the scheme byte by byte:
+
+```text
+   141  14 00 00 00                     quantization_length = 20
+   145  02                              scheme_tag = 0x02 (per-channel-affine)
+   149  00 00 00 00                     axis = 0
+   153  01 00 00 00                     scale_buffer_index = 1
+   157  FF FF FF FF                     zero_point_buffer_index = none (symmetric)
+   161  03                              scale_type = float32
 ```
 
 ## Reading it back
@@ -222,25 +248,6 @@ t = hurray.Tensor(bytes(24), hurray.float32, [2, 3], statistics=s)
 
 assert t.statistics.nnz == 6
 assert t.statistics.value_mean is None
-```
-
-## Checking what you built
-
-`save()` writes every buffer, so the scales travel with the weights:
-
-```python
-hurray.save("weights.hrry", {"w": weights})
-```
-
-`hurray-inspect` then shows the scheme byte by byte:
-
-```text
-   141  14 00 00 00                     quantization_length = 20
-   145  02                              scheme_tag = 0x02 (per-channel-affine)
-   149  00 00 00 00                     axis = 0
-   153  01 00 00 00                     scale_buffer_index = 1
-   157  FF FF FF FF                     zero_point_buffer_index = none (symmetric)
-   161  03                              scale_type = float32
 ```
 
 ## See also

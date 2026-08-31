@@ -33,6 +33,8 @@ as long as `target` exists.
 Probe support with `hasattr` before calling:
 
 ```python
+obj = source   # whatever you were handed
+
 if hasattr(obj, "__hurray__"):
     tensor = hurray.from_hurray(obj)
 else:
@@ -61,10 +63,10 @@ mode and does not require the dtype to be an Array API Tier 1 type:
 ```python
 import hurray
 
-q_tensor = hurray.Tensor(bytes(64), hurray.int4, [128])
+q_tensor = hurray.Tensor(bytes(64), hurray.dtype.int4, [128])
 q_copy = hurray.from_hurray(q_tensor)
 
-assert q_copy.dtype == hurray.int4   # works in strict mode
+assert q_copy.dtype == hurray.dtype.int4   # works in strict mode
 ```
 
 ## Capsule lifecycle
@@ -92,12 +94,13 @@ import hurray
 
 try:
     hurray.from_hurray(42)
-except TypeError:
-    pass  # object does not expose __hurray__
-
-try:
-    # ABI version mismatch (cross-build scenario)
-    hurray.from_hurray(some_other_build_tensor)
-except hurray.UnsupportedError:
-    pass  # producer and consumer ABI versions differ
+    raise AssertionError("42 exposes no __hurray__")
+except TypeError as exc:
+    print(exc)
 ```
+
+The other failure needs two builds to reproduce, so it cannot be shown here: a tensor
+produced by an extension built against a different `hurray-ffi` ABI version raises
+`hurray.UnsupportedError`, naming both versions. The capsule carries the producer's
+version precisely so the mismatch is caught at the boundary rather than read as
+whatever the consumer's layout happens to be.
