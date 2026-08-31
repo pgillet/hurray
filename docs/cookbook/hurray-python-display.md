@@ -64,10 +64,16 @@ Falls back to `repr()` when NumPy is unavailable or for Tier 2 types.
 Both `repr()` and `str()` show format, shape, nnz, and dtype:
 
 ```python
+import numpy as np
 import scipy.sparse as sp
 import hurray
 
 m = sp.csr_matrix(([1.0, 2.0], ([0, 1], [1, 0])), shape=(2, 2))
+
+# Hurray's spec requires uint64 index arrays; SciPy builds int32 ones.
+m.indices = m.indices.astype(np.uint64)
+m.indptr = m.indptr.astype(np.uint64)
+
 t = hurray.from_scipy(m)
 
 repr(t)
@@ -88,10 +94,14 @@ the per-format buffer arrays. Use `hurray.set_print_options` to set it globally,
 on exit). The default is `"metadata"`, so existing behavior is unchanged.
 
 ```python
+import numpy as np
 import scipy.sparse as sp
 import hurray
 
 m = sp.csr_matrix(([1.0, 2.0, 3.0, 4.0], ([0, 0, 1, 2], [0, 2, 1, 0])), shape=(3, 3))
+m.indices = m.indices.astype(np.uint64)
+m.indptr = m.indptr.astype(np.uint64)
+
 t = hurray.from_scipy(m)
 
 # Default — metadata only:

@@ -65,8 +65,12 @@ as long as any view is alive.
 Accessing a format-specific attribute on the wrong format raises `AttributeError`:
 
 ```python
-sparse.indices   # AttributeError: 'Tensor' object has no attribute 'indices';
-                 # this is a csr tensor
+try:
+    sparse.indices          # COO's attribute, on a CSR tensor
+    raise AssertionError("a csr tensor has col_indices, not indices")
+except AttributeError as exc:
+    print(exc)              # 'Tensor' object has no attribute 'indices';
+                            # this is a csr tensor
 ```
 
 To read values into a NumPy array (zero-copy for Tier 1 types):

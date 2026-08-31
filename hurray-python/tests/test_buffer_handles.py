@@ -291,20 +291,3 @@ def test_sync_mode_survives_a_stream_round_trip():
     (back,) = list(hurray.StreamReader(writer.getvalue()))
     assert back.buffer_handles[0].sync_mode == "producer_synced"
 
-
-def test_every_python_block_in_the_layer_1_cookbook_runs():
-    """Shared namespace: blocks on one page build on each other, the way a reader reads
-    them top to bottom."""
-    import pathlib
-    import re
-
-    page = pathlib.Path(__file__).parents[2] / "docs/cookbook/layer-1-buffer-protocol.md"
-    if not page.exists():
-        pytest.skip("cookbook not present")
-
-    blocks = re.findall(r"```python\n(.*?)```", page.read_text(), re.S)
-    assert len(blocks) >= 8, "the page lost its Python tabs"
-
-    namespace: dict = {}
-    for index, block in enumerate(blocks):
-        exec(compile(block, f"{page.name}#python[{index}]", "exec"), namespace)

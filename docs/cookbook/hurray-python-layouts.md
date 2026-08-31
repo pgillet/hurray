@@ -84,14 +84,17 @@ They must agree. The constructor checks three tiers:
 Nothing is inferred and nothing is reinterpreted:
 
 ```python
-hurray.Tensor(
-    struct.pack("2f", 5.0, 7.0),          # two values...
-    hurray.float32,
-    [2, 2],
-    aux_buffers=[struct.pack("8Q", *range(8))],
-    layout=hurray.CooLayout(nnz=4),       # ...but the layout declares four
-)
-# hurray.BufferError: buffer 0 (values) is 8 bytes, but this coo layout implies at least 16
+try:
+    hurray.Tensor(
+        struct.pack("2f", 5.0, 7.0),          # two values...
+        hurray.float32,
+        [2, 2],
+        aux_buffers=[struct.pack("8Q", *range(8))],
+        layout=hurray.CooLayout(nnz=4),       # ...but the layout declares four
+    )
+    raise AssertionError("the values buffer holds two, not four")
+except hurray.BufferError as exc:
+    print(exc)   # buffer 0 (values) is 8 bytes, but this coo layout implies at least 16
 ```
 
 The descriptor is not quietly corrected to `nnz=2`, and it is not accepted as
@@ -106,8 +109,12 @@ Inference belongs to the array-shaped constructors — `hurray.sparse_coo`,
 ### A layout string is not accepted
 
 ```python
-hurray.Tensor(bytes(16), hurray.float32, [4], layout="csr")
-# TypeError: layout must be a hurray.Layout instance (e.g. hurray.CsrLayout(nnz=4)), got str
+try:
+    hurray.Tensor(bytes(16), hurray.float32, [4], layout="csr")
+    raise AssertionError("a layout is an object, not a name")
+except TypeError as exc:
+    print(exc)   # layout must be a hurray.Layout instance
+                 # (e.g. hurray.CsrLayout(nnz=4)), got str
 ```
 
 A string cannot carry `nnz` or `strides`, so `layout="csr"` is a request that
@@ -222,8 +229,12 @@ unknown.raw_bytes                             # b'\x01\x02'
 it back out. Its constructor rejects any tag that has a named class:
 
 ```python
-hurray.UnknownLayout(0x07)
-# ValueError: tag 0x07 is the csr layout, not an unknown one; use hurray.CsrLayout instead
+try:
+    hurray.UnknownLayout(0x07)
+    raise AssertionError("0x07 is a tag this implementation knows")
+except ValueError as exc:
+    print(exc)   # tag 0x07 is the csr layout, not an unknown one;
+                 # use hurray.CsrLayout instead
 ```
 
 Calling a known tag "unknown" would smuggle a descriptor past every rank and
@@ -238,9 +249,13 @@ stream reports its own layout truthfully. Building a `hurray.Tensor` with one
 raises, because a composite head owns no buffers:
 
 ```python
-hurray.Tensor(bytes(16), hurray.float32, [4], layout=hurray.CompositeLayout("group", 2))
-# hurray.UnsupportedError: a composite layout cannot be given to hurray.Tensor:
-# a composite head owns no buffers, which this class cannot represent
+try:
+    hurray.Tensor(bytes(16), hurray.float32, [4],
+                  layout=hurray.CompositeLayout("group", 2))
+    raise AssertionError("use hurray.Composite for a composite head")
+except hurray.UnsupportedError as exc:
+    print(exc)   # a composite layout cannot be given to hurray.Tensor:
+                 # a composite head owns no buffers, which this class cannot represent
 ```
 
 ## Round-tripping a descriptor
@@ -249,6 +264,18 @@ A tensor's own layout goes straight back into the constructor, which is what let
 a relay read a descriptor and write an equal one:
 
 ```python
+values_bytes = struct.pack("4f", 1.0, 2.0, 3.0, 4.0)
+col_indices_bytes = struct.pack("4Q", 0, 2, 1, 0)
+row_ptr_bytes = struct.pack("4Q", 0, 2, 3, 4)
+
+original = hurray.Tensor(
+    values_bytes,
+    hurray.float32,
+    [3, 3],
+    aux_buffers=[col_indices_bytes, row_ptr_bytes],
+    layout=hurray.CsrLayout(nnz=4),
+)
+
 rebuilt = hurray.Tensor(
     values_bytes,
     original.dtype,

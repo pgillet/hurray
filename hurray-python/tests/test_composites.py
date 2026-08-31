@@ -413,20 +413,3 @@ def test_a_nested_overlay_keeps_its_roles():
     assert back == outer
     assert back.members[0].member_roles == ("base", "correction")
 
-
-def test_every_python_block_in_the_composite_cookbook_runs():
-    """Blocks on one page share names the way a reader reads them, so they run in one
-    namespace rather than in isolation."""
-    import pathlib
-    import re
-
-    page = pathlib.Path(__file__).parents[2] / "docs/cookbook/composite-tensors.md"
-    if not page.exists():
-        pytest.skip("cookbook not present")
-
-    blocks = re.findall(r"```python\n(.*?)```", page.read_text(), re.S)
-    assert len(blocks) >= 5, "the page lost its Python tabs"
-
-    namespace: dict = {}
-    for index, block in enumerate(blocks):
-        exec(compile(block, f"{page.name}#python[{index}]", "exec"), namespace)

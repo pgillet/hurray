@@ -95,6 +95,8 @@ Every buffer a descriptor references crosses the stream, in descriptor order —
 index arrays, quantization scales, page tables:
 
 ```python
+import struct
+
 csr = hurray.Tensor(
     struct.pack("2f", 5.0, 7.0),
     hurray.float32,

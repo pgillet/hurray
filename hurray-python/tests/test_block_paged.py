@@ -162,19 +162,3 @@ def test_block_paged_is_rank_3_only():
     with pytest.raises(hurray.InvalidDescriptorError):
         layout.validate_against_shape([9, 2])
 
-
-# ── The page ──────────────────────────────────────────────────────────────────
-
-
-def test_every_python_block_in_the_block_paged_cookbook_compiles():
-    import pathlib
-    import re
-
-    page = pathlib.Path(__file__).parents[2] / "docs/cookbook/block-paged-kv-cache.md"
-    if not page.exists():
-        pytest.skip("cookbook not present")
-
-    blocks = re.findall(r"```python\n(.*?)```", page.read_text(), re.S)
-    assert len(blocks) >= 5, "the page lost its Python tabs"
-    for index, block in enumerate(blocks):
-        exec(compile(block, f"{page.name}#python[{index}]", "exec"), {})

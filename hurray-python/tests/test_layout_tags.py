@@ -147,19 +147,3 @@ def test_the_check_matches_what_the_constructor_enforces():
             bytes(8), hurray.float32, [2, 2, 2], aux_buffers=buffers, layout=layout
         )
 
-
-# ── The page itself ───────────────────────────────────────────────────────────
-
-
-def test_every_python_block_in_the_layer_3_cookbook_runs():
-    import pathlib
-    import re
-
-    page = pathlib.Path(__file__).parents[2] / "docs/cookbook/layer-3-layout-descriptors.md"
-    if not page.exists():
-        pytest.skip("cookbook not present")
-
-    blocks = re.findall(r"```python\n(.*?)```", page.read_text(), re.S)
-    assert len(blocks) >= 14, "the page lost its Python tabs"
-    for index, block in enumerate(blocks):
-        exec(compile(block, f"{page.name}#python[{index}]", "exec"), {})

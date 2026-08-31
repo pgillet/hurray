@@ -195,28 +195,3 @@ def test_bool_does_not_arrive_as_an_int(tmp_path):
     assert back["flag"] is True
     assert type(back["count"]) is int and back["count"] == 1
 
-
-# ── The pages themselves ──────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize(
-    "page_name, minimum",
-    [
-        ("layer-5-streaming-interchange.md", 5),
-        ("layer-6-file-format.md", 4),
-    ],
-)
-def test_the_cookbook_pages_keep_their_python_tabs(page_name, minimum):
-    """These blocks are not executed here — they write real files and open real pipes —
-    but their presence is checked, so a page cannot quietly lose a tab."""
-    import pathlib
-    import re
-
-    page = pathlib.Path(__file__).parents[2] / "docs/cookbook" / page_name
-    if not page.exists():
-        pytest.skip("cookbook not present")
-
-    blocks = re.findall(r"```python\n(.*?)```", page.read_text(), re.S)
-    assert len(blocks) >= minimum
-    for index, block in enumerate(blocks):
-        compile(block, f"{page_name}#python[{index}]", "exec")
