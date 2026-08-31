@@ -32,7 +32,7 @@ use hurray_core::{
     QuantizationDescriptor,
 };
 
-use crate::dtype::Dtype;
+use crate::dtype::{dtype_expr, Dtype};
 use crate::errors::InvalidDescriptorError;
 
 /// Map a core quantization error to the Python exception type.
@@ -518,14 +518,26 @@ impl PerBlockAffine {
     }
 
     pub fn __repr__(&self) -> String {
-        format!(
-            "PerBlockAffine(axis={}, block_size={}, scale_buffer_index={}, \
-             zero_point_buffer_index={:?})",
-            self.inner.axis(),
-            self.inner.block_size(),
-            self.inner.scale_buffer_index(),
-            self.inner.zero_point_buffer_index()
-        )
+        // Names the constructor that rebuilds it, like PerChannelAffine above: `{:?}` on
+        // the Option printed `Some(2)`, which is Rust leaking into the Python surface.
+        // scale_type is included because it changes the wire bytes.
+        let scale_type = dtype_expr(self.inner.scale_type());
+        match self.inner.zero_point_buffer_index() {
+            Some(zp) => format!(
+                "PerBlockAffine.asymmetric(axis={}, block_size={}, scale_buffer_index={}, \
+                 zero_point_buffer_index={zp}, scale_type={scale_type})",
+                self.inner.axis(),
+                self.inner.block_size(),
+                self.inner.scale_buffer_index()
+            ),
+            None => format!(
+                "PerBlockAffine.symmetric(axis={}, block_size={}, scale_buffer_index={}, \
+                 scale_type={scale_type})",
+                self.inner.axis(),
+                self.inner.block_size(),
+                self.inner.scale_buffer_index()
+            ),
+        }
     }
 }
 

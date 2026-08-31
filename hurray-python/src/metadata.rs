@@ -340,11 +340,50 @@ impl Statistics {
     }
 
     pub fn __repr__(&self) -> String {
-        format!(
-            "Statistics(computed_mask=0x{:X})",
-            self.inner.computed_mask.0
-        )
+        // Names the statistics that are actually claimed, in constructor order, so the
+        // repr rebuilds the object. `computed_mask=0x4` was the wire encoding of that
+        // same information and said nothing about the values it gates.
+        let mut fields: Vec<String> = Vec::new();
+        let mut push = |name: &str, value: Option<String>| {
+            if let Some(v) = value {
+                fields.push(format!("{name}={v}"));
+            }
+        };
+
+        push("nnz", self.nnz().map(|v| v.to_string()));
+        push("sparsity_ratio", self.sparsity_ratio().map(float_repr));
+        push("value_min", self.value_min().map(float_repr));
+        push("value_max", self.value_max().map(float_repr));
+        push("value_abs_max", self.value_abs_max().map(float_repr));
+        push("value_mean", self.value_mean().map(float_repr));
+        push("value_stddev", self.value_stddev().map(float_repr));
+        push("nm_n", self.nm_n().map(|v| v.to_string()));
+        push("nm_m", self.nm_m().map(|v| v.to_string()));
+        push("has_nan", self.has_nan().map(bool_repr));
+        push("has_inf", self.has_inf().map(bool_repr));
+
+        format!("Statistics({})", fields.join(", "))
     }
+}
+
+/// Formats an `f64` the way Python writes one, so a repr stays a Python expression.
+///
+/// `{}` would print `1` for `1.0`, and non-finite values have no Python literal at all.
+fn float_repr(v: f64) -> String {
+    if v.is_finite() {
+        format!("{v:?}")
+    } else if v.is_nan() {
+        "float('nan')".to_string()
+    } else if v > 0.0 {
+        "float('inf')".to_string()
+    } else {
+        "float('-inf')".to_string()
+    }
+}
+
+/// Formats a `bool` the way Python writes one — Rust's `{}` gives `true`, not `True`.
+fn bool_repr(v: bool) -> String {
+    if v { "True" } else { "False" }.to_string()
 }
 
 // ── Shard ─────────────────────────────────────────────────────────────────────
