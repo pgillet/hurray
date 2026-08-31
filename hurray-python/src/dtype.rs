@@ -230,13 +230,7 @@ impl Dtype {
     // ── Dunders ──────────────────────────────────────────────────────────────
 
     fn __repr__(&self) -> String {
-        match self.inner {
-            // Every private extension type is named "extension" — the spec gives them no
-            // name, since their semantics travel out of band — so the repr carries the
-            // tag, which is the only thing that tells two of them apart.
-            ElementType::Extension(tag) => format!("hurray.Dtype('extension', tag=0x{tag:02X})"),
-            other => format!("hurray.Dtype('{}')", element_type_name(other)),
-        }
+        dtype_expr(self.inner)
     }
 
     fn __str__(&self) -> &'static str {
@@ -377,6 +371,22 @@ pub(crate) fn element_type_name(ty: ElementType) -> &'static str {
         ElementType::Complex128 => "complex128",
         // Extension types carry semantics out-of-band; no fixed string name.
         ElementType::Extension(_) => "extension",
+    }
+}
+
+/// Returns the Python expression that evaluates back to this element type.
+///
+/// Every repr that names an element type goes through here, so `eval(repr(x))` keeps
+/// working: tier 1 is aliased on the module root, tier 2 lives only on the submodule.
+/// Extension types have no constructor at all — they only arrive by decoding a
+/// descriptor — so they get the angle-bracket form Python uses for values no
+/// expression can rebuild.
+pub(crate) fn dtype_expr(ty: ElementType) -> String {
+    match ty {
+        // The tag is the only thing that tells two extension types apart.
+        ElementType::Extension(tag) => format!("<hurray.Dtype extension tag=0x{tag:02X}>"),
+        other if other.tier() == 1 => format!("hurray.{}", element_type_name(other)),
+        other => format!("hurray.dtype.{}", element_type_name(other)),
     }
 }
 

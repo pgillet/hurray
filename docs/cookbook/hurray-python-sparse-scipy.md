@@ -42,7 +42,7 @@ m.indptr  = m.indptr.astype(np.uint64)
 
 sparse = hurray.from_scipy(m)
 print(sparse)
-# hurray.Tensor(layout='csr', shape=(3, 3), nnz=4, dtype=hurray.Dtype('float32'))
+# hurray.Tensor(layout='csr', shape=(3, 3), nnz=5, dtype=float32)
 ```
 
 ## Accessing component views
