@@ -329,9 +329,34 @@ impl Dtype {
 /// assert hurray.buffer_size_bytes(hurray.dtype.float6_e2m3, 100) == 75  # ceil(100/4)*3
 /// assert hurray.buffer_size_bytes(hurray.float32, 0) == 0
 /// ```
+///
+/// ## Errors
+///
+/// - `hurray.InvalidDescriptorError` — `dtype` is a private extension type. Its width is
+///   not in the dtype but in the descriptor's extension type section, so the answer lives
+///   on `hurray.ExtensionType.buffer_size_bytes` instead:
+///
+/// ```python
+/// import hurray
+///
+/// try:
+///     hurray.buffer_size_bytes(hurray.Dtype.from_tag(0xF2), 10)
+/// except hurray.InvalidDescriptorError:
+///     pass
+///
+/// assert hurray.ExtensionType(bit_width=24).buffer_size_bytes(10) == 30
+/// ```
 #[pyfunction]
-pub fn buffer_size_bytes(dtype: &Dtype, count: u64) -> u64 {
-    hurray_core::buffer_size_bytes(dtype.inner, count)
+pub fn buffer_size_bytes(dtype: &Dtype, count: u64) -> PyResult<u64> {
+    // Core returns 0 for an extension type, which as an answer to "how many bytes?" is
+    // wrong rather than unknown — and silently sizes a buffer to nothing.
+    if matches!(dtype.inner, ElementType::Extension(_)) {
+        return Err(InvalidDescriptorError::new_err(
+            "an extension type's width lives in its ExtensionType section, not its dtype: \
+             use hurray.ExtensionType(...).buffer_size_bytes(count)",
+        ));
+    }
+    Ok(hurray_core::buffer_size_bytes(dtype.inner, count))
 }
 
 // ── Name ↔ ElementType helpers ────────────────────────────────────────────────
@@ -378,13 +403,11 @@ pub(crate) fn element_type_name(ty: ElementType) -> &'static str {
 ///
 /// Every repr that names an element type goes through here, so `eval(repr(x))` keeps
 /// working: tier 1 is aliased on the module root, tier 2 lives only on the submodule.
-/// Extension types have no constructor at all — they only arrive by decoding a
-/// descriptor — so they get the angle-bracket form Python uses for values no
-/// expression can rebuild.
+/// An extension type has no name to look up and no module alias, so it prints as the
+/// call that does build one: the tag is the only thing that tells two of them apart.
 pub(crate) fn dtype_expr(ty: ElementType) -> String {
     match ty {
-        // The tag is the only thing that tells two extension types apart.
-        ElementType::Extension(tag) => format!("<hurray.Dtype extension tag=0x{tag:02X}>"),
+        ElementType::Extension(tag) => format!("hurray.Dtype.from_tag(0x{tag:02X})"),
         other if other.tier() == 1 => format!("hurray.{}", element_type_name(other)),
         other => format!("hurray.dtype.{}", element_type_name(other)),
     }

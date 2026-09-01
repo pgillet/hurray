@@ -82,8 +82,11 @@ impl ExtensionTypeDescriptor {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ExtensionTypePackingInvalid`] if the `bit_width` /
-    /// `packing_factor` combination violates the spec constraint.
+    /// - [`Error::ExtensionTypePackingInvalid`] if the `bit_width` / `packing_factor`
+    ///   combination violates the spec constraint.
+    /// - [`Error::ExtensionTypeFieldInvalid`] if a field carries a value the spec
+    ///   forbids for its family — see [`Self::buffer_size_bytes`] for the split
+    ///   between `is_signed` and `sign_bits`.
     ///
     /// # Examples
     ///
@@ -98,6 +101,12 @@ impl ExtensionTypeDescriptor {
     /// assert!(matches!(
     ///     ExtensionTypeDescriptor::new(3, 1, false, false, 0, 0, 0, 0, false, false),
     ///     Err(Error::ExtensionTypePackingInvalid { .. })
+    /// ));
+    ///
+    /// // Invalid: a float carries its sign in `sign_bits`, never in `is_signed`.
+    /// assert!(matches!(
+    ///     ExtensionTypeDescriptor::new(16, 1, true, true, 1, 5, 10, 15, true, false),
+    ///     Err(Error::ExtensionTypeFieldInvalid { .. })
     /// ));
     /// ```
     #[allow(clippy::too_many_arguments)]
@@ -114,6 +123,14 @@ impl ExtensionTypeDescriptor {
         has_inf: bool,
     ) -> Result<Self> {
         validate_packing(bit_width, packing_factor)?;
+        validate_fields(
+            is_float,
+            is_signed,
+            sign_bits,
+            exponent_bits,
+            mantissa_bits,
+            exponent_bias,
+        )?;
         Ok(Self {
             bit_width,
             packing_factor,
@@ -126,6 +143,45 @@ impl ExtensionTypeDescriptor {
             has_nan,
             has_inf,
         })
+    }
+
+    /// The number of bytes a buffer needs to hold `element_count` elements of this type.
+    ///
+    /// This is what the section exists for: the spec requires a reader to size buffers
+    /// from `bit_width` and `packing_factor` *even if it does not interpret the numeric
+    /// semantics of the type* (`metadata.md` § Extension Type Section). The generic
+    /// [`buffer_size_bytes`][crate::buffer_size_bytes] cannot do it — an extension type
+    /// reports `bit_width == 0` as its sentinel, so it has nothing to compute from.
+    ///
+    /// # Sign fields
+    ///
+    /// A float carries its sign in `sign_bits`, never in `is_signed`, which describes
+    /// integer types only. `float8_e8m0`-shaped types — 8 exponent bits, no sign, no
+    /// mantissa — are therefore expressible: `is_float = true`, `sign_bits = 0`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::descriptor::ExtensionTypeDescriptor;
+    ///
+    /// // 16-bit whole-byte type: 2 bytes per element.
+    /// let ext = ExtensionTypeDescriptor::new(16, 1, true, false, 1, 5, 10, 15, true, false)?;
+    /// assert_eq!(ext.buffer_size_bytes(100), 200);
+    ///
+    /// // 4-bit sub-byte type: two elements per byte, rounding up.
+    /// let sub = ExtensionTypeDescriptor::new(4, 2, false, false, 0, 0, 0, 0, false, false)?;
+    /// assert_eq!(sub.buffer_size_bytes(7), 4);
+    /// assert_eq!(sub.buffer_size_bytes(0), 0);
+    /// # Ok::<(), hurray_core::Error>(())
+    /// ```
+    pub fn buffer_size_bytes(&self, element_count: u64) -> u64 {
+        if self.bit_width >= 8 {
+            // Whole-byte type: packing_factor is 1, so the width divides exactly.
+            element_count * (self.bit_width as u64 / 8)
+        } else {
+            // Sub-byte: the packing rule guarantees packing_factor elements per byte.
+            element_count.div_ceil(self.packing_factor as u64)
+        }
     }
 
     /// Encodes this descriptor into `w` as an exact [`EXT_TYPE_BYTE_LEN`]-byte block.
@@ -197,6 +253,42 @@ impl ExtensionTypeDescriptor {
             has_inf,
         })
     }
+}
+
+/// Validates the per-family field rules from the spec's field table.
+///
+/// Producer-side only: [`ExtensionTypeDescriptor::decode_from`] does not call this.
+/// The spec mandates reader rejection for the packing constraints alone, so a reader
+/// that refused these too would reject descriptors a conforming reader must accept.
+fn validate_fields(
+    is_float: bool,
+    is_signed: bool,
+    sign_bits: u8,
+    exponent_bits: u8,
+    mantissa_bits: u8,
+    exponent_bias: u32,
+) -> Result<()> {
+    if sign_bits > 1 {
+        return Err(Error::ExtensionTypeFieldInvalid {
+            reason: "sign_bits must be 0 or 1",
+        });
+    }
+    if is_float {
+        // A float's sign lives in sign_bits; is_signed describes integers only, so
+        // setting both would give a reader two answers to the same question.
+        if is_signed {
+            return Err(Error::ExtensionTypeFieldInvalid {
+                reason: "is_signed must be false for float types; a float's sign is carried \
+                         by sign_bits",
+            });
+        }
+    } else if sign_bits != 0 || exponent_bits != 0 || mantissa_bits != 0 || exponent_bias != 0 {
+        return Err(Error::ExtensionTypeFieldInvalid {
+            reason: "sign_bits, exponent_bits, mantissa_bits and exponent_bias must be 0 \
+                     for integer types",
+        });
+    }
+    Ok(())
 }
 
 /// Validates the `bit_width` / `packing_factor` pairing per spec rules.
@@ -374,5 +466,118 @@ mod tests {
         let mut w = ByteWriter::new();
         sample_ext().encode_into(&mut w);
         assert_eq!(w.len(), EXT_TYPE_BYTE_LEN);
+    }
+
+    // ── Field rules ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn float_with_is_signed_rejected() {
+        let err =
+            ExtensionTypeDescriptor::new(16, 1, true, true, 1, 5, 10, 15, true, false).unwrap_err();
+        assert!(matches!(err, Error::ExtensionTypeFieldInvalid { .. }));
+    }
+
+    #[test]
+    fn unsigned_float_accepted() {
+        // float8_e8m0-shaped: 8 exponent bits, no sign, no mantissa. The reason
+        // is_signed is not the float sign field.
+        let ext =
+            ExtensionTypeDescriptor::new(8, 1, true, false, 0, 8, 0, 127, true, false).unwrap();
+        assert_eq!(ext.sign_bits, 0);
+        assert!(!ext.is_signed);
+    }
+
+    #[test]
+    fn signed_float_accepted() {
+        let ext =
+            ExtensionTypeDescriptor::new(16, 1, true, false, 1, 5, 10, 15, true, true).unwrap();
+        assert_eq!(ext.sign_bits, 1);
+    }
+
+    #[test]
+    fn sign_bits_above_one_rejected() {
+        let err = ExtensionTypeDescriptor::new(16, 1, true, false, 2, 5, 10, 15, true, false)
+            .unwrap_err();
+        assert!(matches!(err, Error::ExtensionTypeFieldInvalid { .. }));
+    }
+
+    #[test]
+    fn integer_with_float_fields_rejected() {
+        for ext in [
+            ExtensionTypeDescriptor::new(8, 1, false, true, 1, 0, 0, 0, false, false),
+            ExtensionTypeDescriptor::new(8, 1, false, true, 0, 5, 0, 0, false, false),
+            ExtensionTypeDescriptor::new(8, 1, false, true, 0, 0, 10, 0, false, false),
+            ExtensionTypeDescriptor::new(8, 1, false, true, 0, 0, 0, 15, false, false),
+        ] {
+            assert!(matches!(
+                ext.unwrap_err(),
+                Error::ExtensionTypeFieldInvalid { .. }
+            ));
+        }
+    }
+
+    #[test]
+    fn signed_integer_accepted() {
+        let ext =
+            ExtensionTypeDescriptor::new(24, 1, false, true, 0, 0, 0, 0, false, false).unwrap();
+        assert!(ext.is_signed);
+    }
+
+    #[test]
+    fn decode_does_not_apply_producer_field_rules() {
+        // The spec mandates reader rejection for the packing constraints only, so a
+        // descriptor a producer may not write is still one a reader must accept.
+        let mut w = ByteWriter::new();
+        w.write_u32_le(16);
+        w.write_u8(1);
+        w.write_u8(1); // is_float
+        w.write_u8(1); // is_signed — a producer may not set this on a float
+        w.write_u8(1);
+        w.write_u8(5);
+        w.write_u8(10);
+        w.write_zeros(2);
+        w.write_u32_le(15);
+        w.write_u8(1);
+        w.write_u8(0);
+        w.write_zeros(2);
+        let bytes = w.into_vec();
+        let mut c = ByteCursor::new(&bytes, bytes.len());
+        let decoded = ExtensionTypeDescriptor::decode_from(&mut c).unwrap();
+        assert!(decoded.is_signed);
+    }
+
+    // ── Buffer sizing ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn buffer_size_whole_byte() {
+        let ext = sample_ext(); // 16-bit
+        assert_eq!(ext.buffer_size_bytes(0), 0);
+        assert_eq!(ext.buffer_size_bytes(1), 2);
+        assert_eq!(ext.buffer_size_bytes(100), 200);
+    }
+
+    #[test]
+    fn buffer_size_sub_byte_rounds_up() {
+        let four =
+            ExtensionTypeDescriptor::new(4, 2, false, false, 0, 0, 0, 0, false, false).unwrap();
+        assert_eq!(four.buffer_size_bytes(7), 4);
+        let two =
+            ExtensionTypeDescriptor::new(2, 4, false, false, 0, 0, 0, 0, false, false).unwrap();
+        assert_eq!(two.buffer_size_bytes(5), 2);
+        let one =
+            ExtensionTypeDescriptor::new(1, 8, false, false, 0, 0, 0, 0, false, false).unwrap();
+        assert_eq!(one.buffer_size_bytes(9), 2);
+    }
+
+    #[test]
+    fn buffer_size_matches_generic_helper_for_equivalent_width() {
+        // An 8-bit extension type sizes like any other 8-bit type; the generic helper
+        // cannot say so itself, which is why this method exists.
+        let ext =
+            ExtensionTypeDescriptor::new(8, 1, false, true, 0, 0, 0, 0, false, false).unwrap();
+        assert_eq!(
+            ext.buffer_size_bytes(37),
+            crate::buffer_size_bytes(crate::ElementType::Int8, 37)
+        );
     }
 }

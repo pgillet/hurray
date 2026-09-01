@@ -41,6 +41,7 @@ RUN: dict[str, frozenset[str]] = {
     "composite-tensors.md": frozenset(),
     "converting-external-quantized-tensors.md": frozenset(),
     # torch, jax and cupy are each shown handing a buffer across; CI installs none.
+    "extension-types.md": frozenset(),
     "framework-interop.md": frozenset({"torch", "jax", "cupy"}),
     "hurray-inspect-cli.md": frozenset(),
     "hurray-python-construction.md": frozenset(),

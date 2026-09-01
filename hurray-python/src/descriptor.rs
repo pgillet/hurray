@@ -261,6 +261,38 @@ impl Descriptor {
         }
     }
 
+    /// The extension type section, or `None`.
+    ///
+    /// Present exactly when `dtype` is a private extension type (tag `0xF0`–`0xFE`), which
+    /// is the only way to learn an extension type's width — the `Dtype` itself reports 0.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.Tensor(bytes(16), hurray.float32, [4]).descriptor.extension_type is None
+    ///
+    /// private = hurray.Dtype.from_tag(0xF2)
+    /// tensor = hurray.Tensor(
+    ///     bytes(12), private, [4],
+    ///     extension_type=hurray.ExtensionType(bit_width=24, is_signed=True),
+    /// )
+    /// assert tensor.descriptor.extension_type.bit_width == 24
+    /// ```
+    #[getter]
+    pub fn extension_type(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<Option<Py<crate::metadata::ExtensionType>>> {
+        match &self.inner.extension_type {
+            Some(ext) => {
+                Py::new(py, crate::metadata::ExtensionType { inner: ext.clone() }).map(Some)
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Byte offset from the start of buffer 0 to logical element `[0, …, 0]`.
     ///
     /// ## Examples

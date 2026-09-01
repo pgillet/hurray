@@ -767,6 +767,7 @@ mod tests {
                 Some(quant.bind(py).as_any()),
                 None,
                 None,
+                None,
             )
             .unwrap();
 

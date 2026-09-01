@@ -243,7 +243,8 @@ assert!(matches!(result, Err(Error::EmptyBufferTable)));
 // Extension type flag must be consistent with the element type tag.
 // Float32 (tag 0x03) is not an extension type — providing ExtensionTypeDescriptor is an error.
 use hurray_core::descriptor::ExtensionTypeDescriptor;
-let ext = ExtensionTypeDescriptor::new(8, 1, false, false, 1, 0, 7, 0, false, false).unwrap();
+// An 8-bit float, 1-4-3. A float's sign is sign_bits; is_signed stays false.
+let ext = ExtensionTypeDescriptor::new(8, 1, true, false, 1, 4, 3, 7, true, false).unwrap();
 let result = TensorDescriptor::new(
     1, 0, ElementType::Float32, shape.clone(), 0,
     LayoutDescriptor::RowMajor, vec![buffer.clone()],
