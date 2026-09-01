@@ -19,8 +19,9 @@ use pyo3::types::{PyBytes, PyTuple};
 use pyo3::IntoPyObjectExt;
 
 use hurray_core::{
-    buffer_size_bytes, BufferHandle, LayoutDescriptor, Shape, SyncMode, TensorDescriptor,
-    DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR, DYNAMIC, MIN_BUFFER_ALIGNMENT,
+    buffer_size_bytes, BufferHandle, ElementType, LayoutDescriptor, Shape, SyncMode,
+    TensorDescriptor, DESCRIPTOR_VERSION_MAJOR, DESCRIPTOR_VERSION_MINOR, DYNAMIC,
+    MIN_BUFFER_ALIGNMENT,
 };
 
 use crate::buffer::BufferStore;
@@ -106,7 +107,17 @@ impl Tensor {
     /// A layout **string** is not accepted: it could not carry `nnz` or `strides`,
     /// so it can only produce a descriptor that is wrong.
     ///
+    /// ## Extension types
+    ///
+    /// A dtype in the private extension range (`0xF0`–`0xFE`) must be accompanied by
+    /// `extension_type=hurray.ExtensionType(...)`, and no other dtype may carry one. The
+    /// section is where an extension type's width lives, so it is also what sizes the
+    /// buffer check.
+    ///
     /// ## Errors
+    ///
+    /// - `hurray.InvalidDescriptorError` — an extension dtype without `extension_type=`,
+    ///   or `extension_type=` with a dtype that is not one.
     ///
     /// - `hurray.InvalidDescriptorError` — negative dimension in `shape`.
     /// - `hurray.BufferError` — buffer smaller than required by `dtype` + `shape`.
@@ -147,6 +158,7 @@ impl Tensor {
         quantization = None,
         statistics = None,
         shard = None,
+        extension_type = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -160,6 +172,7 @@ impl Tensor {
         quantization: Option<&Bound<'_, PyAny>>,
         statistics: Option<&Bound<'_, crate::metadata::Statistics>>,
         shard: Option<&Bound<'_, crate::metadata::Shard>>,
+        extension_type: Option<&Bound<'_, crate::metadata::ExtensionType>>,
     ) -> PyResult<Self> {
         // ── 1. Resolve device ────────────────────────────────────────────────
         let device_py: Py<Device> = match device {
@@ -213,6 +226,30 @@ impl Tensor {
             ));
         };
 
+        // ── 3b. dtype ↔ extension type must agree ────────────────────────────
+        // Checked here rather than left to TensorDescriptor::new so the message names
+        // the argument the caller passed, not the HAS_EXTENSION_TYPE wire flag they
+        // never set.
+        let ext_desc = extension_type.map(|e| e.get().inner.clone());
+        let is_ext_dtype = matches!(dtype.get().inner, ElementType::Extension(_));
+        match (is_ext_dtype, ext_desc.is_some()) {
+            (true, false) => {
+                return Err(InvalidDescriptorError::new_err(format!(
+                    "dtype 0x{:02X} is a private extension type, which must describe itself: \
+                     pass extension_type=hurray.ExtensionType(...)",
+                    dtype.get().inner.tag()
+                )))
+            }
+            (false, true) => {
+                return Err(InvalidDescriptorError::new_err(format!(
+                    "extension_type= was given but dtype {} is not a private extension type \
+                     (tag 0xF0-0xFE); the section describes the dtype and cannot stand alone",
+                    dtype.get().name()
+                )))
+            }
+            _ => {}
+        }
+
         // ── 4. Validate buffer size ──────────────────────────────────────────
         // Only a dense layout stores one element per logical index. A sparse or
         // indirect layout's buffer 0 holds nnz values or a page pool instead, and its
@@ -222,7 +259,13 @@ impl Tensor {
             // — 0 makes the check vacuous, which is the only honest option: the whole
             // point of a dynamic dimension is that the extent is not known yet.
             let element_count = hurray_shape.element_count().unwrap_or(0);
-            let expected = buffer_size_bytes(dtype.get().inner, element_count);
+            // An extension dtype reports bit_width 0, so the generic helper would size
+            // every such tensor at 0 bytes and wave through an empty buffer. The width
+            // lives in the section instead — which is what it is for.
+            let expected = match &ext_desc {
+                Some(ext) => ext.buffer_size_bytes(element_count),
+                None => buffer_size_bytes(dtype.get().inner, element_count),
+            };
             if (buf_bytes.len() as u64) < expected {
                 return Err(BufferError::new_err(format!(
                     "buffer too small: need at least {expected} bytes for {} elements of {}, \
@@ -320,7 +363,7 @@ impl Tensor {
             quant_desc.map(|q| q.encode_to_vec()),
             shard.map(|s| s.get().inner.clone()),
             statistics.map(|s| s.get().inner.clone()),
-            None, // no extension type
+            ext_desc,
         )
         .map_err(|e| InvalidDescriptorError::new_err(format!("invalid tensor descriptor: {e}")))?;
 
@@ -850,6 +893,31 @@ impl Tensor {
         match self.descriptor.shard.as_ref() {
             None => Ok(None),
             Some(s) => Py::new(py, crate::metadata::Shard { inner: s.clone() }).map(Some),
+        }
+    }
+
+    /// The extension type section, or `None` for a standard dtype.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// t = hurray.Tensor(
+    ///     bytes(12), hurray.Dtype.from_tag(0xF2), [4],
+    ///     extension_type=hurray.ExtensionType(bit_width=24, is_signed=True),
+    /// )
+    /// assert t.extension_type.bit_width == 24
+    /// assert hurray.Tensor(bytes(16), hurray.float32, [4]).extension_type is None
+    /// ```
+    #[getter]
+    pub fn extension_type(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<Option<Py<crate::metadata::ExtensionType>>> {
+        match self.descriptor.extension_type.as_ref() {
+            None => Ok(None),
+            Some(e) => Py::new(py, crate::metadata::ExtensionType { inner: e.clone() }).map(Some),
         }
     }
 
@@ -1759,6 +1827,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .expect("construction should succeed");
 
@@ -1803,6 +1872,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .expect("int4 construction should succeed");
             assert_eq!(tensor.size(), Some(8));
@@ -1835,6 +1905,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             );
             assert!(result.is_err());
             assert!(result.unwrap_err().is_instance_of::<BufferError>(py));
@@ -1860,6 +1931,7 @@ pub(crate) mod tests {
                 py_buf.as_any(),
                 dtype.bind(py),
                 vec![Some(-1), Some(3)],
+                None,
                 None,
                 None,
                 None,
@@ -1903,6 +1975,7 @@ pub(crate) mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .unwrap(),
             )
@@ -1935,6 +2008,7 @@ pub(crate) mod tests {
                     py_buf.as_any(),
                     dtype.bind(py),
                     vec![Some(2), Some(3)],
+                    None,
                     None,
                     None,
                     None,
@@ -1987,6 +2061,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             assert!(tensor.t().is_err());
@@ -2019,6 +2094,7 @@ pub(crate) mod tests {
                 py_buf.as_any(),
                 dtype.bind(py),
                 vec![Some(2), Some(3)],
+                None,
                 None,
                 None,
                 None,
@@ -2065,6 +2141,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             let bound = Py::new(py, tensor).unwrap().into_bound(py);
@@ -2097,6 +2174,7 @@ pub(crate) mod tests {
                 py_buf.as_any(),
                 dtype.bind(py),
                 vec![Some(2), Some(3)],
+                None,
                 None,
                 None,
                 None,
@@ -2140,6 +2218,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             assert_eq!(tensor.device_py.borrow(py).kind(), "cpu");
@@ -2175,6 +2254,7 @@ pub(crate) mod tests {
                 dtype.bind(py),
                 vec![Some(2), Some(3)],
                 Some(cuda_device),
+                None,
                 None,
                 None,
                 None,
@@ -2263,6 +2343,7 @@ pub(crate) mod tests {
             Some(quant.bind(py).as_any()),
             None,
             None,
+            None,
         )
     }
 
@@ -2332,6 +2413,7 @@ pub(crate) mod tests {
                 Some(quant.bind(py).as_any()),
                 None,
                 None,
+                None,
             )
             .unwrap_err();
             assert!(
@@ -2389,6 +2471,7 @@ pub(crate) mod tests {
                 None,
                 Some(stats.bind(py)),
                 Some(shard.bind(py)),
+                None,
             )
             .unwrap();
 
@@ -2433,6 +2516,7 @@ pub(crate) mod tests {
                 Some(quant.bind(py).as_any()),
                 None,
                 None,
+                None,
             )
             .unwrap();
             // Inline scale and zero point: still a single-buffer tensor.
@@ -2464,6 +2548,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 Some(not_a_scheme.as_any()),
+                None,
                 None,
                 None,
             )
@@ -2526,6 +2611,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             assert!(tensor.quantization(py).unwrap().is_none());
@@ -2582,6 +2668,7 @@ pub(crate) mod tests {
                 None,
                 Some(stats.bind(py)),
                 Some(shard.bind(py)),
+                None,
             )
             .unwrap();
 
@@ -2632,6 +2719,7 @@ pub(crate) mod tests {
                 Some(scheme.bind(py)),
                 None,
                 None,
+                None,
             )
             .unwrap();
 
@@ -2664,6 +2752,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             )
             .unwrap();
             let err = tensor.__hash__().unwrap_err();
@@ -2690,6 +2779,7 @@ pub(crate) mod tests {
                 py_buf.as_any(),
                 dtype.bind(py),
                 vec![Some(2), Some(3)],
+                None,
                 None,
                 None,
                 None,
@@ -2734,6 +2824,7 @@ pub(crate) mod tests {
                     None,
                     None,
                     None,
+                    None,
                 )
                 .unwrap(),
             )
@@ -2768,6 +2859,7 @@ pub(crate) mod tests {
                     py_buf.as_any(),
                     dtype.bind(py),
                     vec![Some(8)],
+                    None,
                     None,
                     None,
                     None,
@@ -2815,6 +2907,7 @@ pub(crate) mod tests {
                 None,
                 None,
                 None,
+                None,
             );
         });
     }
@@ -2838,6 +2931,7 @@ pub(crate) mod tests {
                 py_buf.as_any(),
                 dtype.bind(py),
                 vec![Some(2), Some(3)],
+                None,
                 None,
                 None,
                 None,

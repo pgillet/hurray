@@ -55,9 +55,23 @@ EXPRESSION = {
         value_mean=0.5, value_stddev=0.25, has_nan=False, has_inf=True
     ),
     "Shard": hurray.Shard([1024, 512], [512, 0]),
+    "ExtensionType.integer": hurray.ExtensionType(bit_width=24, is_signed=True),
+    "ExtensionType.float": hurray.ExtensionType(
+        bit_width=16,
+        is_float=True,
+        sign_bits=1,
+        exponent_bits=5,
+        mantissa_bits=10,
+        exponent_bias=15,
+        has_nan=True,
+        has_inf=True,
+    ),
+    # Sub-byte: packing_factor is derived, so the repr must not print it.
+    "ExtensionType.sub_byte": hurray.ExtensionType(bit_width=4),
     "Device": hurray.Device(kind="cpu"),
     "Dtype.tier1": hurray.float32,
     "Dtype.tier2": hurray.dtype.int4,
+    "Dtype.extension": hurray.Dtype.from_tag(0xF2),
     "RowMajorLayout": hurray.RowMajorLayout(),
     "ColMajorLayout": hurray.ColMajorLayout(),
     "StridedLayout": hurray.StridedLayout([4, 1]),

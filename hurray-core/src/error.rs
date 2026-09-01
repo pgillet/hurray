@@ -479,6 +479,13 @@ pub enum Error {
         packing_factor: u8,
     },
 
+    /// An extension type field carries a value the spec forbids for its family.
+    #[error("extension type field invalid: {reason}")]
+    ExtensionTypeFieldInvalid {
+        /// Which rule was violated, in the spec's own terms.
+        reason: &'static str,
+    },
+
     /// `shard_offset[k] + shape[k] > parent_shape[k]`.
     #[error("shard out of bounds on dim {dim}: offset {offset} + size {size} > parent {parent}")]
     ShardOutOfBounds {

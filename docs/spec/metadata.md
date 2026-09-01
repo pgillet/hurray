@@ -388,6 +388,13 @@ The extension type descriptor is 20 bytes:
 | 17 | `has_inf` | `uint8` | `0x01` if infinity is representable (float types only). |
 | 18 | `_reserved2` | `uint8[2]` | MUST be `0x00`. |
 
+> **Note (non-normative):** The sign of a *float* extension type is carried by `sign_bits`;
+> `is_signed` applies to integer types only. Requiring `is_signed` to be `0x00` for float
+> types does not mean float extension types are unsigned — it means a reader has exactly one
+> field to consult. A signed float sets `is_float = 0x01` and `sign_bits = 0x01`; an unsigned
+> float, such as a private analogue of the exponent-only `float8_e8m0` (`0x42`), sets
+> `is_float = 0x01` and `sign_bits = 0x00`.
+
 Sub-byte element widths that are not a power of two (notably `6`-bit) are reserved to the built-in type tag space. Implementors requiring an interchange-portable non-power-of-two sub-byte type MUST request a built-in tag assignment through the specification governance process rather than encoding the type in the private extension range. The extension descriptor's whole-byte and power-of-two sub-byte width restriction ensures that buffer-size computation remains a single integer formula (`ceil(N / packing_factor)` for sub-byte, `N * (bit_width / 8)` for whole-byte) without rational arithmetic.
 
 > **Note (non-normative):** The 6-bit `float6_e2m3` (`0x44`) and `float6_e3m2` (`0x45`) types are built-in (Tier 2) and use a dedicated 4-elements-per-3-bytes packing defined in `element-types.md`. Their packing rule is not expressible as `8 / bit_width` and is therefore not delegable to the generic extension descriptor. The extension descriptor is designed for private, implementation-defined types whose layout fits the simple "elements per byte" model; richer packings remain the prerogative of the standardized type system.

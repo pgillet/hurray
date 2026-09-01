@@ -126,7 +126,7 @@ is required at any conformance level.
 | Quantization | ✅ | ✅ | ❌ |
 | Shard | ✅ | ✅ | ❌ |
 | Statistics | ✅ | ✅ | ❌ |
-| Extension type (`0xF0`–`0xFE`) | ✅ | ❌ | ❌ |
+| Extension type (`0xF0`–`0xFE`) | ✅ | ✅ | ❌ |
 | Composite member | ✅ | ✅ | ❌ |
 
 ## Streaming and File Interchange

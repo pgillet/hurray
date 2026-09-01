@@ -1,8 +1,10 @@
-//! Python bindings for the optional descriptor sections: statistics and shard.
+//! Python bindings for the optional descriptor sections: statistics, shard, and
+//! extension type.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyModule, PyTuple};
 
+use hurray_core::descriptor::ExtensionTypeDescriptor as CoreExtType;
 use hurray_core::{ShardDescriptor as CoreShard, Statistics as CoreStats, StatisticsMask};
 
 use crate::errors::InvalidDescriptorError;
@@ -464,10 +466,331 @@ impl Shard {
     }
 }
 
+// ── ExtensionType ─────────────────────────────────────────────────────────────
+
+/// Describes a private extension element type — one whose tag is in `0xF0`–`0xFE`.
+///
+/// The format reserves that tag range for types it does not standardize, and requires
+/// every descriptor using one to carry this section. It is what lets a consumer that has
+/// never heard of your type still size its buffers: `bit_width` and `packing_factor` are
+/// enough to compute bytes without understanding a single value.
+///
+/// A tensor whose dtype is an extension tag MUST carry one, and a tensor whose dtype is
+/// anything else MUST NOT — `hurray.Tensor` enforces both directions.
+///
+/// ## Sign fields
+///
+/// A float carries its sign in `sign_bits`, never in `is_signed`, which describes integer
+/// types only. An unsigned float — the shape of the built-in exponent-only `float8_e8m0` —
+/// is therefore expressible: `is_float=True, sign_bits=0`.
+///
+/// `packing_factor` is not an argument. The spec leaves exactly one legal value for a
+/// given `bit_width`, so it is derived rather than restated.
+///
+/// ## Errors
+///
+/// - `hurray.InvalidDescriptorError` — `bit_width` is 0, or is sub-byte and not 1, 2 or 4;
+///   `is_signed` is set on a float; `sign_bits` exceeds 1; or a float-only field is set on
+///   an integer type.
+///
+/// ## Examples (Python)
+///
+/// ```python
+/// import hurray
+///
+/// # A private 24-bit signed integer type.
+/// ext = hurray.ExtensionType(bit_width=24, is_signed=True)
+/// assert ext.packing_factor == 1
+/// assert ext.buffer_size_bytes(10) == 30
+///
+/// # A private 4-bit type: two elements per byte, derived.
+/// packed = hurray.ExtensionType(bit_width=4)
+/// assert packed.packing_factor == 2
+/// assert packed.buffer_size_bytes(7) == 4
+/// ```
+#[pyclass(name = "ExtensionType", frozen)]
+#[derive(Debug)]
+pub struct ExtensionType {
+    pub(crate) inner: CoreExtType,
+}
+
+#[pymethods]
+impl ExtensionType {
+    /// Describe an extension element type.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// # A private 16-bit float: 1 sign bit, 5 exponent, 10 mantissa.
+    /// half = hurray.ExtensionType(
+    ///     bit_width=16, is_float=True,
+    ///     sign_bits=1, exponent_bits=5, mantissa_bits=10, exponent_bias=15,
+    ///     has_nan=True, has_inf=True,
+    /// )
+    /// assert half.is_float is True
+    /// assert half.is_signed is False        # a float's sign is sign_bits
+    /// ```
+    #[new]
+    #[pyo3(signature = (
+        bit_width,
+        *,
+        is_float = false,
+        is_signed = false,
+        sign_bits = 0,
+        exponent_bits = 0,
+        mantissa_bits = 0,
+        exponent_bias = 0,
+        has_nan = false,
+        has_inf = false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        bit_width: u32,
+        is_float: bool,
+        is_signed: bool,
+        sign_bits: u8,
+        exponent_bits: u8,
+        mantissa_bits: u8,
+        exponent_bias: u32,
+        has_nan: bool,
+        has_inf: bool,
+    ) -> PyResult<Self> {
+        let packing_factor = derive_packing_factor(bit_width)?;
+        let inner = CoreExtType::new(
+            bit_width,
+            packing_factor,
+            is_float,
+            is_signed,
+            sign_bits,
+            exponent_bits,
+            mantissa_bits,
+            exponent_bias,
+            has_nan,
+            has_inf,
+        )
+        .map_err(|e| InvalidDescriptorError::new_err(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// Bit width of one element.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// assert hurray.ExtensionType(bit_width=24).bit_width == 24
+    /// ```
+    #[getter]
+    pub fn bit_width(&self) -> u32 {
+        self.inner.bit_width
+    }
+
+    /// Elements packed per byte — `1` for whole-byte widths, `8 / bit_width` below that.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// assert hurray.ExtensionType(bit_width=8).packing_factor == 1
+    /// assert hurray.ExtensionType(bit_width=1).packing_factor == 8
+    /// ```
+    #[getter]
+    pub fn packing_factor(&self) -> u8 {
+        self.inner.packing_factor
+    }
+
+    /// Whether the type is floating-point.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// assert hurray.ExtensionType(bit_width=8).is_float is False
+    /// ```
+    #[getter]
+    pub fn is_float(&self) -> bool {
+        self.inner.is_float
+    }
+
+    /// Whether the type is a signed *integer*. Always `False` for a float — see `sign_bits`.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// assert hurray.ExtensionType(bit_width=8, is_signed=True).is_signed is True
+    /// ```
+    #[getter]
+    pub fn is_signed(&self) -> bool {
+        self.inner.is_signed
+    }
+
+    /// Number of sign bits — `1` for a signed float, `0` for an unsigned one.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// # An exponent-only float, the float8_e8m0 shape: no sign, no mantissa.
+    /// scale = hurray.ExtensionType(
+    ///     bit_width=8, is_float=True, exponent_bits=8, exponent_bias=127,
+    /// )
+    /// assert scale.sign_bits == 0
+    /// ```
+    #[getter]
+    pub fn sign_bits(&self) -> u8 {
+        self.inner.sign_bits
+    }
+
+    /// Number of exponent bits, for float types.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// half = hurray.ExtensionType(
+    ///     bit_width=16, is_float=True, sign_bits=1, exponent_bits=5, mantissa_bits=10,
+    /// )
+    /// assert half.exponent_bits == 5
+    /// ```
+    #[getter]
+    pub fn exponent_bits(&self) -> u8 {
+        self.inner.exponent_bits
+    }
+
+    /// Number of mantissa bits, for float types.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// half = hurray.ExtensionType(
+    ///     bit_width=16, is_float=True, sign_bits=1, exponent_bits=5, mantissa_bits=10,
+    /// )
+    /// assert half.mantissa_bits == 10
+    /// ```
+    #[getter]
+    pub fn mantissa_bits(&self) -> u8 {
+        self.inner.mantissa_bits
+    }
+
+    /// Exponent bias, for float types.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// half = hurray.ExtensionType(
+    ///     bit_width=16, is_float=True, sign_bits=1, exponent_bits=5, mantissa_bits=10,
+    ///     exponent_bias=15,
+    /// )
+    /// assert half.exponent_bias == 15
+    /// ```
+    #[getter]
+    pub fn exponent_bias(&self) -> u32 {
+        self.inner.exponent_bias
+    }
+
+    /// Whether NaN is representable.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// assert hurray.ExtensionType(bit_width=8).has_nan is False
+    /// ```
+    #[getter]
+    pub fn has_nan(&self) -> bool {
+        self.inner.has_nan
+    }
+
+    /// Whether infinity is representable.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// assert hurray.ExtensionType(bit_width=8).has_inf is False
+    /// ```
+    #[getter]
+    pub fn has_inf(&self) -> bool {
+        self.inner.has_inf
+    }
+
+    /// Bytes needed to hold `element_count` elements of this type.
+    ///
+    /// `hurray.buffer_size_bytes` cannot answer this: an extension `Dtype` reports a
+    /// `bit_width` of 0, because the real width lives here. Sub-byte widths round up to
+    /// the next whole byte.
+    ///
+    /// ## Examples
+    ///
+    /// ```python
+    /// import hurray
+    ///
+    /// assert hurray.ExtensionType(bit_width=24).buffer_size_bytes(10) == 30
+    /// assert hurray.ExtensionType(bit_width=4).buffer_size_bytes(7) == 4   # ceil(7 / 2)
+    /// assert hurray.ExtensionType(bit_width=4).buffer_size_bytes(0) == 0
+    /// ```
+    pub fn buffer_size_bytes(&self, element_count: u64) -> u64 {
+        self.inner.buffer_size_bytes(element_count)
+    }
+
+    pub fn __repr__(&self) -> String {
+        // Names only what was supplied: every field but bit_width defaults, and
+        // packing_factor is not an argument at all, so printing it would give a repr
+        // that cannot be evaluated back.
+        let mut fields = vec![format!("bit_width={}", self.inner.bit_width)];
+        let mut push = |name: &str, value: String| fields.push(format!("{name}={value}"));
+
+        if self.inner.is_float {
+            push("is_float", bool_repr(true));
+        }
+        if self.inner.is_signed {
+            push("is_signed", bool_repr(true));
+        }
+        if self.inner.sign_bits != 0 {
+            push("sign_bits", self.inner.sign_bits.to_string());
+        }
+        if self.inner.exponent_bits != 0 {
+            push("exponent_bits", self.inner.exponent_bits.to_string());
+        }
+        if self.inner.mantissa_bits != 0 {
+            push("mantissa_bits", self.inner.mantissa_bits.to_string());
+        }
+        if self.inner.exponent_bias != 0 {
+            push("exponent_bias", self.inner.exponent_bias.to_string());
+        }
+        if self.inner.has_nan {
+            push("has_nan", bool_repr(true));
+        }
+        if self.inner.has_inf {
+            push("has_inf", bool_repr(true));
+        }
+
+        format!("ExtensionType({})", fields.join(", "))
+    }
+}
+
+/// The one packing factor the spec permits for `bit_width`.
+///
+/// Whole-byte types pack one element per byte; sub-byte types pack `8 / bit_width`, and
+/// only widths 1, 2 and 4 are legal. Since the value is fully determined, the Python
+/// constructor derives it instead of asking the caller to restate it — the divergence
+/// from `ExtensionTypeDescriptor::new` is deliberate and loses no expressiveness.
+fn derive_packing_factor(bit_width: u32) -> PyResult<u8> {
+    match bit_width {
+        0 => Err(InvalidDescriptorError::new_err(
+            "bit_width must be greater than 0",
+        )),
+        1 => Ok(8),
+        2 => Ok(4),
+        4 => Ok(2),
+        w if w < 8 => Err(InvalidDescriptorError::new_err(format!(
+            "sub-byte extension types must be 1, 2 or 4 bits wide, not {w}: other widths \
+             are reserved to the built-in type space (metadata.md § Extension Type Section)"
+        ))),
+        _ => Ok(1),
+    }
+}
+
 // ── Registration ──────────────────────────────────────────────────────────────
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Statistics>()?;
     m.add_class::<Shard>()?;
+    m.add_class::<ExtensionType>()?;
     Ok(())
 }
