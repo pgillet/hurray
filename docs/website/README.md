@@ -134,6 +134,7 @@ website/
 ├── check-rust-blocks.py     # CI check: the cookbook's Rust blocks compile and run
 ├── check-coverage-matrix.py # CI check: regenerates the Implementation Status page from the
 │                            #   real crates, the Python module, and the C header
+├── build-prior-art-pdf.py   # renders docs/prior-art.md to docs/prior-art.pdf (pandoc + typst)
 └── coverage-matrix.toml     # canonical spec-feature list (rows) and implementations (columns)
 
 docs/
@@ -143,7 +144,8 @@ docs/
 ├── cookbook/                # (existing) cookbook entries
 ├── tutorials/               # (new) longer-form guided tutorials
 ├── adr/                     # (existing) architecture decision records — published as appendix
-└── prior-art.md             # (existing) prior-art survey — published as appendix
+├── prior-art.md             # (existing) prior-art survey — published as appendix
+└── prior-art.pdf            # generated from prior-art.md; served alongside it by the book
 ```
 
 - The book is a **view** over `docs/`. `book.toml` sets `src` to the doc tree and the book's
