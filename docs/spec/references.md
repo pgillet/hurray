@@ -155,7 +155,6 @@ interoperability.
 
 *Referenced by:* `element-types.md` — type system breadth reference.
 `data-model.md` — zero-size dimension policy comparison.
-`docs/prior-art.md` § 4.5.
 
 ---
 

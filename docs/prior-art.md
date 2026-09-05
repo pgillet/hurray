@@ -57,10 +57,9 @@ quantization scheme, a paged KV cache — the client absorbs the cost, usually a
 repack, or a private side-channel. Reading the survey through that dependency is what
 turns a list of formats into a list of design requirements.
 
-A few entries sit on the boundary and are labelled where they do the most work. ONNX is an
-interchange format for *computation graphs*, not for tensor data, and is surveyed as
-adjacent (§ 4.5). NumPy is an array library — a compute client — whose stride model is
-nonetheless a reference for interchange design (§ 5.1.1).
+One entry sits on the boundary and is labelled where it does the most work: NumPy is an
+array library — a compute client — whose stride model is nonetheless a reference for
+interchange design (§ 5.1.1).
 
 ---
 
@@ -364,30 +363,7 @@ not a user-facing protocol; it is the substrate other systems build on.
 - 🔹 Hurray's RDMA data plane sits above UCX — UCX performs the transfer; Hurray handles
   registration handshake, descriptor exchange, and session state
 
-### 4.5 Adjacent: ONNX
-
-| | |
-|---|---|
-| **Role** | Data interchange solution — for computation *graphs*, not tensor data |
-| **Type** | File-based model IR |
-| **Use case** | Portable neural network model exchange |
-| **Layout model** | None exposed — the runtime chooses |
-| **Quantization** | Second-class (`QLinearMatMul`, `QLinearConv`) |
-| **Interchange method** | Protocol Buffers file |
-| **Adoption** | High for model portability |
-
-A `.onnx` file is a Protobuf DAG of operator nodes, initializer tensors, and input/output
-schemas. ONNX Runtime parses the graph and dispatches to pluggable execution providers
-(CPU, CUDA/TensorRT, CoreML, DirectML, OpenVINO). Tensors appear as graph edges and
-initializers, never as a standalone interchange primitive. Known friction: operator
-coverage lags new architectures, dynamic shapes are awkward, and Protobuf does not scale
-to very large models.
-
-- ✅ The established answer for computation graph portability
-- ❌ Not a tensor data interchange format — no standalone descriptor, no layout control
-- 🔹 Orthogonal to Hurray; listed to mark the boundary, not as a competitor
-
-### 4.6 Comparison: Data Interchange Solutions
+### 4.5 Comparison: Data Interchange Solutions
 
 | Solution | Type | Layout model | Quantization | Interchange method | RDMA | Adoption | Role |
 |---|---|---|---|---|---|---|---|
@@ -402,7 +378,6 @@ to very large models.
 | **NIXL** | RDMA / transport | None (byte ranges) | ❌ | RDMA (UCX, GDS, NVMe-oF) | ✅ | Emerging | Data interchange |
 | **NCCL** | RDMA / transport | None (flat buffers) | ❌ | RDMA / NVLink collectives | ✅ | Very high | Data interchange |
 | **UCX** | RDMA / transport | None | ❌ | IB verbs, RoCE, TCP, CUDA IPC | ✅ | High (infra) | Data interchange |
-| **ONNX** *(adjacent)* | Model graph IR | None exposed | Partial | Protobuf file | ❌ | High | Graph interchange |
 | **Hurray** *(goal)* | ABI + IPC/streaming + file + RDMA | Strided, tiled, Morton, sparse (COO/CSR/CSC/CSF), block-paged, composite, extension tags | ✅ first-class (per-tensor / per-channel / per-block affine, NF4, MXFP) | `__hurray__` pointer handoff, IPC stream, file container, RDMA data plane | ✅ specified | Pre-release | Data interchange |
 
 ---
@@ -1211,7 +1186,6 @@ Which layouts and alignment rules matter follows from the sizes that actually oc
 - NIXL — <https://github.com/ai-dynamo/nixl>
 - NCCL — <https://developer.nvidia.com/nccl>
 - UCX — <https://openucx.org>
-- ONNX — <https://onnx.ai>
 
 **Compute frameworks and libraries**
 
