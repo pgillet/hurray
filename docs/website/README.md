@@ -145,7 +145,9 @@ docs/
 ├── tutorials/               # (new) longer-form guided tutorials
 ├── adr/                     # (existing) architecture decision records — published as appendix
 ├── prior-art.md             # (existing) prior-art survey — published as appendix
-└── prior-art.pdf            # generated from prior-art.md; served alongside it by the book
+├── prior-art.pdf            # generated from prior-art.md; served alongside it by the book
+└── figures/                 # SVG diagrams — the one image format GitHub, mdBook, and the
+                             #   PDF pipeline all render without a preprocessor
 ```
 
 - The book is a **view** over `docs/`. `book.toml` sets `src` to the doc tree and the book's
