@@ -64,27 +64,35 @@ def split_front_matter(text: str) -> tuple[str, str, str]:
 
 
 def promote_table_captions(body: str) -> str:
-    """Turn a bold `**Table N — caption**` line above a table into that table's caption.
+    """Turn a `**Table N.** …` paragraph above a table into that table's caption.
 
-    Left as a bold paragraph it floats free of the table it names and can land on the
-    previous page; as a pandoc caption it is bound to the figure.
+    Left as an ordinary paragraph the label floats free of the table it names and can land
+    on the previous page; as a pandoc caption it is bound to the table.
     """
     lines = body.split("\n")
     out: list[str] = []
     i = 0
     while i < len(lines):
-        match = re.match(r"^\*\*Table \d+\s*[—-]\s*(.+?)\*\*\s*$", lines[i])
-        if match and i + 2 < len(lines) and not lines[i + 1] and lines[i + 2].startswith("|"):
-            end = i + 2
-            while end < len(lines) and lines[end].startswith("|"):
-                end += 1
-            out.extend(lines[i + 2 : end])
-            out.append(": " + match.group(1).rstrip("."))
-            out.append("")
-            i = end
-            while i < len(lines) and not lines[i]:
-                i += 1
-            continue
+        if re.match(r"^\*\*Table \d+\.\*\*", lines[i]):
+            stop = i
+            while stop < len(lines) and lines[stop]:
+                stop += 1
+            # Drop the "Table N." label itself: Typst numbers and prefixes the caption.
+            caption = re.sub(r"^\*\*Table \d+\.\*\*\s*", "", " ".join(lines[i:stop])).strip()
+            start = stop
+            while start < len(lines) and not lines[start]:
+                start += 1
+            if start < len(lines) and lines[start].startswith("|"):
+                end = start
+                while end < len(lines) and lines[end].startswith("|"):
+                    end += 1
+                out.extend(lines[start:end])
+                out.append(": " + caption)
+                out.append("")
+                i = end
+                while i < len(lines) and not lines[i]:
+                    i += 1
+                continue
         out.append(lines[i])
         i += 1
     return "\n".join(out)
@@ -114,7 +122,8 @@ def main() -> None:
     body = promote_table_captions(body)
 
     revision = re.search(r"\*\*Revision:\*\*\s*(.+)", source)
-    date = revision.group(1).strip() if revision else ""
+    # The header's "also available as PDF" pointer is meaningless inside the PDF itself.
+    date = re.split(r"\s*·\s*Also available", revision.group(1))[0].strip() if revision else ""
 
     if args.check:
         print(f"ok: {SOURCE.relative_to(REPO)} parses; title {title!r}, revision {date!r}")
@@ -127,8 +136,11 @@ def main() -> None:
             [
                 "pandoc", str(staged),
                 "-o", str(OUTPUT),
+                # implicit_figures off: the figures carry their own bold caption paragraph,
+                # and leaving it on would emit the alt text as a second caption.
+                "-f", "markdown-implicit_figures",
                 "--pdf-engine=typst",
-                "--toc", "--toc-depth=3",
+                "--resource-path", str(SOURCE.parent),
                 "-V", "papersize=a4",
                 "-V", "fontsize=10pt",
                 "-V", "margin-x=2.1cm",

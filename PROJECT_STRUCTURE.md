@@ -9,6 +9,7 @@ hurray/
 ├── docs/
 │   ├── prior-art.md            # State-of-the-art review: interchange solutions vs compute frameworks
 │   ├── prior-art.pdf           # Generated from prior-art.md by website/build-prior-art-pdf.py
+│   ├── figures/                # SVG diagrams referenced by the docs (render on GitHub, site, and PDF)
 │   ├── spec/                   # Format specification (source of truth)
 │   │   ├── README.md           # Scope, goals, RFC 2119 notice, versioning
 │   │   ├── data-model.md       # Shape/dimension model
