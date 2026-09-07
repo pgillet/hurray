@@ -13,7 +13,7 @@ AI/ML systems move large amounts of tensor data between processes, machines, and
 tiers. This review examines the formats, protocols, and transports used for that purpose,
 and shows that each one excels in a specific area but lacks support for the others. DLPack
 shares memory inside one process but describes only strides. Apache Arrow provides a strong
-buffer and IPC design built on a tabular data model. GGUF stores quantization parameters
+buffer and IPC (inter-process communication) design built on a tabular data model. GGUF stores quantization parameters
 well, but only for one runtime and only in files. NIXL, NCCL, and UCX move accelerator
 memory across a network at full hardware speed, but they transfer byte ranges with no
 description attached. The consequence is visible in disaggregated large-language-model
@@ -23,7 +23,8 @@ transfer, send only opaque blocks and identifiers, and require hand-written conv
 whenever the two endpoints differ. From this evidence the review identifies seven gaps and
 states the capability each one requires: zero-copy sharing with a stated alignment,
 self-delimiting streaming, self-description, layout negotiation, device and memory-placement
-description, quantization metadata in the descriptor, and a language-agnostic ABI. The final
+description, quantization metadata in the descriptor, and a language-agnostic ABI
+(application binary interface). The final
 section introduces **Hurray**, a proposed specification for a tensor interchange format
 designed to close all seven ([github.com/pgillet/hurray](https://github.com/pgillet/hurray),
 [pgillet.github.io/hurray](https://pgillet.github.io/hurray)).
@@ -61,26 +62,36 @@ description is *strided*: one step size per dimension, which covers row-major or
 column-major order, transposes, and slices. Fast kernels do not use it. They use *tiled*
 layouts, which store small rectangular blocks contiguously so that each block fits in cache,
 and *packed* layouts, which rearrange operands into the exact order a vector or matrix unit
-reads them. Sparse tensors use index structures such as compressed sparse rows. Attention
-caches use *paged* layouts, described in § 4. No single layout is best: the right one depends
+reads them. A *dense* tensor stores every element explicitly; a *sparse* tensor stores only
+the non-zeros plus an index structure, such as compressed sparse rows, that records where
+they are. Attention caches use *paged* layouts, described in § 4. No single layout is best: the right one depends
 on the operation, the hardware, and which level of the memory hierarchy is saturated. A
 format therefore cannot mandate a layout. It must describe the one the producer already has.
 
 **Quantization.** Quantization stores a value as a low-precision integer together with a
 scale and, optionally, a zero point, so that the value is approximated by
 `scale × (quantized − zero_point)`. The parameters may apply to a whole tensor, to one
-channel, or to a block of consecutive elements; the block size is part of the scheme. In
-inference this is the normal case rather than an exception, so a tensor is not interpretable
-without its quantization parameters.
+channel, or to a group of consecutive elements — *grouped* or *block* quantization, with a
+group size typically of 32 or 64 — and the group size is part of the scheme. When elements
+are narrower than a byte, several share one byte or word, and the *packing order* states
+which element occupies which bits. More than one convention is in use, and converting
+between them requires a pass over the data, so the order has to be specified bit by bit. In
+inference all of this is the normal case, so a tensor is not interpretable without its
+quantization parameters.
 
 **Device and memory placement.** A buffer may live in host memory, in discrete accelerator
 memory, in memory addressed by both, or in a region registered with a network interface for
 remote access. A consumer cannot use a buffer it cannot locate.
 
-**Alignment and size.** Zero-copy means giving a consumer the producer's existing memory
-instead of a duplicate. It requires agreement on alignment, ownership, and lifetime in
-advance. Size determines how much this matters: a single weight matrix in a 70-billion-parameter model
-is roughly 448 MB in 16-bit floating point, and a long-context attention cache is several
+**Alignment and size.** *Zero-copy* means sharing data between components without
+duplicating it, by passing a pointer or a memory handle rather than the bytes. It requires
+agreement on alignment, ownership, and lifetime in advance. *Alignment* is the requirement
+that a buffer start at an address that is a multiple of some size, usually at least 64 bytes:
+vector instructions (SIMD, one instruction applied to several values at once) and direct
+device transfers (DMA, a device reading or writing memory without the processor) reach full
+rate only on aligned buffers. Size determines how much this matters: a single weight matrix
+in a 70-billion-parameter model is roughly 448 MB in 16-bit floating point, and a
+long-context attention cache is several
 gigabytes per request. A copy imposed by an unstated alignment rule costs bandwidth that the
 computation needs, and doubles peak memory use at the point where accelerator memory is
 scarcest.
@@ -94,6 +105,13 @@ scarcest.
 ## 3. The Landscape
 
 ### 3.1 Interchange solutions
+
+Three abbreviations appear in Table 1. An **ABI** (application binary interface) is a fixed
+binary representation of structures and calls that separately compiled components can rely
+on, which is what lets two frameworks hand each other a pointer. **IPC** is inter-process
+communication, the mechanisms by which separate processes exchange data, such as shared
+memory. **mmap** is memory mapping: a file is placed in a process's address space, so reading
+it does not copy it.
 
 **Table 1.** Data interchange solutions. *Self-describing* means the shape, element type,
 layout, and quantization travel with the data.
