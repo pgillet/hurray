@@ -62,9 +62,9 @@ description is *strided*: one step size per dimension, which covers row-major or
 column-major order, transposes, and slices. Fast kernels do not use it. They use *tiled*
 layouts, which store small rectangular blocks contiguously so that each block fits in cache,
 and *packed* layouts, which rearrange operands into the exact order a vector or matrix unit
-reads them. A *dense* tensor stores every element explicitly; a *sparse* tensor stores only
-the non-zeros plus an index structure, such as compressed sparse rows, that records where
-they are. Attention caches use *paged* layouts, described in § 4. No single layout is
+reads them. A *dense* tensor stores every element explicitly (no implicit zeros), while a
+*sparse* tensor stores only non-zero elements along with an index structure (for example,
+compressed sparse rows). Attention caches use *paged* layouts, described in § 4. No single layout is
 universally optimal. The best choice depends on the operation, the hardware, and where the
 memory hierarchy bottlenecks. A format therefore cannot mandate a layout. It must describe
 the one the producer already has.
@@ -74,9 +74,10 @@ scale and, optionally, a zero point, so that the value is approximated by
 `scale × (quantized − zero_point)`. The parameters may apply to a whole tensor, to one
 channel, or to a group of consecutive elements — *grouped* or *block* quantization, with a
 group size typically of 32 or 64 — and the group size is part of the scheme. When elements
-are narrower than a byte, several share one byte or word, and the *packing order* states
-which element occupies which bits. More than one convention is in use, and converting
-between them requires a pass over the data, so the order has to be specified bit by bit. In
+are narrower than a byte, multiple elements share a single byte or word. The *packing order*
+specifies which bits correspond to which element. Since multiple conventions exist,
+converting between them requires a pass over the data, so the order must be explicitly
+defined. In
 inference all of this is the normal case, so a tensor is not interpretable without its
 quantization parameters.
 
@@ -273,7 +274,7 @@ the library that implements them.
 | 3 | No descriptor on the wire | Format is fixed at startup and endpoints must match (§ 4) | A descriptor sent with every transfer: shape, element type, layout, quantization, device, and position within a larger tensor |
 | 4 | One layout family per format | Producers repack, or endpoints agree privately; mismatches are resolved by hand-written modules | A layout vocabulary covering strided, tiled, sparse, paged, and composite forms, the composition rule for the last of these (§ 5), an extension path for hardware-specific packings, and negotiation so conversion happens once on the better-placed side |
 | 5 | No device placement | Placement lives in engine configuration; unified-memory systems have no single owning device | A placement model covering host, discrete, unified, and registered memory, in which device affinity can belong to an access rather than to the buffer |
-| 6 | No quantization metadata | Parameters travel in config files or framework-private objects; sub-byte packing order differs between implementations | Scheme identifier, scales, zero points and block size in the descriptor, with bit-exact packing order and a normative, versioned scheme set |
+| 6 | No quantization metadata | Parameters travel in config files or framework-private objects; sub-byte packing order differs between implementations | Scheme identifier, scales, zero points, and block size in the descriptor, with bit-exact packing order (a standardized way to arrange sub-byte values within a byte or word) and a normative, versioned scheme set |
 | 7 | No language-agnostic ABI | Formats stop at a file boundary or at one language's ecosystem | A stable C ABI carrying the descriptor and buffer handles, with no idioms of the implementation language |
 
 No solution in Table 1 addresses more than three of the seven. DLPack addresses 1 and 7
@@ -332,7 +333,7 @@ applies to this one.
 
 - **Complexity.** Every named layout is a burden on every implementation. A reader that must
   handle strided, tiled, sparse, paged, and composite tensors is larger and harder to verify
-  than one that handles strides. Two things bound the cost. The mandatory core can be kept
+  than one that handles strided layouts only. Two things bound the cost. The mandatory core can be kept
   small, with the rest optional and negotiated. And an implementation that meets a layout it
   does not support must be able to reject it explicitly, which is far cheaper to build than
   support for the layout and is enough to keep the format safe to extend.
@@ -356,7 +357,7 @@ applies to this one.
   to acquire what the other two have, which is a larger change than specifying the descriptor
   once and mapping it onto all three.
 
-Hurray is a specification effort, and the specification is public. The format is documented
+Hurray is a standardization effort, and the specification is public. The format is documented
 at **[pgillet.github.io/hurray](https://pgillet.github.io/hurray)** and developed in the open
 at **[github.com/pgillet/hurray](https://github.com/pgillet/hurray)**. Review of the
 specification, and of the gap analysis in § 6 that motivates it, is welcome.
