@@ -206,19 +206,40 @@ none of them negotiates a descriptor. Three costs follow.
 ## 5. A Second Gap: Heterogeneous Composition
 
 Every layout in § 3 describes one element type, one layout, and one quantization scheme
-across the whole tensor. Several established techniques do not fit that model. Outlier-aware
-quantization keeps a dense low-precision tensor plus a sparse set of high-precision
-corrections at shared positions [32], [33]. Residual-precision caches keep recent tokens at
-full precision and older tokens quantized [34]. Mixture-of-experts models assign different
-bit widths per expert. Outside machine learning, the same requirement is long established and
-production-proven: adaptive-mesh frameworks store a logical array as independently allocated
-boxes [35], volumetric formats mix constant tiles with dense leaves [36], and HDF5 virtual
-datasets define one logical dataset as per-region mappings onto separate sources [37].
+across the whole tensor. Several established techniques do not fit that model: one logical
+tensor is assembled from regions that differ in precision, in layout, or in both, and each
+region has its own buffers. Two composition rules appear in practice, and they answer
+different questions about what a position in the tensor means.
 
-Two composition rules appear, and they are not interchangeable. A **partition** covers the
-index space with non-overlapping regions; an **overlay** places corrections on top of a base
-at shared positions. A format that supports only one of them silently changes the meaning of
-the other. No mainstream tensor interchange format supports either.
+**Partition: regions that do not overlap.** Each position belongs to exactly one region. A
+residual-precision KV cache [34] is the clearest example. The most recent tokens are kept at
+full precision, because they are still being written and are the most sensitive to
+quantization error, while older tokens are stored 2-bit quantized. The split runs along the
+sequence axis; the two regions have different element types, different quantization
+parameters, and separate buffers; and no position is in both. A mixture-of-experts model that
+assigns a different bit width per expert partitions the same way, along the expert axis.
+Outside machine learning the pattern is long established and production-proven: adaptive-mesh
+frameworks store one logical array as independently allocated boxes at different refinement
+levels [35], volumetric formats mix constant tiles with dense leaves [36], and HDF5 virtual
+datasets define one logical dataset as per-region mappings onto separate source files [37].
+
+**Overlay: corrections on top of a base.** A base tensor spans the whole index space, and a
+sparse second tensor supplies replacement values at scattered positions that the base also
+covers. SpQR [32] uses this arrangement for sparse-quantized weights: it stores a weight
+matrix at 3–4 bits per weight and keeps roughly one percent of the weights — the outliers
+whose quantization error dominates the loss — at higher precision in a separate sparse
+structure. KVQuant [33] applies the same arrangement to the KV cache. Reading position
+`(i, j)` means consulting the sparse structure first and falling back to the dequantized base
+only if no correction is stored there. Because base and corrections share positions, this
+cannot be expressed as a partition.
+
+**What this requires of a descriptor.** The same set of regions has two different meanings
+under the two rules: under a partition the regions are the tensor, and under an overlay all
+but one of them are exceptions to it. A descriptor must therefore carry three things — the
+geometry of the regions, a complete description of each region (element type, layout,
+quantization, buffers), and the composition rule that resolves a position. No mainstream
+tensor interchange format carries any of the three, so both arrangements are today private to
+the library that implements them.
 
 ---
 
@@ -231,7 +252,7 @@ the other. No mainstream tensor interchange format supports either.
 | 1 | Alignment is not stated | Receivers copy defensively before using a buffer; Arrow Flight loses alignment through gRPC | A normative minimum alignment, stricter where accelerator and IPC paths need page alignment, plus explicit lifetime transfer |
 | 2 | No streaming form | File formats load whole artifacts; readers buffer input they cannot yet use | Descriptor before data, self-delimiting frames, no trailing index or back-reference in the stream |
 | 3 | Descriptors are not transmitted | Format is fixed at startup and endpoints must match (§ 4) | A descriptor sent with every transfer: shape, element type, layout, quantization, device, and position within a larger tensor |
-| 4 | Only one layout family per format | Producers repack, or endpoints agree privately; mismatches are resolved by hand-written modules | A layout vocabulary covering strided, tiled, sparse, paged, and composite forms, with an extension path for hardware-specific packings, plus negotiation so conversion happens once on the better-placed side |
+| 4 | Only one layout family per format | Producers repack, or endpoints agree privately; mismatches are resolved by hand-written modules | A layout vocabulary covering strided, tiled, sparse, paged, and composite forms, the composition rule for the last of these (§ 5), an extension path for hardware-specific packings, and negotiation so conversion happens once on the better-placed side |
 | 5 | Device placement is not described | Placement lives in engine configuration; unified-memory systems have no single owning device | A placement model covering host, discrete, unified, and registered memory, in which device affinity can belong to an access rather than to the buffer |
 | 6 | Quantization is not in the descriptor | Parameters travel in config files or framework-private objects; sub-byte packing order differs between implementations | Scheme identifier, scales, zero points and block size in the descriptor, with bit-exact packing order and a normative, versioned scheme set |
 | 7 | No language-agnostic ABI | Formats stop at a file boundary or at one language's ecosystem | A stable C ABI carrying the descriptor and buffer handles, with no idioms of the implementation language |
