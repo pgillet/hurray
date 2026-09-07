@@ -272,6 +272,19 @@ against the seven gaps above. It defines a descriptor, a binary encoding for it,
 protocol, a file container, and a C ABI. It defines no kernels, no scheduler, and no cache
 policy: compute frameworks remain the clients, and existing transports remain the data plane.
 
+**What would be new is the combination.** The individual capabilities all exist somewhere.
+DLPack shares memory inside one process but describes only strides. Arrow supplies the buffer
+and IPC discipline, for a tabular data model. GGUF puts quantization parameters in the
+container, for one runtime and only in files. NIXL and UCX move accelerator memory across a
+network without describing what they move. No solution in Table 1 provides more than three of
+the seven capabilities, and none combines these four:
+
+- one layout vocabulary spanning strided, tiled, sparse, paged, and composite tensors;
+- quantization metadata inside the descriptor rather than beside it;
+- a self-describing tensor carried over an RDMA data plane;
+- a language-agnostic C ABI, so the format can be implemented in any language rather than
+  bound from one.
+
 The proposed capabilities map directly onto Table 4.
 
 - **Zero-copy with a stated alignment.** A normative minimum buffer alignment, page alignment
