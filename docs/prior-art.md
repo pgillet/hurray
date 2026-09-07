@@ -64,9 +64,10 @@ layouts, which store small rectangular blocks contiguously so that each block fi
 and *packed* layouts, which rearrange operands into the exact order a vector or matrix unit
 reads them. A *dense* tensor stores every element explicitly; a *sparse* tensor stores only
 the non-zeros plus an index structure, such as compressed sparse rows, that records where
-they are. Attention caches use *paged* layouts, described in § 4. No single layout is best: the right one depends
-on the operation, the hardware, and which level of the memory hierarchy is saturated. A
-format therefore cannot mandate a layout. It must describe the one the producer already has.
+they are. Attention caches use *paged* layouts, described in § 4. No single layout is
+universally optimal. The best choice depends on the operation, the hardware, and where the
+memory hierarchy bottlenecks. A format therefore cannot mandate a layout. It must describe
+the one the producer already has.
 
 **Quantization.** Quantization stores a value as a low-precision integer together with a
 scale and, optionally, a zero point, so that the value is approximated by
@@ -267,12 +268,12 @@ the library that implements them.
 
 | # | Gap | What happens today | Required capability |
 |:--|:--------------|:------------------|:--------------------------|
-| 1 | Alignment is not stated | Receivers copy defensively before using a buffer; Arrow Flight loses alignment through gRPC | A normative minimum alignment, stricter where accelerator and IPC paths need page alignment, plus explicit lifetime transfer |
+| 1 | No stated alignment | Receivers copy defensively before using a buffer; Arrow Flight loses alignment through gRPC | A normative minimum alignment, stricter where accelerator and IPC paths need page alignment, plus explicit lifetime transfer |
 | 2 | No streaming form | File formats load whole artifacts; readers buffer input they cannot yet use | Descriptor before data, self-delimiting frames, no trailing index or back-reference in the stream |
-| 3 | Descriptors are not transmitted | Format is fixed at startup and endpoints must match (§ 4) | A descriptor sent with every transfer: shape, element type, layout, quantization, device, and position within a larger tensor |
-| 4 | Only one layout family per format | Producers repack, or endpoints agree privately; mismatches are resolved by hand-written modules | A layout vocabulary covering strided, tiled, sparse, paged, and composite forms, the composition rule for the last of these (§ 5), an extension path for hardware-specific packings, and negotiation so conversion happens once on the better-placed side |
-| 5 | Device placement is not described | Placement lives in engine configuration; unified-memory systems have no single owning device | A placement model covering host, discrete, unified, and registered memory, in which device affinity can belong to an access rather than to the buffer |
-| 6 | Quantization is not in the descriptor | Parameters travel in config files or framework-private objects; sub-byte packing order differs between implementations | Scheme identifier, scales, zero points and block size in the descriptor, with bit-exact packing order and a normative, versioned scheme set |
+| 3 | No descriptor on the wire | Format is fixed at startup and endpoints must match (§ 4) | A descriptor sent with every transfer: shape, element type, layout, quantization, device, and position within a larger tensor |
+| 4 | One layout family per format | Producers repack, or endpoints agree privately; mismatches are resolved by hand-written modules | A layout vocabulary covering strided, tiled, sparse, paged, and composite forms, the composition rule for the last of these (§ 5), an extension path for hardware-specific packings, and negotiation so conversion happens once on the better-placed side |
+| 5 | No device placement | Placement lives in engine configuration; unified-memory systems have no single owning device | A placement model covering host, discrete, unified, and registered memory, in which device affinity can belong to an access rather than to the buffer |
+| 6 | No quantization metadata | Parameters travel in config files or framework-private objects; sub-byte packing order differs between implementations | Scheme identifier, scales, zero points and block size in the descriptor, with bit-exact packing order and a normative, versioned scheme set |
 | 7 | No language-agnostic ABI | Formats stop at a file boundary or at one language's ecosystem | A stable C ABI carrying the descriptor and buffer handles, with no idioms of the implementation language |
 
 No solution in Table 1 addresses more than three of the seven. DLPack addresses 1 and 7
