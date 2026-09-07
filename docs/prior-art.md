@@ -308,6 +308,35 @@ The proposed capabilities map directly onto Table 4.
 - **Language-agnostic C ABI.** A stable boundary that any language can implement against,
   rather than one library with bindings.
 
+**The costs are real.** Three objections apply to any format of this kind, and a fourth
+applies to this one.
+
+- **Complexity.** Every named layout is a burden on every implementation. A reader that must
+  handle strided, tiled, sparse, paged, and composite tensors is larger and harder to verify
+  than one that handles strides. Two things bound the cost. The mandatory core can be kept
+  small, with the rest optional and negotiated. And an implementation that meets a layout it
+  does not support must be able to reject it explicitly, which is far cheaper to build than
+  support for the layout and is enough to keep the format safe to extend.
+- **Negotiation cost.** A handshake adds round trips before the first byte moves. For a
+  single small tensor that is pure overhead, and a format that always required it would be
+  worse than one that never did. The cost is paid once per session, while the conversion it
+  avoids is paid per transfer and grows with the size of the data: at the buffer sizes of
+  § 4, one avoided repack pays for many handshakes. Where it does not pay, the handshake
+  must be skippable, which is a requirement on the design rather than an argument against it.
+- **Adoption.** A new ABI needs framework support, and DLPack already has it almost
+  everywhere. This is the largest risk, and no analysis removes it. Two things reduce it.
+  DLPack itself shows that an ABI spreads when it solves a problem frameworks actually have.
+  And the two are not exclusive: a dense strided tensor can cross either boundary, so a
+  framework can adopt the richer descriptor only for the cases DLPack cannot express, which
+  is where the cost is being paid today.
+- **Why not extend an existing format?** This is the cheapest option, and it was considered.
+  DLPack's structure is deliberately minimal and fixed; adding layout, quantization, device,
+  and shard fields to it produces a different artifact with the same name, and it would still
+  have no streaming or file form. Arrow's data model is tabular, and its tensor extension
+  inherits that. GGUF is a file format with no ABI and no streaming protocol. Each would have
+  to acquire what the other two have, which is a larger change than specifying the descriptor
+  once and mapping it onto all three.
+
 Hurray is a specification effort, and the specification is public. The format is documented
 at **[pgillet.github.io/hurray](https://pgillet.github.io/hurray)** and developed in the open
 at **[github.com/pgillet/hurray](https://github.com/pgillet/hurray)**. Review of the
@@ -334,7 +363,8 @@ what an interchange layer with an insufficient descriptor forces on their author
 What is missing is a portable description that travels with the bytes, expressive enough to
 state that a tensor is tiled, paged, sparse, block-quantized, or composed of heterogeneous
 regions, and carried identically across in-process, IPC, file, and RDMA paths. Table 4 states
-the seven capabilities such a description requires. Hurray is a proposal to specify them.
+the seven capabilities such a description requires. Hurray is a proposal to specify them; § 7 states both what such a
+format would provide and what providing it would cost.
 
 ---
 
