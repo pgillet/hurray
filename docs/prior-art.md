@@ -99,7 +99,7 @@ scarcest.
 layout, and quantization travel with the data.
 
 | Solution | Kind | Layout model | Quantization | Streaming | Zero-copy | RDMA | Self-describing | Adoption |
-|---|---|---|---|---|---|---|---|---|
+|:------------|:-----------|:---------------|:----------:|:--------:|:---------:|:-----:|:---------:|:--------|
 | DLPack [1] | In-process ABI | Strided | ✗ | ✗ | ✓ | ✗ | Partial | Very high |
 | Apache Arrow [2] | IPC, columnar | Row/column-major | ✗ | ✓ | ✓ | ✗ | Partial | Very high |
 | Arrow Flight [3] | Streaming RPC | Row/column-major | ✗ | ✓ | ✗ | ✗ | Partial | Medium |
@@ -136,7 +136,7 @@ Five facts from this table drive the rest of the review.
 **Table 2.** What the clients use, and what they cannot state at the boundary.
 
 | Framework | Interchange it uses | What it cannot express at the boundary |
-|---|---|---|
+|:----------|:----------------------|:------------------------------|
 | NumPy [12] | DLPack, buffer protocol, `.npy` | Nothing beyond strides; no path outside Python |
 | PyTorch [13] | DLPack, SafeTensors, NCCL, RDMA libraries via serving stacks | Quantization parameters (kept in separate objects); packed and tiled layouts |
 | TensorFlow [14] | DLPack, saved-model container, NCCL | Compiler-chosen physical layout; quantization is a property of the model artifact |
@@ -178,7 +178,7 @@ non-contiguous blocks rather than one contiguous region.
 **Table 3.** Six systems that transfer the KV cache.
 
 | System | Transport used | Sent with the data | Assumed out of band |
-|---|---|---|---|
+|:----------|:----------------|:----------------|:------------------|
 | DistServe [26] | Intra-node interconnect | Layer and block references | Identical model build and cache layout |
 | Mooncake [27] | Its own multi-NIC RDMA engine | Block keys and offsets | Shape, element type, paged layout |
 | vLLM connectors [23], [28] | NIXL, Mooncake, LMCache | Raw blocks and block identifiers | Everything, fixed at cache-registration time |
@@ -248,7 +248,7 @@ the library that implements them.
 **Table 4.** Seven gaps, what they cost today, and the capability each requires.
 
 | # | Gap | What happens today | Required capability |
-|---|---|---|---|
+|:--|:--------------|:------------------|:--------------------------|
 | 1 | Alignment is not stated | Receivers copy defensively before using a buffer; Arrow Flight loses alignment through gRPC | A normative minimum alignment, stricter where accelerator and IPC paths need page alignment, plus explicit lifetime transfer |
 | 2 | No streaming form | File formats load whole artifacts; readers buffer input they cannot yet use | Descriptor before data, self-delimiting frames, no trailing index or back-reference in the stream |
 | 3 | Descriptors are not transmitted | Format is fixed at startup and endpoints must match (§ 4) | A descriptor sent with every transfer: shape, element type, layout, quantization, device, and position within a larger tensor |
