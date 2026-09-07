@@ -102,7 +102,7 @@ def tighten_references(body: str) -> str:
     """
     return body.replace(
         "## References\n",
-        "## References\n\n```{=typst}\n#set par(spacing: 0.45em)\n```\n",
+        "## References\n\n```{=typst}\n#set par(spacing: 0.35em)\n```\n",
         1,
     )
 
