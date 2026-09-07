@@ -75,11 +75,13 @@ scale and, optionally, a zero point, so that the value is approximated by
 channel, or to a group of consecutive elements — *grouped* or *block* quantization, with a
 group size typically of 32 or 64 — and the group size is part of the scheme. When elements
 are narrower than a byte, multiple elements share a single byte or word, and the *packing
-order* specifies which bits hold which element. Two 4-bit integers fit in one byte: one
-convention puts element 0 in bits 0–3 and element 1 in bits 4–7, and the other reverses
-them. Both are in use. A reader that assumes the wrong one produces plausible numbers rather
-than an error, and converting between the two requires a pass over the whole tensor, so the
-order must be defined bit by bit rather than left to convention. In
+order* specifies which bits hold which element. It is the same kind of problem as
+endianness, one level down: endianness fixes which byte of a multi-byte value comes first,
+and packing order fixes which of the elements sharing a byte comes first. Two 4-bit integers
+fit in one byte, and both conventions are in use — element 0 in bits 0–3, or element 0 in
+bits 4–7. A reader that assumes the wrong one produces plausible numbers rather than an
+error, and converting between the two costs a pass over the whole tensor, so the order must
+be defined bit by bit rather than left to convention. In
 inference all of this is the normal case, so a tensor is not interpretable without its
 quantization parameters.
 
