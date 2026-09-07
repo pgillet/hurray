@@ -74,10 +74,12 @@ scale and, optionally, a zero point, so that the value is approximated by
 `scale × (quantized − zero_point)`. The parameters may apply to a whole tensor, to one
 channel, or to a group of consecutive elements — *grouped* or *block* quantization, with a
 group size typically of 32 or 64 — and the group size is part of the scheme. When elements
-are narrower than a byte, multiple elements share a single byte or word. The *packing order*
-specifies which bits correspond to which element. Since multiple conventions exist,
-converting between them requires a pass over the data, so the order must be explicitly
-defined. In
+are narrower than a byte, multiple elements share a single byte or word, and the *packing
+order* specifies which bits hold which element. Two 4-bit integers fit in one byte: one
+convention puts element 0 in bits 0–3 and element 1 in bits 4–7, and the other reverses
+them. Both are in use. A reader that assumes the wrong one produces plausible numbers rather
+than an error, and converting between the two requires a pass over the whole tensor, so the
+order must be defined bit by bit rather than left to convention. In
 inference all of this is the normal case, so a tensor is not interpretable without its
 quantization parameters.
 
@@ -274,7 +276,7 @@ the library that implements them.
 | 3 | No descriptor on the wire | Format is fixed at startup and endpoints must match (§ 4) | A descriptor sent with every transfer: shape, element type, layout, quantization, device, and position within a larger tensor |
 | 4 | One layout family per format | Producers repack, or endpoints agree privately; mismatches are resolved by hand-written modules | A layout vocabulary covering strided, tiled, sparse, paged, and composite forms, the composition rule for the last of these (§ 5), an extension path for hardware-specific packings, and negotiation so conversion happens once on the better-placed side |
 | 5 | No device placement | Placement lives in engine configuration; unified-memory systems have no single owning device | A placement model covering host, discrete, unified, and registered memory, in which device affinity can belong to an access rather than to the buffer |
-| 6 | No quantization metadata | Parameters travel in config files or framework-private objects; sub-byte packing order differs between implementations | Scheme identifier, scales, zero points, and block size in the descriptor, with bit-exact packing order (a standardized way to arrange sub-byte values within a byte or word) and a normative, versioned scheme set |
+| 6 | No quantization metadata | Parameters travel in config files or framework-private objects; sub-byte packing order differs between implementations | Scheme identifier, scales, zero points, and block size in the descriptor, with bit-exact packing order (which bits hold which sub-byte element, § 2) and a normative, versioned scheme set |
 | 7 | No language-agnostic ABI | Formats stop at a file boundary or at one language's ecosystem | A stable C ABI carrying the descriptor and buffer handles, with no idioms of the implementation language |
 
 No solution in Table 1 addresses more than three of the seven. DLPack addresses 1 and 7
