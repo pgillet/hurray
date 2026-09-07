@@ -93,6 +93,20 @@ def promote_table_captions(body: str) -> str:
     return "\n".join(out)
 
 
+def tighten_references(body: str) -> str:
+    """Compact the reference list in the PDF.
+
+    Each reference is its own paragraph, so the list inherits body paragraph spacing and
+    wastes roughly a page. A raw Typst directive after the heading tightens spacing from
+    there to the end of the document, where only references remain.
+    """
+    return body.replace(
+        "## References\n",
+        "## References\n\n```{=typst}\n#set par(spacing: 0.45em)\n```\n",
+        1,
+    )
+
+
 def require_tools() -> None:
     missing = [tool for tool in ("pandoc", "typst") if shutil.which(tool) is None]
     if missing:
@@ -112,7 +126,7 @@ def main() -> None:
     require_tools()
     source = SOURCE.read_text(encoding="utf-8")
     title, subtitle, body = split_front_matter(source)
-    body = promote_table_captions(body)
+    body = tighten_references(promote_table_captions(body))
 
     revision = re.search(r"\*\*Revision:\*\*\s*(.+)", source)
     # The header's "also available as PDF" pointer is meaningless inside the PDF itself.
