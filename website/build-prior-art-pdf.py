@@ -29,11 +29,6 @@ REPO = Path(__file__).resolve().parent.parent
 SOURCE = REPO / "docs" / "prior-art.md"
 OUTPUT = REPO / "docs" / "prior-art.pdf"
 
-# The Markdown uses emoji for the strength/limitation/implication bullets. They render on
-# GitHub and the site but need a colour emoji font no PDF toolchain here carries, so they
-# are swapped for typographic equivalents that any serif font has.
-GLYPHS = {"✅": "✓", "❌": "✗", "\U0001f539": "→"}
-
 # Typst show rules applied to the whole document. The breakable-block rule is the load
 # bearing one: pandoc wraps every table in a figure, and an unbreakable figure taller than
 # a page silently overprints its own rows.
@@ -42,7 +37,7 @@ HEADER = """\
 #show figure.where(kind: table): set figure.caption(position: bottom)
 #show table: set text(size: 8.2pt, hyphenate: false)
 #show table: set par(justify: false, leading: 0.5em)
-#set par(justify: true)
+#set par(justify: true, spacing: 0.85em)
 """
 
 
@@ -117,8 +112,6 @@ def main() -> None:
     require_tools()
     source = SOURCE.read_text(encoding="utf-8")
     title, subtitle, body = split_front_matter(source)
-    for emoji, replacement in GLYPHS.items():
-        body = body.replace(emoji, replacement)
     body = promote_table_captions(body)
 
     revision = re.search(r"\*\*Revision:\*\*\s*(.+)", source)
