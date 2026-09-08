@@ -24,9 +24,9 @@ whenever the two endpoints differ. From this evidence the review identifies seve
 states the capability each one requires: zero-copy sharing with a stated alignment,
 self-delimiting streaming, self-description, layout negotiation, device and memory-placement
 description, quantization metadata in the descriptor, and a language-agnostic ABI
-(application binary interface). The final
-section introduces **Hurray**, a proposed specification for a tensor interchange format
-designed to close all seven ([github.com/pgillet/hurray](https://github.com/pgillet/hurray),
+(application binary interface). It then states what a tensor descriptor must carry to
+provide them, and introduces **Hurray**, a proposed specification for a tensor interchange
+format designed to close all seven ([github.com/pgillet/hurray](https://github.com/pgillet/hurray),
 [pgillet.github.io/hurray](https://pgillet.github.io/hurray)).
 
 ---
@@ -55,7 +55,10 @@ reconstructing them out of band costs time and bandwidth.
 
 ---
 
-## 2. What a Descriptor Must Carry
+## 2. What Varies Between Tensors
+
+Four things differ from one tensor to the next, and a consumer that does not know all four
+cannot use the bytes. Section 3 then shows which existing solutions can state them.
 
 **Layout.** A layout is how a tensor's elements are arranged in memory. The simplest
 description is *strided*: one step size per dimension, which covers row-major order,
@@ -66,8 +69,7 @@ reads them. A *dense* tensor stores every element explicitly (no implicit zeros)
 *sparse* tensor stores only non-zero elements along with an index structure (for example,
 compressed sparse rows). Attention caches use *paged* layouts, described in § 4. No single layout is
 universally optimal. The best choice depends on the operation, the hardware, and where the
-memory hierarchy bottlenecks. A format therefore cannot mandate a layout. It must describe
-the one the producer already has.
+memory hierarchy bottlenecks.
 
 **Quantization.** Quantization stores a value as a low-precision integer together with a
 scale and, optionally, a zero point, so that the value is approximated by
@@ -103,10 +105,6 @@ long-context attention cache is several
 gigabytes per request. A copy imposed by an unstated alignment rule costs bandwidth that the
 computation needs, and doubles peak memory use at the point where accelerator memory is
 scarcest.
-
-![Figure 1](figures/interchange-gap.svg)
-
-**Figure 1.** What crosses the boundary today, and what a self-describing descriptor changes.
 
 ---
 
@@ -271,6 +269,10 @@ the library that implements them.
 
 ## 6. The Gaps
 
+![Figure 1](figures/interchange-gap.svg)
+
+**Figure 1.** What crosses the boundary today, and what a self-describing descriptor changes.
+
 **Table 4.** Seven gaps, what they cost today, and the capability each requires.
 
 | # | Gap | What happens today | Required capability |
@@ -291,12 +293,42 @@ above them.
 
 ---
 
-## 7. Hurray: A Proposal
+## 7. What the Descriptor Must Carry
+
+Table 4 states seven capabilities. Six of them are properties of a single artifact that does
+not exist today: a descriptor attached to every tensor, on every path it travels. Collecting
+what the preceding sections require, that descriptor must carry:
+
+- **Shape and element type**, including the sub-byte types quantization produces.
+- **Layout**: which family the tensor uses — strided, tiled, sparse, paged, or composite —
+  together with that family's parameters: strides, tile shape, index buffers, page size and
+  block table, or the member list and composition rule of § 5.
+- **Quantization**: scheme identifier, scales, zero points, group size, and the packing order
+  of § 2, so that a consumer can dequantize without external configuration.
+- **Device placement**: which of the four locations of § 2 each buffer occupies.
+- **Buffer geometry**: the offset, length, and alignment of each buffer, with ownership and
+  lifetime stated, so that a consumer can hold the memory instead of copying it.
+- **Position within a larger tensor**: the offset and extent of this tensor inside the whole,
+  which is what a sharded handoff loses today (§ 3.2).
+
+The seventh capability, negotiation, is not a field. It is what two endpoints do with these
+descriptors before any data moves: each declares what it can consume, and the conversion, if
+one is needed, is performed once by the side better placed to perform it.
+
+---
+
+## 8. Hurray: A Proposal
 
 **Hurray** is a proposed specification for a tensor interchange format and protocol, designed
-against the seven gaps above. It defines a descriptor, a binary encoding for it, a streaming
-protocol, a file container, and a C ABI. It defines no kernels, no scheduler, and no cache
-policy: compute frameworks remain the clients, and existing transports remain the data plane.
+against the seven gaps above. It specifies the descriptor of § 7, a binary encoding for it,
+and the protocol properties Table 4 requires around it: a normative minimum buffer alignment
+with explicit ownership transfer, a self-delimiting stream in which each descriptor precedes
+its data and nothing refers backwards, a capability handshake in which each side declares the
+layouts, element types, and quantization schemes it can consume, and a stable C ABI that any
+language can implement against. The same descriptor is carried on every path — in-process
+handoff, IPC stream, file container, and RDMA data plane — so a tensor does not change form
+when it changes route. Hurray defines no kernels, no scheduler, and no cache policy: compute
+frameworks remain the clients, and existing transports remain the data plane.
 
 **What would be new is the combination.** The individual capabilities all exist somewhere.
 DLPack shares memory inside one process but describes only strides. Arrow supplies the buffer
@@ -310,29 +342,6 @@ the seven capabilities, and none combines these four:
 - a self-describing tensor carried over an RDMA data plane;
 - a language-agnostic C ABI, so the format can be implemented in any language rather than
   bound from one.
-
-The proposed capabilities map directly onto Table 4.
-
-- **Zero-copy with a stated alignment.** A normative minimum buffer alignment, page alignment
-  where accelerator and IPC paths require it, and explicit transfer of buffer ownership and
-  lifetime.
-- **Streaming and self-delimiting framing.** Each tensor's descriptor precedes its data, the
-  stream is self-delimiting, and the streaming form contains no trailing index and no
-  back-references, so a reader can start work before the input ends and a writer can emit
-  tensors one at a time.
-- **Self-description.** Shape, element type, layout, quantization, device placement, and
-  position within a larger logical tensor travel with the buffer, on every path: in-process
-  handoff, IPC, file, and RDMA.
-- **Layout vocabulary and negotiation.** Named layouts for strided, tiled, sparse, paged, and
-  composite tensors, an extension mechanism for hardware-specific packed forms, and a
-  handshake in which each side declares what it can consume, so that a conversion is
-  performed once by the side better placed to perform it.
-- **Device and memory-placement description.** A placement model covering host memory,
-  discrete accelerator memory, unified memory, and registered regions.
-- **Quantization metadata.** Scheme identifier, scales, zero points, and block size in the
-  descriptor, with bit-exact sub-byte packing and a normative, versioned scheme set.
-- **Language-agnostic C ABI.** A stable boundary that any language can implement against,
-  rather than one library with bindings.
 
 **The costs are real.** Three objections apply to any format of this kind, and a fourth
 applies to this one.
@@ -377,7 +386,7 @@ schemes be parameterized so that new ones do not require a new scheme identifier
 
 ---
 
-## 8. Conclusion
+## 9. Conclusion
 
 The transports used for tensor data are fast, general, and widely deployed. The descriptions
 of what they carry are not transmitted at all. Compute frameworks compensate individually:
@@ -389,8 +398,8 @@ what an interchange layer with an insufficient descriptor forces on their author
 What is missing is a portable description that travels with the bytes, expressive enough to
 state that a tensor is tiled, paged, sparse, block-quantized, or composed of heterogeneous
 regions, and carried identically across in-process, IPC, file, and RDMA paths. Table 4 states
-the seven capabilities such a description requires. Hurray is a proposal to specify them; § 7 states both what such a
-format would provide and what providing it would cost.
+the capabilities such a description requires and § 7 states its contents. Hurray is a
+proposal to specify both; § 8 states what that would provide and what it would cost.
 
 ---
 
