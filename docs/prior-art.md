@@ -85,9 +85,11 @@ be defined bit by bit rather than left to convention. In
 inference all of this is the normal case, so a tensor is not interpretable without its
 quantization parameters.
 
-**Device and memory placement.** A buffer may live in host memory, in discrete accelerator
-memory, in memory addressed by both, or in a region registered with a network interface for
-remote access. A consumer cannot use a buffer it cannot locate.
+**Device and memory placement.** A buffer lives in *host memory* (the system RAM the CPU
+addresses), in *device memory* (an accelerator's own memory, such as a discrete GPU's, which
+the CPU cannot read directly), in *unified memory* (one physical pool that both address, as
+on Apple Silicon), or in a *registered* region pinned and published to a network interface so
+a remote machine can read or write it. A consumer cannot use a buffer it cannot locate.
 
 **Alignment and size.** *Zero-copy* means sharing data between components without
 duplicating it, by passing a pointer or a memory handle rather than the bytes. It requires
