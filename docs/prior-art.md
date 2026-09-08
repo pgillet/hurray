@@ -10,11 +10,15 @@ inference, the gaps they leave, and a proposal for closing them.*
 ## Abstract
 
 AI/ML systems move large amounts of tensor data between processes, machines, and storage
-tiers. This review examines the formats, protocols, and transports used for that purpose,
-and shows that each one excels in a specific area but lacks support for the others. DLPack
-shares memory inside one process but describes only strides. Apache Arrow provides a strong
-buffer and IPC (inter-process communication) design built on a tabular data model. GGUF stores quantization parameters
-well, but only for one runtime and only in files. NIXL, NCCL, and UCX move accelerator
+tiers. Apache Arrow solved the equivalent problem for tabular data, using a public
+specification, a self-describing schema, zero-copy buffers at a stated alignment, a
+streaming form, a file form, and a language-agnostic ABI (application binary interface).
+This review asks whether the same approach can be applied to the tensor model, where the
+memory layout cannot be fixed in advance and where quantization and device placement have no
+tabular counterpart. It examines the formats, protocols, and transports in use today and
+shows that each one excels in a specific area but lacks support for the others. DLPack
+shares memory inside one process but describes only strides. GGUF stores quantization
+parameters well, but only for one runtime and only in files. NIXL, NCCL, and UCX move accelerator
 memory across a network at full hardware speed, but they transfer byte ranges with no
 description attached. The consequence is visible in disaggregated large-language-model
 inference, where the key-value cache is transferred for every request: all production
@@ -47,18 +51,84 @@ it — with a copy, with private convention, or with adapter code written once p
 endpoints. Each of those workarounds is evidence of a missing capability, and this review
 collects them.
 
-Two terms are used throughout. A **tensor** is a multi-dimensional array of numbers of one
-element type. A **descriptor** is the metadata that says how to interpret a tensor's bytes:
-its shape, its element type, how it is arranged in memory, how it is quantized, and where it
-resides. The central finding is that descriptors are rarely transmitted, and that
-reconstructing them out of band costs time and bandwidth.
+One term is used throughout. A **descriptor** is the metadata that says how to interpret a
+tensor's bytes: its shape, its element type, how it is arranged in memory, how it is
+quantized, and where it resides. The central finding is that descriptors are rarely
+transmitted, and that reconstructing them out of band costs time and bandwidth.
 
 ---
 
-## 2. What Varies Between Tensors
+## 2. Background: Apache Arrow and the Tabular Model
 
-Four things differ from one tensor to the next, and a consumer that does not know all four
-cannot use the bytes. Section 3 then shows which existing solutions can state them.
+### 2.1 What Arrow established
+
+Apache Arrow [2] is the starting point for this review. It solved, for one data model, a
+problem that remains unsolved for another, and it did so through a set of properties that
+the rest of this document uses as its measure. Each is stated here with the term it
+introduces.
+
+- **Specification first.** The format is defined by a public specification rather than by a
+  reference implementation, so independent implementations in many languages interoperate
+  instead of imitating one another.
+- **Zero-copy with a stated alignment.** *Zero-copy* means sharing data between components
+  without duplicating it, by passing a pointer or a memory handle rather than the bytes. It
+  requires agreement on alignment, ownership, and lifetime in advance. *Alignment* is the
+  requirement that a buffer start at an address that is a multiple of some size; Arrow fixes
+  a 64-byte minimum in the specification itself, because vector instructions (SIMD, one
+  instruction applied to several values at once) and direct device transfers (DMA, a device
+  reading or writing memory without the processor) reach full rate only on aligned buffers.
+- **A language-agnostic ABI.** An *ABI* (application binary interface) is a fixed binary
+  representation of structures and calls that separately compiled components can rely on.
+  Arrow's C data interface lets two libraries hand each other a buffer without agreeing at
+  source level or sharing a runtime.
+- **A streaming format.** A stream of typed messages in which the schema precedes the data
+  and each message is self-delimiting, so a reader can begin work before the input ends and
+  a writer can emit batches one at a time. The same messages serve *IPC* — inter-process
+  communication, the mechanisms by which separate processes exchange data, such as shared
+  memory.
+- **A file format.** The same data at rest, read by *mmap* — memory mapping, in which a file
+  is placed in a process's address space so that reading it does not copy it — so storage
+  and runtime share one representation.
+- **A transport.** Arrow Flight [3] carries those same messages over a network as a
+  streaming RPC.
+
+Size is why the first two properties matter in practice. A single weight
+matrix in a 70-billion-parameter model is roughly 448 MB in 16-bit floating point, and a
+long-context attention cache is several gigabytes per request. A copy imposed by an unstated
+alignment rule costs bandwidth that the computation needs, and doubles peak memory use at
+the point where accelerator memory is scarcest.
+
+### 2.2 Two data models, and the question this review asks
+
+Arrow was designed for the **tabular model**: data as rows of records, each row a set of
+named, typed fields, stored column by column so that each column is one flat buffer of one
+type. The operations that model serves are filter, join, group, and aggregate. Its layout
+question has essentially one answer — a column is a contiguous array with a validity bitmap
+beside it — which is why Arrow can fix the layout in the specification and still serve every
+consumer.
+
+The **tensor model** is not the same problem. A tensor is a single multi-dimensional array
+of one element type, addressed by an index tuple, and the operations it serves are matrix
+multiplication, convolution, and reduction. Its layout question has many answers, because
+there are many ways to map N dimensions onto linear memory and the fastest one depends on
+the operation and the hardware. A tensor format therefore cannot fix the layout the way
+Arrow does. It has to describe whichever layout the producer already holds.
+
+**The question this review asks is whether Arrow's approach can be applied to the tensor
+model** — one public specification, one self-describing descriptor, zero-copy buffers with a
+stated alignment, a streaming form, a file form, and a language-agnostic ABI — given that
+the layout cannot be fixed, and given two further properties that have no counterpart in the
+tabular case. Section 3 states those three tensor-specific concerns; §§ 4 to 6 establish
+what existing solutions do and do not provide; § 7 states the capabilities that are missing;
+§ 8 states the descriptor they imply; and § 9 introduces Hurray, a proposal to specify it.
+
+---
+
+## 3. What a Tensor Adds
+
+Three things a tensor must state have no equivalent in the tabular model, and a consumer
+that does not know all three cannot use the bytes. Section 4 shows which existing solutions
+can state them.
 
 **Layout.** A layout is how a tensor's elements are arranged in memory. The simplest
 description is *strided*: one step size per dimension, which covers row-major order,
@@ -67,7 +137,7 @@ layouts, which store small rectangular blocks contiguously so that each block fi
 and *packed* layouts, which rearrange operands into the exact order a vector or matrix unit
 reads them. A *dense* tensor stores every element explicitly (no implicit zeros), while a
 *sparse* tensor stores only non-zero elements along with an index structure (for example,
-compressed sparse rows). Attention caches use *paged* layouts, described in § 4. No single layout is
+compressed sparse rows). Attention caches use *paged* layouts, described in § 5. No single layout is
 universally optimal. The best choice depends on the operation, the hardware, and where the
 memory hierarchy bottlenecks.
 
@@ -93,31 +163,11 @@ the CPU cannot read directly), in *unified memory* (one physical pool that both 
 on Apple Silicon), or in a *registered* region pinned and published to a network interface so
 a remote machine can read or write it. A consumer cannot use a buffer it cannot locate.
 
-**Alignment and size.** *Zero-copy* means sharing data between components without
-duplicating it, by passing a pointer or a memory handle rather than the bytes. It requires
-agreement on alignment, ownership, and lifetime in advance. *Alignment* is the requirement
-that a buffer start at an address that is a multiple of some size, usually at least 64 bytes:
-vector instructions (SIMD, one instruction applied to several values at once) and direct
-device transfers (DMA, a device reading or writing memory without the processor) reach full
-rate only on aligned buffers. Size determines how much this matters: a single weight matrix
-in a 70-billion-parameter model is roughly 448 MB in 16-bit floating point, and a
-long-context attention cache is several
-gigabytes per request. A copy imposed by an unstated alignment rule costs bandwidth that the
-computation needs, and doubles peak memory use at the point where accelerator memory is
-scarcest.
-
 ---
 
-## 3. The Landscape
+## 4. The Landscape
 
-### 3.1 Interchange solutions
-
-Three abbreviations appear in Table 1. An **ABI** (application binary interface) is a fixed
-binary representation of structures and calls that separately compiled components can rely
-on, which is what lets two frameworks hand each other a pointer. **IPC** is inter-process
-communication, the mechanisms by which separate processes exchange data, such as shared
-memory. **mmap** is memory mapping: a file is placed in a process's address space, so reading
-it does not copy it.
+### 4.1 Interchange solutions
 
 **Table 1.** Data interchange solutions. *Self-describing* means the shape, element type,
 layout, and quantization travel with the data.
@@ -143,11 +193,11 @@ Five facts from this table drive the rest of the review.
 2. **Only GGUF puts quantization parameters in the descriptor**, and its schemes are defined
    by their reference implementation rather than by a portable specification, so
    interoperability requires reading that code.
-3. **Arrow specifies buffer alignment (64 bytes minimum) and Arrow Flight loses it.** Flight
-   carries data over gRPC, which requires at least one CPU copy per message and does not
-   preserve alignment, so receivers copy again before handing memory to an accelerator or a
-   linear-algebra kernel. Its message structure is nonetheless the right one: the descriptor
-   precedes the data, messages are typed, and exchange is bidirectional.
+3. **Arrow Flight loses the alignment Arrow specifies.** It carries data over gRPC, which
+   requires at least one CPU copy per message and does not preserve alignment, so receivers
+   copy again before handing memory to an accelerator or a linear-algebra kernel. Its
+   message structure is nonetheless the right one: the descriptor precedes the data,
+   messages are typed, and exchange is bidirectional.
 4. **The RDMA transports describe nothing by design.** RDMA is remote direct memory access:
    one machine's network interface reads or writes another machine's registered memory
    without involving the remote processor. NIXL, NCCL, and UCX move registered byte ranges
@@ -155,7 +205,7 @@ Five facts from this table drive the rest of the review.
 5. **File formats stop at the file.** SafeTensors, GGUF, Zarr, and NetCDF have no
    in-process ABI and no streaming protocol, so none of them can serve runtime interchange.
 
-### 3.2 Compute frameworks and libraries
+### 4.2 Compute frameworks and libraries
 
 **Table 2.** What the clients use, and what they cannot state at the boundary.
 
@@ -182,7 +232,7 @@ every exchange.
 
 ---
 
-## 4. Where the Gap Is Most Expensive
+## 5. Where the Gap Is Most Expensive
 
 Large-language-model inference has two phases. **Prefill** processes the whole prompt at
 once, is compute-bound, and fills the **key-value (KV) cache**: the stored attention keys and
@@ -227,9 +277,9 @@ none of them negotiates a descriptor. Three costs follow.
 
 ---
 
-## 5. A Second Gap: Heterogeneous Composition
+## 6. A Second Gap: Heterogeneous Composition
 
-Every layout in § 3 describes one element type, one layout, and one quantization scheme
+Every layout in § 4 describes one element type, one layout, and one quantization scheme
 across the whole tensor. Several established techniques do not fit that model: one logical
 tensor is assembled from regions that differ in precision, in layout, or in both, and each
 region has its own buffers. Two composition rules appear in practice, and they answer
@@ -267,7 +317,12 @@ the library that implements them.
 
 ---
 
-## 6. The Gaps
+## 7. The Gaps
+
+Four of the seven gaps below — alignment, streaming, a transmitted descriptor, and a
+language-agnostic ABI — are properties Arrow already provides for tabular data and no tensor
+solution provides. The other three are the tensor-specific concerns of § 3: layout, device
+placement, and quantization.
 
 ![Figure 1](figures/interchange-gap.svg)
 
@@ -279,10 +334,10 @@ the library that implements them.
 |:--|:--------------|:------------------|:--------------------------|
 | 1 | No stated alignment | Receivers copy defensively before using a buffer; Arrow Flight loses alignment through gRPC | A normative minimum alignment, stricter where accelerator and IPC paths need page alignment, plus explicit lifetime transfer |
 | 2 | No streaming form | File formats load whole artifacts; readers buffer input they cannot yet use | Descriptor before data, self-delimiting frames, no trailing index or back-reference in the stream |
-| 3 | No descriptor on the wire | Format is fixed at startup and endpoints must match (§ 4) | A descriptor sent with every transfer: shape, element type, layout, quantization, device, and position within a larger tensor |
-| 4 | One layout family per format | Producers repack, or endpoints agree privately; mismatches are resolved by hand-written modules | A layout vocabulary covering strided, tiled, sparse, paged, and composite forms, the composition rule for the last of these (§ 5), an extension path for hardware-specific packings, and negotiation so conversion happens once on the better-placed side |
+| 3 | No descriptor on the wire | Format is fixed at startup and endpoints must match (§ 5) | A descriptor sent with every transfer: shape, element type, layout, quantization, device, and position within a larger tensor |
+| 4 | One layout family per format | Producers repack, or endpoints agree privately; mismatches are resolved by hand-written modules | A layout vocabulary covering strided, tiled, sparse, paged, and composite forms, the composition rule for the last of these (§ 6), an extension path for hardware-specific packings, and negotiation so conversion happens once on the better-placed side |
 | 5 | No device placement | Placement lives in engine configuration; unified-memory systems have no single owning device | A placement model covering host, discrete, unified, and registered memory, in which device affinity can belong to an access rather than to the buffer |
-| 6 | No quantization metadata | Parameters travel in config files or framework-private objects; sub-byte packing order differs between implementations | Scheme identifier, scales, zero points, and block size in the descriptor, with bit-exact packing order (which bits hold which sub-byte element, § 2) and a normative, versioned scheme set |
+| 6 | No quantization metadata | Parameters travel in config files or framework-private objects; sub-byte packing order differs between implementations | Scheme identifier, scales, zero points, and block size in the descriptor, with bit-exact packing order (which bits hold which sub-byte element, § 3) and a normative, versioned scheme set |
 | 7 | No language-agnostic ABI | Formats stop at a file boundary or at one language's ecosystem | A stable C ABI carrying the descriptor and buffer handles, with no idioms of the implementation language |
 
 No solution in Table 1 addresses more than three of the seven. DLPack addresses 1 and 7
@@ -293,7 +348,7 @@ above them.
 
 ---
 
-## 7. What the Descriptor Must Carry
+## 8. What the Descriptor Must Carry
 
 Table 4 states seven capabilities. Six of them are properties of a single artifact that does
 not exist today: a descriptor attached to every tensor, on every path it travels. Collecting
@@ -302,14 +357,14 @@ what the preceding sections require, that descriptor must carry:
 - **Shape and element type**, including the sub-byte types quantization produces.
 - **Layout**: which family the tensor uses — strided, tiled, sparse, paged, or composite —
   together with that family's parameters: strides, tile shape, index buffers, page size and
-  block table, or the member list and composition rule of § 5.
+  block table, or the member list and composition rule of § 6.
 - **Quantization**: scheme identifier, scales, zero points, group size, and the packing order
-  of § 2, so that a consumer can dequantize without external configuration.
-- **Device placement**: which of the four locations of § 2 each buffer occupies.
+  of § 3, so that a consumer can dequantize without external configuration.
+- **Device placement**: which of the four locations of § 3 each buffer occupies.
 - **Buffer geometry**: the offset, length, and alignment of each buffer, with ownership and
   lifetime stated, so that a consumer can hold the memory instead of copying it.
 - **Position within a larger tensor**: the offset and extent of this tensor inside the whole,
-  which is what a sharded handoff loses today (§ 3.2).
+  which is what a sharded handoff loses today (§ 4.2).
 
 The seventh capability, negotiation, is not a field. It is what two endpoints do with these
 descriptors before any data moves: each declares what it can consume, and the conversion, if
@@ -317,10 +372,10 @@ one is needed, is performed once by the side better placed to perform it.
 
 ---
 
-## 8. Hurray: A Proposal
+## 9. Hurray: A Proposal
 
 **Hurray** is a proposed specification for a tensor interchange format and protocol, designed
-against the seven gaps above. It specifies the descriptor of § 7, a binary encoding for it,
+against the seven gaps above. It specifies the descriptor of § 8, a binary encoding for it,
 and the protocol properties Table 4 requires around it: a normative minimum buffer alignment
 with explicit ownership transfer, a self-delimiting stream in which each descriptor precedes
 its data and nothing refers backwards, a capability handshake in which each side declares the
@@ -346,24 +401,23 @@ the seven capabilities, and none combines these four:
 **The costs are real.** Three objections apply to any format of this kind, and a fourth
 applies to this one.
 
-- **Complexity.** Every named layout is a burden on every implementation. A reader that must
-  handle strided, tiled, sparse, paged, and composite tensors is larger and harder to verify
-  than one that handles strided layouts only. Two things bound the cost. The mandatory core can be kept
-  small, with the rest optional and negotiated. And an implementation that meets a layout it
-  does not support must be able to reject it explicitly, which is far cheaper to build than
-  support for the layout and is enough to keep the format safe to extend.
-- **Negotiation cost.** A handshake adds round trips before the first byte moves. For a
-  single small tensor that is pure overhead, and a format that always required it would be
-  worse than one that never did. The cost is paid once per session, while the conversion it
-  avoids is paid per transfer and grows with the size of the data: at the buffer sizes of
-  § 4, one avoided repack pays for many handshakes. Where it does not pay, the handshake
-  must be skippable, which is a requirement on the design rather than an argument against it.
+- **Complexity.** Every named layout is a burden on every implementation: a reader handling
+  strided, tiled, sparse, paged, and composite tensors is larger and harder to verify than
+  one handling strided layouts only. Two things bound the cost. The mandatory core can stay
+  small, with the rest optional and negotiated. And an implementation that meets an
+  unsupported layout need only reject it explicitly, which is far cheaper than supporting it
+  and is enough to keep the format safe to extend.
+- **Negotiation cost.** A handshake adds round trips before the first byte moves, and for a
+  single small tensor that is pure overhead. But it is paid once per session, while the
+  conversion it avoids is paid per transfer and grows with the size of the data: at the
+  buffer sizes of § 5, one avoided repack pays for many handshakes. Where it does not pay,
+  the handshake must be skippable, which is a requirement on the design rather than an
+  argument against it.
 - **Adoption.** A new ABI needs framework support, and DLPack already has it almost
   everywhere. This is the largest risk, and no analysis removes it. Two things reduce it.
   DLPack itself shows that an ABI spreads when it solves a problem frameworks actually have.
-  And the two are not exclusive: a dense strided tensor can cross either boundary, so a
-  framework can adopt the richer descriptor only for the cases DLPack cannot express, which
-  is where the cost is being paid today.
+  And the two are not exclusive: a dense strided tensor crosses either boundary, so a
+  framework can adopt the richer descriptor only where DLPack cannot express what it needs.
 - **Why not extend an existing format?** This is the cheapest option, and it was considered.
   DLPack's structure is deliberately minimal and fixed; adding layout, quantization, device,
   and shard fields to it produces a different artifact with the same name, and it would still
@@ -375,7 +429,7 @@ applies to this one.
 Hurray is a standardization effort, and the specification is public. The format is documented
 at **[pgillet.github.io/hurray](https://pgillet.github.io/hurray)** and developed in the open
 at **[github.com/pgillet/hurray](https://github.com/pgillet/hurray)**. Review of the
-specification, and of the gap analysis in § 6 that motivates it, is welcome.
+specification, and of the gap analysis in § 7 that motivates it, is welcome.
 
 Several questions remain open and are stated as such. How large should the layout vocabulary
 be, given that every named layout is a burden on every implementation and every omission
@@ -386,7 +440,7 @@ schemes be parameterized so that new ones do not require a new scheme identifier
 
 ---
 
-## 9. Conclusion
+## 10. Conclusion
 
 The transports used for tensor data are fast, general, and widely deployed. The descriptions
 of what they carry are not transmitted at all. Compute frameworks compensate individually:
@@ -398,8 +452,8 @@ what an interchange layer with an insufficient descriptor forces on their author
 What is missing is a portable description that travels with the bytes, expressive enough to
 state that a tensor is tiled, paged, sparse, block-quantized, or composed of heterogeneous
 regions, and carried identically across in-process, IPC, file, and RDMA paths. Table 4 states
-the capabilities such a description requires and § 7 states its contents. Hurray is a
-proposal to specify both; § 8 states what that would provide and what it would cost.
+the capabilities such a description requires and § 8 states its contents. Hurray is a
+proposal to specify both; § 9 states what that would provide and what it would cost.
 
 ---
 
