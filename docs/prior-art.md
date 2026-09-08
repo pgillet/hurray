@@ -100,7 +100,8 @@ the point where accelerator memory is scarcest.
 
 ### 2.2 Two data models, and the question this review asks
 
-Arrow was designed for the **tabular model**: data as rows of records, each row a set of
+Arrow was designed for the **tabular model**: data as rows of records (typically from a
+relational database), each row a set of
 named, typed fields, stored column by column so that each column is one flat buffer of one
 type. The operations that model serves are filter, join, group, and aggregate. Its layout
 question has essentially one answer — a column is a contiguous array with a validity bitmap
@@ -141,21 +142,18 @@ compressed sparse rows). Attention caches use *paged* layouts, described in § 5
 universally optimal. The best choice depends on the operation, the hardware, and where the
 memory hierarchy bottlenecks.
 
-**Quantization.** Quantization stores a value as a low-precision integer together with a
-scale and, optionally, a zero point, so that the value is approximated by
-`scale × (quantized − zero_point)`. The parameters may apply to a whole tensor, to one
-channel, or to a group of consecutive elements — *grouped* or *block* quantization, with a
-group size typically of 32 or 64 — and the group size is part of the scheme. When elements
-are narrower than a byte, multiple elements share a single byte or word, and the *packing
-order* specifies which bits hold which element. It is the same kind of problem as
-endianness, one level down: endianness fixes which byte of a multi-byte value comes first,
-and packing order fixes which of the elements sharing a byte comes first. Two 4-bit integers
-fit in one byte, and both conventions are in use — element 0 in bits 0–3, or element 0 in
-bits 4–7. A reader that assumes the wrong one produces plausible numbers rather than an
-error, and converting between the two costs a pass over the whole tensor, so the order must
-be defined bit by bit rather than left to convention. In
-inference all of this is the normal case, so a tensor is not interpretable without its
-quantization parameters.
+**Quantization.** Inference stores weights and caches at reduced precision because their
+size is the binding constraint: a 70-billion-parameter model is about 140 GB in 16-bit
+floating point and about 35 GB at 4 bits, and decode is bound by memory bandwidth (§ 5), so
+reading fewer bytes per parameter directly raises throughput. Quantization stores a value as
+a low-precision integer together with a scale and, optionally, a zero point, so that the
+value is approximated by `scale × (quantized − zero_point)`. Those parameters may apply to
+the whole tensor, to one channel, or to a group of consecutive elements, typically 32 or 64.
+Where elements are narrower than a byte, several share a byte in an order that has to be
+stated, because more than one convention is in use. None of this is recoverable from the
+bytes: a tensor that loses its layout can still be read, incorrectly, whereas a tensor that
+loses its quantization parameters cannot be read at all. That is why they have to travel
+with it.
 
 **Device and memory placement.** A buffer lives in *host memory* (the system RAM the CPU
 addresses), in *device memory* (an accelerator's own memory, such as a discrete GPU's, which
