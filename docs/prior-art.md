@@ -62,10 +62,11 @@ transmitted, and that reconstructing them out of band costs time and bandwidth.
 
 ### 2.1 What Arrow established
 
-Apache Arrow [2] is the starting point for this review. It solved, for one data model, a
-problem that remains unsolved for another, and it did so through a set of properties that
-the rest of this document uses as its measure. Each is stated here with the term it
-introduces.
+Apache Arrow [2] is the starting point for this review. It solved the problem of moving data
+between different tools, libraries, and programming languages — which until then meant a
+serialization step, and usually a full copy, at every boundary — and it did so through a set
+of properties that the rest of this document uses as its measure. Each is stated here with
+the term it introduces.
 
 - **Specification first.** The format is defined by a public specification rather than by a
   reference implementation, so independent implementations in many languages interoperate
