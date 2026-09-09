@@ -185,7 +185,7 @@ layout, and quantization travel with the data.
 | NCCL [10] | RDMA collectives | None | ✗ | n/a | ✓ | ✓ | ✗ | Very high |
 | UCX [11] | RDMA abstraction | None | ✗ | n/a | ✓ | ✓ | ✗ | High |
 
-Five facts from this table drive the rest of the review.
+Four facts from this table drive the rest of the review.
 
 1. **No solution describes more than one layout family.** Every entry is limited to strides
    or to row-major order. None can state that a tensor is tiled, packed, sparse, or paged.
@@ -201,8 +201,6 @@ Five facts from this table drive the rest of the review.
    one machine's network interface reads or writes another machine's registered memory
    without involving the remote processor. NIXL, NCCL, and UCX move registered byte ranges
    and require both endpoints to already agree on the format.
-5. **File formats stop at the file.** SafeTensors, GGUF, Zarr, and NetCDF have no
-   in-process ABI and no streaming protocol, so none of them can serve runtime interchange.
 
 ### 4.2 Compute frameworks and libraries
 
@@ -276,43 +274,49 @@ none of them negotiates a descriptor. Three costs follow.
 
 ---
 
-## 6. A Second Gap: Heterogeneous Composition
+## 6. A Second Gap: Composite Tensors
 
-Every layout in § 4 describes one element type, one layout, and one quantization scheme
-across the whole tensor. Several established techniques do not fit that model: one logical
-tensor is assembled from regions that differ in precision, in layout, or in both, and each
-region has its own buffers. Two composition rules appear in practice, and they answer
-different questions about what a position in the tensor means.
+Everything so far assumes a single tensor: one element type, one layout, one quantization
+scheme, one set of buffers. Three situations that occur in practice do not fit that
+assumption, and each is handled today by a mechanism outside the descriptor.
 
-**Partition: regions that do not overlap.** Each position belongs to exactly one region. A
-residual-precision KV cache [34] is the clearest example. The most recent tokens are kept at
-full precision, because they are still being written and are the most sensitive to
-quantization error, while older tokens are stored 2-bit quantized. The split runs along the
-sequence axis; the two regions have different element types, different quantization
-parameters, and separate buffers; and no position is in both. A mixture-of-experts model that
-assigns a different bit width per expert partitions the same way, along the expert axis.
-Outside machine learning the pattern is long established and production-proven: adaptive-mesh
-frameworks store one logical array as independently allocated boxes at different refinement
-levels [35], volumetric formats mix constant tiles with dense leaves [36], and HDF5 virtual
-datasets define one logical dataset as per-region mappings onto separate source files [37].
+**Sharding: one logical tensor split across several.** Tensor-parallel inference divides a
+weight matrix across devices, and each device holds a piece that means nothing without a
+statement of which piece it is. JAX annotates arrays with a device mesh [15], but a DLPack
+handoff carries none of that, so a cross-framework transfer degrades to a dense single-device
+view (§ 4.2). At rest the same problem is solved out of band: a sharded checkpoint is several
+files plus a JSON index mapping each tensor name to the file that holds it [38], a
+composition mechanism the ecosystem had to invent because the format has none. On the wire it
+is solved a third time and worse, by hand-written code that recomputes the mapping when two
+inference stages run at different parallelism degrees (§ 5).
 
-**Overlay: corrections on top of a base.** A base tensor spans the whole index space, and a
-sparse second tensor supplies replacement values at scattered positions that the base also
-covers. SpQR [32] uses this arrangement for sparse-quantized weights: it stores a weight
-matrix at 3–4 bits per weight and keeps roughly one percent of the weights — the outliers
-whose quantization error dominates the loss — at higher precision in a separate sparse
-structure. KVQuant [33] applies the same arrangement to the KV cache. Reading position
-`(i, j)` means consulting the sparse structure first and falling back to the dequantized base
-only if no correction is stored there. Because base and corrections share positions, this
-cannot be expressed as a partition.
+**Grouping: several tensors delivered as one thing.** A model's weights are a named
+collection, and file formats express that directly: SafeTensors [4] and GGUF [5] both do. The
+in-process ABI and the streaming boundary do not. DLPack passes one tensor per call, so a
+consumer receiving a model receives a sequence of unrelated arrays and rebuilds the
+association from names agreed elsewhere. This is the one case of the three already solved at
+rest and still unsolved in motion.
 
-**What this requires of a descriptor.** The same set of regions has two different meanings
-under the two rules: under a partition the regions are the tensor, and under an overlay all
-but one of them are exceptions to it. A descriptor must therefore carry three things — the
-geometry of the regions, a complete description of each region (element type, layout,
-quantization, buffers), and the composition rule that resolves a position. No mainstream
-tensor interchange format carries any of the three, so both arrangements are today private to
-the library that implements them.
+**Heterogeneous regions: one tensor whose parts differ.** A residual-precision KV cache [34]
+keeps recent tokens at full precision and older tokens 2-bit quantized: two regions along the
+sequence axis, with different element types, different quantization parameters, and separate
+buffers. A mixture-of-experts model that assigns a different bit width per expert divides the
+same way. SpQR [32] and KVQuant [33] do something different, keeping a dense low-precision
+tensor plus roughly one percent of values at higher precision in a sparse structure at
+scattered positions. The two arrangements are not interchangeable, and the difference is what
+a descriptor has to state: in the first, every position belongs to exactly one region; in the
+second, the corrections share positions with the base, so reading a position means consulting
+the corrections first. Outside machine learning the pattern is older and
+production-proven: adaptive-mesh frameworks [35], volumetric formats [36], and HDF5 virtual
+datasets [37] all define one logical array as per-region mappings onto independently
+allocated storage.
+
+**Why this belongs in the descriptor.** All three are expressed today, each by a different
+mechanism: a side-car index file, a naming convention, a library-private data structure. None
+of the three crosses a boundary, so a consumer that did not agree on the mechanism in advance
+cannot act on it. A descriptor that names a tensor's members, describes each as an ordinary
+tensor, and states the rule composing them replaces all three, and can be read without prior
+agreement.
 
 ---
 
@@ -551,3 +555,6 @@ Quantization," 2024. <https://arxiv.org/abs/2401.18079>
 
 [37] HDF5 Virtual Datasets. The HDF Group.
 <https://docs.hdfgroup.org/hdf5/develop/_v_d_s.html>
+
+[38] Sharded checkpoints and their JSON weight map. Hugging Face.
+<https://huggingface.co/docs/transformers/big_models>
