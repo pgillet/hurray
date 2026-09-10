@@ -86,12 +86,10 @@ the term it introduces.
   and each message is self-delimiting, so a reader can begin work before the input ends and
   a writer can emit batches one at a time. The same messages serve *IPC* — inter-process
   communication, the mechanisms by which separate processes exchange data, such as shared
-  memory.
+  memory, and Arrow Flight [3] carries them over a network as a streaming RPC.
 - **A file format.** The same data at rest, read by *mmap* — memory mapping, in which a file
   is placed in a process's address space so that reading it does not copy it — so storage
   and runtime share one representation.
-- **A transport.** Arrow Flight [3] carries those same messages over a network as a
-  streaming RPC.
 
 Size is why the first two properties matter in practice. A single weight
 matrix in a 70-billion-parameter model is roughly 448 MB in 16-bit floating point, and a
@@ -219,13 +217,11 @@ Four facts from this table drive the rest of the review.
 | vLLM [23] | NIXL, external cache layers, NCCL | Paged cache geometry and quantization; fixed once at startup |
 | NVIDIA Dynamo, TensorRT-LLM [24], [25] | NIXL, UCX, MPI | Cache layout across mismatched parallelism, handled by a hand-written module |
 
-Three observations follow. First, nine of these systems support DLPack, so its descriptor
+Two observations follow. First, nine of these systems support DLPack, so its descriptor
 sets the effective limit on what can cross a boundary inside one process.
 Second, the numerical libraries prove that adopting foreign memory is routine — Eigen and
-xtensor both map caller-owned buffers — so the obstacle is the missing description, not the
-sharing mechanism. Third, PLASMA and SLATE show that a serious library maintains several
-layouts at once, which means a single mandated layout would force a conversion on someone in
-every exchange.
+xtensor both map caller-owned buffers, and PLASMA and SLATE both maintain several layouts at
+once — so the obstacle is the missing description, not the sharing mechanism.
 
 ---
 
@@ -270,7 +266,7 @@ none of them negotiates a descriptor. Three costs follow.
    handle every such case.
 3. **Stored caches are unreadable elsewhere.** A cache written to a pool [27] or compressed
    to disk [31] carries no standard description, so only the software that wrote it can read
-   it back. This removes most of the benefit of pooling it.
+   it back, which removes most of the benefit of pooling it.
 
 ---
 
@@ -286,16 +282,21 @@ statement of which piece it is. JAX annotates arrays with a device mesh [15], bu
 handoff carries none of that, so a cross-framework transfer degrades to a dense single-device
 view (§ 4.2). At rest the same problem is solved out of band: a sharded checkpoint is several
 files plus a JSON index mapping each tensor name to the file that holds it [38], a
-composition mechanism the ecosystem had to invent because the format has none. On the wire it
-is solved a third time and worse, by hand-written code that recomputes the mapping when two
-inference stages run at different parallelism degrees (§ 5).
+composition mechanism the ecosystem had to invent because the format has none. On the wire it is
+solved a third time, by the hand-written reshuffle of § 5.
 
-**Grouping: several tensors delivered as one thing.** A model's weights are a named
-collection, and file formats express that directly: SafeTensors [4] and GGUF [5] both do. The
-in-process ABI and the streaming boundary do not. DLPack passes one tensor per call, so a
-consumer receiving a model receives a sequence of unrelated arrays and rebuilds the
-association from names agreed elsewhere. This is the one case of the three already solved at
-rest and still unsolved in motion.
+**Grouping: many tensors delivered as one artifact.** A transformer's weights are not one
+tensor but several hundred, each with its own name, shape, and element type, and a consumer
+needs all of them, under those names, before it can run anything. File formats express this
+directly. A SafeTensors file [4] is a JSON header mapping each tensor name to its element
+type, shape, and byte range, followed by one region of data, so the association between names
+and tensors is part of the format; GGUF [5] does the same and adds a key-value section for
+the hyperparameters and tokenizer data that belong with the weights. Neither the in-process
+ABI nor the stream has an equivalent. DLPack's unit is a single managed tensor and carries no
+name, so a library handing over a model makes several hundred separate calls and the names
+travel beside the ABI, in a Python dictionary or an agreed ordering; a stream of tensors
+likewise has no way to state that these several hundred are one artifact. Grouping is the one
+case of the three already solved at rest and unsolved everywhere else.
 
 **Heterogeneous regions: one tensor whose parts differ.** A residual-precision KV cache [34]
 keeps recent tokens at full precision and older tokens 2-bit quantized: two regions along the
@@ -455,8 +456,8 @@ what an interchange layer with an insufficient descriptor forces on their author
 What is missing is a portable description that travels with the bytes, expressive enough to
 state that a tensor is tiled, paged, sparse, block-quantized, or composed of heterogeneous
 regions, and carried identically across in-process, IPC, file, and RDMA paths. Table 4 states
-the capabilities such a description requires and § 8 states its contents. Hurray is a
-proposal to specify both; § 9 states what that would provide and what it would cost.
+the capabilities it requires, § 8 its contents, and § 9 what specifying it would provide and
+what it would cost.
 
 ---
 
