@@ -183,7 +183,7 @@ layout, and quantization travel with the data.
 | NCCL [10] | RDMA collectives | None | ✗ | n/a | ✓ | ✓ | ✗ | Very high |
 | UCX [11] | RDMA abstraction | None | ✗ | n/a | ✓ | ✓ | ✗ | High |
 
-Four facts from this table drive the rest of the review.
+Five facts from this table drive the rest of the review.
 
 1. **No solution describes more than one layout family.** Every entry is limited to strides
    or to row-major order. None can state that a tensor is tiled, packed, sparse, or paged.
@@ -199,6 +199,9 @@ Four facts from this table drive the rest of the review.
    one machine's network interface reads or writes another machine's registered memory
    without involving the remote processor. NIXL, NCCL, and UCX move registered byte ranges
    and require both endpoints to already agree on the format.
+5. **File formats stop at the file.** SafeTensors, GGUF, Zarr, and NetCDF have no in-process
+   ABI and no streaming protocol, so none of them can serve runtime interchange, whatever
+   their descriptor contains.
 
 ### 4.2 Compute frameworks and libraries
 
@@ -217,11 +220,12 @@ Four facts from this table drive the rest of the review.
 | vLLM [23] | NIXL, external cache layers, NCCL | Paged cache geometry and quantization; fixed once at startup |
 | NVIDIA Dynamo, TensorRT-LLM [24], [25] | NIXL, UCX, MPI | Cache layout across mismatched parallelism, handled by a hand-written module |
 
-Two observations follow. First, nine of these systems support DLPack, so its descriptor
+Three observations follow. First, nine of these systems support DLPack, so its descriptor
 sets the effective limit on what can cross a boundary inside one process.
 Second, the numerical libraries prove that adopting foreign memory is routine — Eigen and
-xtensor both map caller-owned buffers, and PLASMA and SLATE both maintain several layouts at
-once — so the obstacle is the missing description, not the sharing mechanism.
+xtensor both map caller-owned buffers — so the obstacle is the missing description, not the
+sharing mechanism. Third, PLASMA and SLATE maintain several layouts at once, which means any
+single mandated layout would force a conversion on someone in every exchange.
 
 ---
 
