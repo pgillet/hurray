@@ -1,831 +1,565 @@
-# Prior Art: Tensor Memory Formats and Interchange Frameworks
+# Tensor Data Interchange: What Existing Solutions Cannot Express
 
-**Status:** Research snapshot — April 2026
-**Scope:** Formats, libraries, and protocols relevant to zero-copy, multi-layout tensor interchange for AI/ML inference pipelines.
+*A review of the formats, protocols, and transports that move tensor data in AI/ML
+inference, the gaps they leave, and a proposal for closing them.*
 
----
-
-## 1. Background: Why Tensor Interchange Is Hard
-
-The fundamental mathematical operation in AI/ML workloads — the dot product, generalized to matrix multiplication — is sensitive to memory layout. The same data stored differently can be orders of magnitude faster or slower to process, depending on the hardware, the operation, and the cache hierarchy.
-
-Efficient matrix multiplication requires:
-1. **Tiling** the computation to fit the CPU cache hierarchy (L1 ~32–128 KB, L2 ~256 KB–2 MB, L3 ~8–128 MB per chip).
-2. **Repacking** data into contiguous panel formats to eliminate stride penalties inside SIMD/Tensor Core kernels.
-3. **Hardware-specific micro-layouts** for innermost kernels (NVIDIA Tensor Core fragment layouts, AMX tile registers, etc.).
-
-No single layout is universally optimal. The right layout depends on the operation, the hardware, and which level of the memory hierarchy is the bottleneck. A general-purpose interchange format must therefore carry rich layout metadata, not mandate a single layout.
+**Revision:** September 2026 · Also available as [PDF](prior-art.pdf)
 
 ---
 
-## 2. Existing Formats and Libraries
+## Abstract
 
-### 2.1 DLPack
-
-**What it is:** A minimal open standard (originally from MXNet, now part of the Python Array API) for sharing tensor memory between frameworks without copying.
-
-**How it works:** A `DLManagedTensor` struct carries a data pointer, shape, strides, device info, and dtype. A managed tensor struct wraps this with a destructor callback for lifetime management.
-
-**Layout model:** Strides only. Can express row-major, column-major, and non-contiguous slices. Cannot express:
-- Tiled/blocked layouts
-- Morton/Z-order (bit-interleaved addressing)
-- Panel-packed formats
-- Sparse layouts (CSR, BSR, etc.)
-- Sub-byte quantization block layouts
-
-**Quantization:** None.
-
-**Interchange:** In-process only (pointer passing). No IPC or streaming.
-
-**Adoption:** Widely adopted — PyTorch, TensorFlow, JAX, CuPy, NumPy all support `__dlpack__`.
-
-**Assessment:** The closest existing zero-copy tensor ABI. The layout model is the clearest gap relative to Hurray's goals.
-
----
-
-### 2.2 Apache Arrow
-
-**What it is:** A language-agnostic columnar memory format and IPC protocol, originally designed for tabular data.
-
-**How it works:** A `RecordBatch` is a table of typed, named columns. Each column is backed by one or more flat buffers with defined alignment (64-byte minimum). The IPC format allows zero-copy reads via memory mapping.
-
-**Tensor support:** `FixedShapeTensorArray` — an Arrow extension type wrapping tensors as fixed-shape arrays within an Arrow column. Supports row-major and column-major.
-
-**Layout model:** Row-major or column-major. No tiled, blocked, or packed layouts. Consumers must repack before computing, which breaks the zero-copy promise.
-
-**Quantization:** None in core. Extension types exist but are not standardized.
-
-**Interchange:** Excellent — IPC, Flight (gRPC-based streaming), C Data Interface (ABI-stable FFI), shared memory.
-
-**Assessment:** Excellent buffer model and IPC framing; fundamentally tabular. The right precedent for buffer management and IPC protocol design, not for tensor data modeling.
+AI/ML systems move large amounts of tensor data between processes, machines, and storage
+tiers. Apache Arrow solved the equivalent problem for tabular data, using a public
+specification, a self-describing schema, zero-copy buffers at a stated alignment, a
+streaming form, a file form, and a language-agnostic ABI (application binary interface).
+This review asks whether the same approach can be applied to the tensor model, where the
+memory layout cannot be fixed in advance and where quantization and device placement have no
+tabular counterpart. It examines the formats, protocols, and transports in use today and
+shows that each one excels in a specific area but lacks support for the others. DLPack
+shares memory inside one process but describes only strides. GGUF stores quantization
+parameters well, but only for one runtime and only in files. NIXL, NCCL, and UCX move
+accelerator memory across a network at full hardware speed, but they transfer byte ranges
+with no
+description attached. The consequence is visible in disaggregated large-language-model
+inference, where the key-value cache is transferred for every request: all production
+systems examined here fix shape, element type, layout, and quantization outside the
+transfer, send only opaque blocks and identifiers, and require hand-written conversion code
+whenever the two endpoints differ. From this evidence the review identifies seven gaps and
+states the capability each one requires: zero-copy sharing with a stated alignment,
+self-delimiting streaming, self-description, layout negotiation, device and memory-placement
+description, quantization metadata in the descriptor, and a language-agnostic ABI. It then
+states what a tensor descriptor must carry to provide them, and introduces **Hurray**, a
+proposed specification for a tensor interchange format designed to close all seven
+([github.com/pgillet/hurray](https://github.com/pgillet/hurray),
+[pgillet.github.io/hurray](https://pgillet.github.io/hurray)).
 
 ---
 
-### 2.3 SafeTensors
+## 1. Introduction
 
-**What it is:** A simple, safe serialization format for model weights, developed by Hugging Face.
+Two kinds of software appear in this review, and the distinction matters only because one
+depends on the other.
 
-**How it works:** A JSON header describing tensor metadata (dtype, shape, byte offsets) precedes raw binary tensor data. Memory-mappable: the header is small, and tensors can be read without deserializing the whole file.
+- **Data interchange solutions** move or store tensor data. DLPack, Apache Arrow, Arrow
+  Flight, SafeTensors, GGUF, Zarr, NetCDF, OPeNDAP, NIXL, NCCL, and UCX are in this group.
+- **Compute frameworks and libraries** perform computation on tensors. PyTorch, TensorFlow,
+  JAX, NumPy, Eigen, xtensor, PLASMA, SLATE, TVM, MLC-LLM, MLX, vLLM, and NVIDIA Dynamo are
+  in this group. They are the clients of the first group.
 
-**Layout model:** Row-major only. No strides, no tiling.
+When an interchange solution cannot express something the client needs, the client pays for
+it — with a copy, with private convention, or with adapter code written once per pair of
+endpoints. Each of those workarounds is evidence of a missing capability, and this review
+collects them.
 
-**Quantization:** None. Weights are stored in their native float16/bfloat16/float32.
-
-**Interchange:** File-based only. No IPC, no streaming, no language-agnostic ABI.
-
-**Safety:** Deliberately safe — cannot execute code on load (unlike PyTorch pickle).
-
-**Adoption:** The dominant open-weights distribution format on Hugging Face Hub (LLaMA, Mistral, Falcon, etc.).
-
-**Assessment:** Excellent for model distribution. Not designed for runtime interchange, quantized inference, or multi-layout pipelines.
-
----
-
-### 2.4 GGUF
-
-**What it is:** A self-contained model file format developed by the llama.cpp ecosystem, optimized for local CPU inference.
-
-**How it works:** A single binary file containing model weights, tokenizer data, and hyperparameter metadata. Rich key-value metadata header. Supports memory-mapping for zero-copy reads.
-
-**Layout model:** Row-major for unquantized tensors. Block-quantized layouts for quantized types (Q4_K, Q8_0, etc.) are stored as packed byte sequences with interleaved scale factors.
-
-**Quantization:** Rich and practical — Q4_K_M, Q5_K_S, Q8_0, IQ4_XS, and more. Quantization schemes are llama.cpp-specific, not formally standardized.
-
-**Interchange:** File-based only. Single-consumer oriented (the llama.cpp runtime or compatible loaders).
-
-**Ecosystem:** Ollama, LM Studio, GPT4All, and most local inference tools use GGUF.
-
-**Assessment:** Best-in-class for single-user local inference. Quantization schemes are practically excellent but informally specified. Not suited for multi-process or multi-language runtime interchange.
+One term is used throughout. A **descriptor** is the metadata that says how to interpret a
+tensor's bytes: its shape, its element type, how it is arranged in memory, how it is
+quantized, and where it resides. The central finding is that descriptors are rarely
+transmitted, and that reconstructing them out of band costs time and bandwidth.
 
 ---
 
-### 2.5 ONNX
+## 2. Background: Apache Arrow and the Tabular Model
 
-**What it is:** A computation graph interchange format — a portable IR for neural network models.
+### 2.1 What Arrow established
 
-**How it works:** A `.onnx` file is a Protocol Buffer containing a DAG of operator nodes, initializer tensors (weights), and input/output schemas. ONNX Runtime parses the graph and dispatches operators to pluggable execution provider backends (CPU, CUDA/TensorRT, CoreML, DirectML, OpenVINO).
+Apache Arrow [2] is the starting point for this review. It solved the problem of moving data
+between different tools, libraries, and programming languages — which until then meant a
+serialization step, and usually a full copy, at every boundary — and it did so through a set
+of properties that the rest of this document uses as its measure. Each is stated here with
+the term it introduces.
 
-**Layout model:** No layout control — the runtime decides. Quantization is supported via `QLinearMatMul`, `QLinearConv`, etc., but is second-class.
+- **Specification first.** The format is defined by a public specification rather than by a
+  reference implementation, so independent implementations in many languages interoperate
+  instead of imitating one another.
+- **Zero-copy with a stated alignment.** *Zero-copy* means sharing data between components
+  without duplicating it, by passing a pointer or a memory handle rather than the bytes. It
+  requires agreement on alignment, ownership, and lifetime in advance. *Alignment* is the
+  requirement that a buffer start at an address that is a multiple of some size; Arrow fixes
+  a 64-byte minimum in the specification itself, because vector instructions (SIMD, one
+  instruction applied to several values at once) and direct device transfers (DMA, a device
+  reading or writing memory without the processor) reach full rate only on aligned buffers.
+- **A language-agnostic ABI.** An *ABI* (application binary interface) is a fixed binary
+  representation of structures and calls that separately compiled components can rely on.
+  Arrow's C data interface lets two libraries hand each other a buffer without agreeing at
+  source level or sharing a runtime.
+- **A streaming format.** A stream of typed messages in which the schema precedes the data
+  and each message is self-delimiting, so a reader can begin work before the input ends and
+  a writer can emit batches one at a time. The same messages serve *IPC* — inter-process
+  communication, the mechanisms by which separate processes exchange data, such as shared
+  memory, and Arrow Flight [3] carries them over a network as a streaming RPC.
+- **A file format.** The same data at rest, read by *mmap* — memory mapping, in which a file
+  is placed in a process's address space so that reading it does not copy it — so storage
+  and runtime share one representation.
 
-**Tensor interchange:** Partial. Tensors exist as graph edges and initializers, not as a standalone interchange primitive.
+Size is why the first two properties matter in practice. A single weight matrix in a
+70-billion-parameter model is roughly 448 MB in 16-bit floating point, and a
+long-context attention cache is several gigabytes per request. A copy imposed by an unstated
+alignment rule costs bandwidth that the computation needs, and doubles peak memory use at
+the point where accelerator memory is scarcest.
 
-**Limitations:** Operator coverage gaps for new architectures; dynamic shapes are painful; Protobuf doesn't scale to large models; graph optimization is runtime-specific.
+### 2.2 Two data models, and the question this review asks
 
-**Assessment:** For computation graph portability, not tensor data interchange. Not relevant to Hurray's runtime interchange goals.
+Arrow was designed for the **tabular model**: data as rows of records (typically from a
+relational database), each row a set of named, typed fields, stored column by column so that
+each column is one flat buffer of one type. The operations that model serves are filter,
+join, group, and aggregate. Its layout question has essentially one answer — a column is a contiguous array with a validity bitmap
+beside it — which is why Arrow can fix the layout in the specification and still serve every
+consumer.
 
----
+The **tensor model** is not the same problem. A tensor is a single multi-dimensional array
+of one element type, addressed by an index tuple, and the operations it serves are matrix
+multiplication, convolution, and reduction. Its layout question has many answers, because
+there are many ways to map N dimensions onto linear memory and the fastest one depends on
+the operation and the hardware. A tensor format therefore cannot fix the layout the way
+Arrow does. It has to describe whichever layout the producer already holds.
 
-### 2.6 Zarr v3
-
-**What it is:** A format and library for chunked, compressed, cloud-friendly N-dimensional array storage.
-
-**How it works:** Arrays are divided into fixed-size chunks stored as independent binary blobs, each compressed independently (Blosc, Zstd, LZ4, Gzip). Metadata is JSON. Chunks can be stored on a local filesystem, in a zip archive, or in a cloud object store.
-
-**Layout model:** Chunk shape (tile shape) plus C-order or F-order within chunks. Rich codec pipeline for compression and transformations.
-
-**Quantization:** None natively. Can be approximated via codecs.
-
-**Interchange:** Storage-oriented. No IPC protocol, no shared-memory semantics. Compression is fundamental — incompatible with zero-copy runtime access.
-
-**Relevance:** The conceptual complement to Hurray: Zarr for on-disk/cloud tensor storage; Hurray for in-process/IPC runtime interchange. Analogous to Parquet (storage) + Arrow (runtime) in the data engineering world.
-
-**Assessment:** Best-in-class for tensor dataset storage. Not designed for runtime interchange.
-
----
-
-### 2.7 NumPy (ndarray)
-
-**What it is:** The de facto N-dimensional array standard in Python.
-
-**How it works:** An `ndarray` carries a data pointer, shape, strides, dtype, and flags. Supports arbitrary strides — transpose, slice, and broadcast are all zero-copy view operations.
-
-**Layout model:** Arbitrary strides (dense only). No tiled, packed, or sparse layouts.
-
-**Interchange:** Python-ecosystem only via `__array_interface__` and `__dlpack__`. No language-agnostic ABI.
-
-**Quantization:** None.
-
-**Assessment:** The gold standard for strided dense arrays in Python. Its stride model is a useful reference; its Python coupling is a limiting factor for language-agnostic interchange.
-
----
-
-### 2.8 Eigen (C++)
-
-**What it is:** A high-performance C++ linear algebra library using expression templates.
-
-**How it works:** Matrix storage order (row-major vs column-major) is a compile-time template parameter. Supports maps over external memory buffers with arbitrary strides. Lazy evaluation via expression templates avoids temporaries.
-
-**Layout model:** Row-major or column-major at compile time. Arbitrary strides via `Map`. No tiled or packed layouts.
-
-**Interchange:** None — purely in-process. No serialization or IPC.
-
-**Assessment:** Excellent for in-process C++ computation. Not an interchange format.
-
----
-
-### 2.9 xtensor (C++)
-
-**What it is:** A C++ N-dimensional array library inspired by NumPy, with Python bindings via xtensor-python.
-
-**How it works:** Supports row-major and column-major, arbitrary strides, lazy evaluation, and mapping over external buffers. Designed to be more Arrow-like than Eigen.
-
-**Layout model:** Strided dense only.
-
-**Interchange:** Partial — external buffer support enables some interop, but no formal protocol.
-
-**Assessment:** More interop-friendly than Eigen, but still no formal interchange protocol.
+**The question this review asks is whether Arrow's approach can be applied to the tensor
+model** — one public specification, one self-describing descriptor, zero-copy buffers with a
+stated alignment, a streaming form, a file form, and a language-agnostic ABI — given that
+the layout cannot be fixed, and given two further properties that have no counterpart in the
+tabular case. Section 3 states those three tensor-specific concerns; §§ 4 to 6 establish
+what existing solutions do and do not provide; § 7 states the capabilities that are missing;
+§ 8 states the descriptor they imply; and § 9 introduces Hurray, a proposal to specify it.
 
 ---
 
-### 2.10 NetCDF
+## 3. What a Tensor Adds
 
-**What it is:** Network Common Data Form — a widely adopted open standard for array-oriented scientific data (climate, oceanography, geophysics).
+Three things a tensor must state have no equivalent in the tabular model, and a consumer
+that does not know all three cannot use the bytes. Section 4 shows which existing solutions
+can state them.
 
-**How it works:** Files store N-dimensional variables with named dimensions, attributes, and a small set of primitive types (float32, float64, int16, int32, etc.). CDL (Common Data Language) provides a text representation. The classic format is based on XDR; NetCDF-4 uses HDF5 as the storage layer.
+**Layout.** A layout is how a tensor's elements are arranged in memory. The simplest
+description is *strided*: one step size per dimension, which covers row-major order,
+column-major order, transposes, and slices. Fast kernels do not use it. They use *tiled*
+layouts, which store small rectangular blocks contiguously so that each block fits in cache,
+and *packed* layouts, which rearrange operands into the exact order a vector or matrix unit
+reads them. A *dense* tensor stores every element explicitly (no implicit zeros), while a
+*sparse* tensor stores only non-zero elements along with an index structure (for example,
+compressed sparse rows). Attention caches use *paged* layouts, described in § 5. No single layout is
+universally optimal. The best choice depends on the operation, the hardware, and where the
+memory hierarchy bottlenecks.
 
-**Layout model:** Dense arrays only. Row-major (C order). No strides, no tiling, no sparse layouts.
+**Quantization.** Inference stores weights and caches at reduced precision because their
+size is the binding constraint: a 70-billion-parameter model is about 140 GB in 16-bit
+floating point and about 35 GB at 4 bits, and decode is bound by memory bandwidth (§ 5), so
+reading fewer bytes per parameter directly raises throughput. Quantization stores a value as
+a low-precision integer together with a scale and, optionally, a zero point, so that the
+value is approximated by `scale × (quantized − zero_point)`. Those parameters may apply to
+the whole tensor, to one channel, or to a group of consecutive elements, typically 32 or 64.
+Where elements are narrower than a byte (int4, int2), several share a byte in an order that
+has to be stated, because more than one convention is in use. None of this is recoverable
+from the bytes: a tensor that loses its layout can still be read, incorrectly, whereas a
+tensor that loses its quantization parameters cannot be read at all. That is why they have
+to travel with it.
 
-**Quantization:** None. Scaling conventions (add_offset, scale_factor attributes) exist but are not standardized as first-class metadata.
-
-**Interchange:** File-based. No in-process ABI, no IPC protocol, no zero-copy semantics.
-
-**Adoption:** Very high in Earth Sciences, geospatial, and computational fluid dynamics communities. The Python ecosystem (xarray, netCDF4-python) relies on it heavily.
-
-**Assessment:** A practical reference for N-dimensional array file formats with named dimensions and rich metadata conventions. Not designed for runtime interchange, quantized inference, or multi-layout pipelines.
-
----
-
-### 2.11 OPeNDAP
-
-**What it is:** Open-source Project for a Network Data Access Protocol — a de facto standard in the Earth Sciences community for remote access to scientific array data.
-
-**How it works:** OPeNDAP defines a data model (based on NetCDF/DODS), a constraint expression language for server-side sub-setting and projection, and an HTTP-based transport protocol (DAP2 / DAP4). A client sends a constrained request (e.g., "variable X, indices [0:10, 50:100]"); the server computes the sub-set and streams the result as binary + metadata.
-
-**Layout model:** Dense arrays, row-major. No tiling, no sparsity, no sub-byte packing.
-
-**Quantization:** None.
-
-**Interchange:** Network-only, request/response model. No zero-copy, no RDMA, no in-process ABI.
-
-**Adoption:** High in Earth Sciences (NASA, NOAA, CMIP climate archives). Implemented by Hyrax (OPeNDAP server) and THREDDS Data Server.
-
-**Assessment:** Prior art for server-side array sub-setting and streaming over HTTP. Demonstrates demand for a protocol that understands array structure (shapes, slices, variable names), not just raw bytes. Hurray's streaming and interchange goals operate in a similar problem space but target in-process / IPC / RDMA use cases rather than HTTP-based remote access.
-
----
-
-### 2.12 HPC Libraries: PLASMA and SLATE
-
-**PLASMA** — A parallel linear algebra library that natively uses tiled matrix layouts. Tiles are stored as individually allocated blocks, enabling asynchronous task-parallel execution on multicore CPUs. Not an interchange format.
-
-**SLATE** — A modern redesign for distributed-memory linear algebra, supporting multiple layouts (column-major, tiled, band), mixed precision, and GPU offload. Closest to a multi-layout-aware library, but again not an interchange format.
-
-**Assessment:** These demonstrate that tiled layouts are practically essential for high-performance GEMM. Their layout models are a useful reference for Hurray's memory-layout spec.
+**Device and memory placement.** A buffer lives in *host memory* (the system RAM the CPU
+addresses), in *device memory* (an accelerator's own memory, such as a discrete GPU's, which
+the CPU cannot read directly), in *unified memory* (one physical pool that both address, as
+on Apple Silicon), or in a *registered* region pinned and published to a network interface so
+a remote machine can read or write it. A consumer cannot use a buffer it cannot locate.
 
 ---
 
-### 2.13 NIXL (NVIDIA Inference Xfer Library)
+## 4. The Landscape
 
-**What it is:** An open-source tensor transfer library from NVIDIA, designed specifically
-for high-throughput tensor exchange in LLM inference pipelines (announced at GTC 2025).
+### 4.1 Interchange solutions
 
-**Primary use case:** KV cache migration in **disaggregated prefill/decode** inference
-architectures, where the prefill (prompt processing) and decode (token generation) stages
-run on different GPU nodes. The KV cache — a tensor of shape `[layers, 2, heads, seq_len,
-head_dim]` — must be transferred between nodes at high speed for each request.
+**Table 1.** Data interchange solutions. *Self-describing* means the shape, element type,
+layout, and quantization travel with the data.
 
-**Transport model:**
-- Sender registers a GPU memory region (CUDA buffer) with the RDMA NIC using GPUDirect
-  RDMA. The NIC can DMA directly from GPU memory without a GPU→CPU copy.
-- The receiver pre-allocates an aligned GPU buffer and shares its RDMA memory key and
-  remote address with the sender.
-- The sender issues an RDMA Write (or Read) operation. The NIC moves data directly from
-  source GPU memory to destination GPU memory over the network, with zero CPU involvement.
-- Result: no CPU copies, no host-memory staging, no gRPC framing overhead.
+| Solution | Kind | Layout model | Quantization | Streaming | Zero-copy | RDMA | Self-describing | Adoption |
+|:------------|:-----------|:---------------|:----------:|:--------:|:---------:|:-----:|:---------:|:--------|
+| DLPack [1] | In-process ABI | Strided | ✗ | ✗ | ✓ | ✗ | Partial | Very high |
+| Apache Arrow [2] | IPC, columnar | Row/column-major | ✗ | ✓ | ✓ | ✗ | Partial | Very high |
+| Arrow Flight [3] | Streaming RPC | Row/column-major | ✗ | ✓ | ✗ | ✗ | Partial | Medium |
+| SafeTensors [4] | File | Row-major | ✗ | ✗ | ✓ (mmap) | ✗ | Partial | High |
+| GGUF [5] | File | Row-major + packed blocks | ✓ informal | ✗ | ✓ (mmap) | ✗ | ✓ | High |
+| Zarr [6] | File, object store | Chunk grid | ✗ | ✗ | ✗ (compressed) | ✗ | ✓ | Medium |
+| NetCDF [7] | File | Row-major | ✗ | ✗ | ✗ | ✗ | ✓ | High |
+| OPeNDAP [8] | HTTP request | Row-major | ✗ | ✓ | ✗ | ✗ | ✓ | Medium |
+| NIXL [9] | RDMA transport | None | ✗ | n/a | ✓ | ✓ | ✗ | Emerging |
+| NCCL [10] | RDMA collectives | None | ✗ | n/a | ✓ | ✓ | ✗ | Very high |
+| UCX [11] | RDMA abstraction | None | ✗ | n/a | ✓ | ✓ | ✗ | High |
 
-**Transport backends:** UCX (InfiniBand, RoCE), NVIDIA GDS (GPU Direct Storage), NVMe-oF.
+Five facts from this table drive the rest of the review.
 
-**What it does not define:**
-- Any format for tensor descriptor, layout, or quantization metadata.
-- Layout negotiation — it assumes both sides agree on the tensor format out-of-band.
-- Multi-layout support — it transfers raw byte buffers, not structured tensor objects.
+1. **No solution describes more than one layout family.** Every entry is limited to strides
+   or to row-major order. None can state that a tensor is tiled, packed, sparse, or paged.
+2. **Only GGUF puts quantization parameters in the descriptor**, and its schemes are defined
+   by their reference implementation rather than by a portable specification, so
+   interoperability requires reading that code.
+3. **Arrow Flight loses the alignment Arrow specifies.** It carries data over gRPC, which
+   requires at least one CPU copy per message and does not preserve alignment, so receivers
+   copy again before handing memory to an accelerator or a linear-algebra kernel. Its
+   message structure is nonetheless the right one: the descriptor precedes the data,
+   messages are typed, and exchange is bidirectional.
+4. **The RDMA transports describe nothing by design.** RDMA is remote direct memory access:
+   one machine's network interface reads or writes another machine's registered memory
+   without involving the remote processor. NIXL, NCCL, and UCX move registered byte ranges
+   and require both endpoints to already agree on the format.
+5. **File formats stop at the file.** SafeTensors, GGUF, Zarr, and NetCDF have no in-process
+   ABI and no streaming protocol, so none of them can serve runtime interchange, whatever
+   their descriptor contains.
 
-**Adoption:** Used by vLLM (disaggregated prefill/decode), NVIDIA TensorRT-LLM, Dynamo
-(NVIDIA's inference scheduler).
+### 4.2 Compute frameworks and libraries
 
-**Assessment:** The closest existing prior art to what Hurray's RDMA data plane (OQ-2)
-would implement at the transport layer. NIXL solves the "move bytes fast" problem but
-provides no tensor metadata, layout, or quantization vocabulary — which is exactly what
-Hurray's descriptor layer adds on top.
+**Table 2.** What the clients use, and what they cannot state at the boundary.
 
----
+| Framework | Interchange it uses | What it cannot express at the boundary |
+|:----------|:----------------------|:------------------------------|
+| NumPy [12] | DLPack, buffer protocol, `.npy` | Nothing beyond strides; no path outside Python |
+| PyTorch [13] | DLPack, SafeTensors, NCCL, RDMA libraries via serving stacks | Quantization parameters (kept in separate objects); packed and tiled layouts |
+| TensorFlow [14] | DLPack, saved-model container, NCCL | Compiler-chosen physical layout; quantization is a property of the model artifact |
+| JAX [15] | DLPack, checkpoint libraries, NCCL | Device sharding and compiler-chosen tiling; a handoff degrades to a dense single-device view |
+| Eigen [16], xtensor [17] | None; both map caller-owned memory | Any layout not fixed at compile time; no descriptor of any kind |
+| PLASMA [18], SLATE [19] | None | Tile parameters, which are private to the library although central to its performance |
+| TVM [20], MLC-LLM [21] | DLPack; ad-hoc parameter bundles | The packed and tiled forms the compiler produces; grouped low-bit weight parameters |
+| MLX [22] | DLPack, buffer protocol, existing file formats | Its packed quantized representation; unified memory has no single owning device |
+| vLLM [23] | NIXL, external cache layers, NCCL | Paged cache geometry and quantization; fixed once at startup |
+| NVIDIA Dynamo, TensorRT-LLM [24], [25] | NIXL, UCX, MPI | Cache layout across mismatched parallelism, handled by a hand-written module |
 
-### 2.14 NCCL + GPUDirect RDMA
-
-**What it is:** NVIDIA Collective Communications Library — the standard library for
-GPU-to-GPU communication in distributed ML workloads.
-
-**How it works:** NCCL implements collective operations (AllReduce, AllGather,
-ReduceScatter, Broadcast, Send/Recv) over GPU tensors. When both GPUs are on different
-nodes connected via InfiniBand or RoCE, NCCL uses GPUDirect RDMA: the NIC reads from
-source GPU memory and writes to destination GPU memory without host CPU involvement.
-
-**Tensor model:** None. NCCL operates on flat GPU buffers — a pointer, a count, and a
-dtype. All layout semantics are handled by the caller.
-
-**Use in inference:** Tensor parallelism (splitting a model's weight matrices across GPUs)
-and pipeline parallelism (splitting model layers across nodes) use NCCL point-to-point
-(Send/Recv) for activation tensors. These are increasingly used in large-model inference
-(not just training).
-
-**Assessment:** NCCL provides the RDMA transport primitive; it does not define any tensor
-interchange protocol. It is the incumbent for GPU collective communications, but it
-provides no layout negotiation, no streaming framing, and no quantization support.
-
----
-
-### 2.15 UCX (Unified Communication X)
-
-**What it is:** An open-source communication framework that abstracts over multiple
-high-performance transport layers: InfiniBand (verbs), RoCE, TCP/IP, shared memory,
-and CUDA IPC.
-
-**How it works:** UCX provides a unified API (`ucp_put_nb`, `ucp_get_nb`, `ucp_send_nb`,
-etc.) for RDMA put/get, atomic, and stream operations, dispatching to the best available
-transport on a per-connection basis. Fallback to TCP is automatic when RDMA is unavailable.
-
-**Role in the ecosystem:** UCX is not a user-facing protocol. It is the transport layer
-used by:
-- OpenMPI / MVAPICH (HPC MPI)
-- NCCL (via its verbs backend)
-- NIXL (primary transport backend)
-- Ray (distributed object store transfers)
-
-**Relevance to Hurray:** Hurray's OQ-2 (RDMA data plane) would likely sit above UCX in
-the software stack. UCX handles the actual RDMA operation; the Hurray protocol handles
-memory registration handshake, descriptor exchange, and session management.
-
-**Assessment:** UCX is the practical implementation substrate for any RDMA-based Hurray
-transport, not a format or protocol to evaluate as prior art per se. Worth knowing as
-the layer Hurray's RDMA extension must integrate with.
+Three observations follow. First, nine of these systems support DLPack, so its descriptor
+sets the effective limit on what can cross a boundary inside one process.
+Second, the numerical libraries prove that adopting foreign memory is routine — Eigen and
+xtensor both map caller-owned buffers — so the obstacle is the missing description, not the
+sharing mechanism. Third, PLASMA and SLATE maintain several layouts at once, which means any
+single mandated layout would force a conversion on someone in every exchange.
 
 ---
 
-### 2.16 Apache Arrow Flight
+## 5. Where the Gap Is Most Expensive
 
-**What it is:** A gRPC-based RPC framework for high-performance Arrow data exchange,
-built on top of the Arrow IPC format.
+Large-language-model inference has two phases. **Prefill** processes the whole prompt at
+once, is compute-bound, and fills the **key-value (KV) cache**: the stored attention keys and
+values that let later steps avoid recomputing attention over the prompt. **Decode** emits one
+token at a time, is memory-bandwidth-bound, and reads and extends that cache. The two phases
+have different hardware profiles, so production systems run them on separate accelerators or
+nodes [26], [27]. The cache, of logical shape `[layers, 2, heads, seq_len, head_dim]`, must
+then be transferred for every request — several gigabytes at long context lengths. The cache
+is stored in a **paged** layout [23]: a pool of fixed-size blocks plus a per-sequence block
+table mapping logical positions to physical blocks, so a transfer moves a list of
+non-contiguous blocks rather than one contiguous region.
 
-**How it works:** Arrow Flight defines a set of RPCs — `DoGet` (server streams data to
-client), `DoPut` (client streams data to server), `DoExchange` (bidirectional), and
-metadata calls (`GetFlightInfo`, `ListFlights`). Data travels as `FlightData` messages,
-each containing an Arrow IPC message header and a raw data body.
+![Figure 2](figures/kv-cache-transfer.svg)
 
-**Transport:** gRPC over HTTP/2. All data — control and payload — goes through gRPC
-streaming. No RDMA support. Implementations can achieve ~2–3 GB/s on fast LAN.
+**Figure 2.** KV cache transfer between a prefill worker and a decode worker.
 
-**Layout model:** Inherits Arrow's limitations: row-major or column-major only, no
-tiled or packed layouts, no quantization.
+**Table 3.** Six systems that transfer the KV cache.
 
-**Strengths:** Excellent for columnar record batch interchange. Simple RPC model. Good
-ecosystem (Java, C++, Python, Go, Rust clients).
+| System | Transport used | Sent with the data | Assumed out of band |
+|:----------|:----------------|:----------------|:------------------|
+| DistServe [26] | Intra-node interconnect | Layer and block references | Identical model build and cache layout |
+| Mooncake [27] | Its own multi-NIC RDMA engine | Block keys and offsets | Shape, element type, paged layout |
+| vLLM connectors [23], [28] | NIXL, Mooncake, LMCache | Raw blocks and block identifiers | Everything, fixed at cache-registration time |
+| Dynamo, TensorRT-LLM [24], [25] | NIXL, UCX, MPI | Prompt tokens and connection parameters | Layout; parallelism mismatch resolved by a bespoke module |
+| llm-d [29] | NIXL with a unified collective backend | Blocks and routing hints | Model identity and layout |
+| LMCache [30], [31] | Engine connectors, multi-tier store | Compressed chunks and keys | Cache format and compression codec |
 
-**Weaknesses for tensor workloads:**
-- gRPC serialization requires at least one CPU copy per message — incompatible with
-  true zero-copy for GB-scale tensor buffers.
-- Buffer alignment is not preserved through gRPC: receivers must copy to aligned memory
-  before passing to GPU or BLAS kernels.
-- No layout negotiation, no quantization metadata, no device memory support.
+The pattern is identical in all six. The handshakes negotiate addresses and agent identity;
+none of them negotiates a descriptor. Three costs follow.
 
-**Assessment:** The primary design inspiration for Hurray's network transport protocol.
-Hurray adopts Arrow Flight's streaming RPC model (descriptor before data, typed messages,
-bidirectional exchange) and extends it with layout negotiation, extension layout entry
-encoding, parallel shard transfers, and a hook for an RDMA data plane.
-
----
-
-### 2.17 MLX (Apple)
-
-**What it is:** A NumPy-like array framework for Apple Silicon, designed for ML research and inference on CPU and GPU via Apple's unified memory architecture.
-
-**How it works:** Arrays live in shared memory accessible by both the CPU and GPU without any buffer copies or explicit device placement. Operations carry a device tag; buffers do not. Computation is lazy — arrays materialize on demand, enabling graph-level optimization before execution. Interop with NumPy and PyTorch is via the Python buffer protocol and `__dlpack__`; most dtypes are truly zero-copy (bf16 and f64 require conversion for NumPy).
-
-**Layout model:** Standard strided dense arrays. No tiled, blocked, or sparse layouts.
-
-**Quantization:** Quantization is an operation, not a storage dtype. `mlx.core.quantize` produces packed `uint32` weight tensors plus separate scale and bias arrays. Affine scheme: group sizes 32/64/128, 2–8 bits per element, LSB-first packing (element 0 occupies bits 0–(bits-1) of the first word). Block floating-point modes: MXFP4/MXFP8 (shared E8M0 exponent, group=32) and NVFP4 (group=16, E4M3 per-group scales, no bias). No native int4/fp8 dtypes — quantized tensors are always stored in packed `uint32` arrays.
-
-**On-disk format:** None native. MLX saves/loads `.npy`, `.npz`, `.safetensors`, and `.gguf`. This is a deliberate design choice, not an oversight.
-
-**Interchange:** In-process only. No IPC, no streaming, no cross-language ABI beyond `mlx-c` (an unofficial C wrapper).
-
-**Design insight — device is per-operation, not per-buffer:** Unlike CUDA or Metal, MLX's unified memory model eliminates the host/device buffer duality. A buffer has no device affinity; only the kernel that reads it does. This is a data point for Hurray's device-tag ADR: device ownership may be an attribute of *access* rather than of the buffer itself.
-
-**Sub-byte packing cross-reference:** MLX's documented int4 LSB-first layout (element 0 in bits 0–3 of a `uint32`) should be checked against Hurray's sub-byte packing spec in `memory-layout.md` for ecosystem compatibility.
-
-**Adoption:** Growing in the Apple Silicon developer community. Used by Hugging Face `mlx-lm`, `whisper.mlx`, and a range of on-device LLM inference tools.
-
-**Assessment:** Not an interchange format — MLX deliberately reuses existing formats and focuses on the runtime compute layer. Its key contributions to Hurray's prior art are: (1) the unified-memory "device is per-operation" model as input to the device-tag design, and (2) its multi-mode quantization packing (LSB-first uint32, affine + MXFP + NVFP4, variable group sizes) as a cross-reference for Hurray's sub-byte packing and quantization specs.
+1. **Endpoints are coupled in pairs.** Every connector assumes matching builds on both sides.
+   Transfer between different engines, different versions, or different quantization settings
+   requires a purpose-built adapter, because there is no neutral representation.
+2. **Layout conversion is written by hand.** When prefill and decode run at different
+   tensor-parallelism degrees, the block mapping differs; TensorRT-LLM converts the layout
+   during transmission in a dedicated module, and vLLM's RDMA connector reshuffles the block
+   mapping itself. A description of the source and destination layouts would let one routine
+   handle every such case.
+3. **Stored caches are unreadable elsewhere.** A cache written to a pool [27] or compressed
+   to disk [31] carries no standard description, so only the software that wrote it can read
+   it back, which removes most of the benefit of pooling it.
 
 ---
 
-### 2.18 Apache TVM (and MLC-LLM)
+## 6. A Second Gap: Composite Tensors
 
-**What it is:** An open-source machine-learning *compiler* stack. It ingests models (PyTorch, ONNX, …), lowers them through a graph IR (Relay, now Relax) to a tensor IR (TIR), auto-tunes kernels (AutoTVM / Ansor / MetaSchedule), and emits optimized code for a wide range of backends (x86/ARM CPUs, CUDA/ROCm/Metal/Vulkan/WebGPU GPUs, microcontrollers). **MLC-LLM** is a TVM/Relax-based project that compiles and runs LLMs across heterogeneous consumer hardware (phones, laptops, browsers).
+Everything so far assumes a single tensor: one element type, one layout, one quantization
+scheme, one set of buffers. Three situations that occur in practice do not fit that
+assumption, and each is handled today by a mechanism outside the descriptor.
 
-**Relationship to DLPack:** TVM comes from the same DMLC lineage that produced **DLPack** (see §2.1); its runtime `NDArray` is DLPack-native. The zero-copy ABI Hurray targets for in-process interop is, in effect, TVM's in-memory tensor format — so TVM validates that choice rather than competing with it.
+**Sharding: one logical tensor split across several.** Tensor-parallel inference divides a
+weight matrix across devices, and each device holds a piece that means nothing without a
+statement of which piece it is. JAX annotates arrays with a device mesh [15], but a DLPack
+handoff carries none of that, so a cross-framework transfer degrades to a dense single-device
+view (§ 4.2). At rest the same problem is solved out of band: a sharded checkpoint is several
+files plus a JSON index mapping each tensor name to the file that holds it [38], a
+composition mechanism the ecosystem had to invent because the format has none. On the wire it is
+solved a third time, by the hand-written reshuffle of § 5.
 
-**Layout model:** Not a storage format — TVM *transforms* layouts as a compilation concern, aggressively rewriting to hardware-preferred forms (tiling, packed `NCHWc`, tensor-core fragments) for kernel performance. It has no on-disk layout vocabulary of its own.
+**Grouping: many tensors delivered as one artifact.** A transformer's weights are not one
+tensor but several hundred, each with its own name, shape, and element type, and a consumer
+needs all of them, under those names, before it can run anything. File formats express this
+directly. A SafeTensors file [4] is a JSON header mapping each tensor name to its element
+type, shape, and byte range, followed by one region of data, so the association between names
+and tensors is part of the format; GGUF [5] does the same and adds a key-value section for
+the hyperparameters and tokenizer data that belong with the weights. Neither the in-process
+ABI nor the stream has an equivalent. DLPack's unit is a single managed tensor and carries no
+name, so a library handing over a model makes several hundred separate calls and the names
+travel beside the ABI, in a Python dictionary or an agreed ordering; a stream of tensors
+likewise has no way to state that these several hundred are one artifact. Grouping is the one
+case of the three already solved at rest and unsolved everywhere else.
 
-**Quantization:** Compilation-time passes (int8, and grouped/int4 weight quantization in MLC-LLM), not a normative on-disk representation. Quantized weights are TVM's problem to *generate and execute*, not to *interchange*.
+**Heterogeneous regions: one tensor whose parts differ.** A residual-precision KV cache [34]
+keeps recent tokens at full precision and older tokens 2-bit quantized: two regions along the
+sequence axis, with different element types, different quantization parameters, and separate
+buffers. A mixture-of-experts model that assigns a different bit width per expert divides the
+same way. SpQR [32] and KVQuant [33] do something different, keeping a dense low-precision
+tensor plus roughly one percent of values at higher precision in a sparse structure at
+scattered positions. The two arrangements are not interchangeable, and the difference is what
+a descriptor has to state: in the first, every position belongs to exactly one region; in the
+second, the corrections share positions with the base, so reading a position means consulting
+the corrections first. Outside machine learning the pattern is older and
+production-proven: adaptive-mesh frameworks [35], volumetric formats [36], and HDF5 virtual
+datasets [37] all define one logical array as per-region mappings onto independently
+allocated storage.
 
-**Interchange:** In-process via DLPack (NDArray). Model artifacts are compiled modules (`.so`/`.tar`) plus a parameter blob; there is no framework-agnostic, quantization/layout-aware interchange or streaming format — parameters are typically carried as NumPy-derived or ad-hoc bundles.
-
-**Adoption:** Mature and influential; one of the pioneers of "compile a model to any hardware." MLC-LLM is widely used for on-device LLM inference.
-
-**Assessment:** Orthogonal and complementary — TVM is *compute* (codegen, tuning, execution); Hurray is *interchange* (moving, storing, and describing tensor data). In the tensor supply chain, TVM is an execution stage and Hurray is transport + storage + description around it. Two concrete integration paths: (1) hand dense Tier-1 tensors to/from a TVM `NDArray` zero-copy via DLPack, exactly as with NumPy/PyTorch; (2) use Hurray's file format as the quantization- and layout-aware on-disk container for TVM/MLC-LLM weights (the role GGUF plays for llama.cpp) — MLC-LLM's shuttling of grouped-int4 weights across heterogeneous hardware sits squarely in Hurray's target domain. Hurray adds none of TVM's core value (no compiler, no autotuning); it fills the gap TVM leaves — a framework-agnostic, zero-copy interchange + storage format. TVM's layout rewrites are also a reference for which packed/tiled layouts a producer might hand over pre-optimized (Hurray's tiled/blocked layouts) to avoid a re-layout copy.
-
----
-
-## 3. KV Cache Transfer in Disaggregated LLM Inference
-
-The transport entries above (§§2.13–2.16: NIXL, NCCL, UCX, Arrow Flight) are
-*primitives* — they move bytes. This section covers the *systems* built on top of
-them: the disaggregated-inference architectures that move the **KV cache** between
-machines as their central data-plane problem. They are surveyed separately because
-they are the primary real-world consumers of a tensor-transfer layer, and because
-they collectively expose the exact gap Hurray targets — they move KV cache buffers
-with no self-describing tensor descriptor attached.
-
-**Background — why the KV cache moves.** Autoregressive LLM inference has two
-phases with opposite hardware profiles: **prefill** (process the whole prompt,
-compute-bound, fills the KV cache) and **decode** (generate tokens one at a time,
-memory-bandwidth-bound, reads and extends the KV cache). Co-locating them on the
-same GPU couples their latency targets (time-to-first-token vs. time-per-output-token)
-and wastes resources. **Disaggregated prefill/decode** runs the two phases on
-separate GPUs or nodes — which means the KV cache produced by prefill, a tensor of
-logical shape `[layers, 2, heads, seq_len, head_dim]` (the `2` is key + value), must
-be transferred to the decode worker for every request. For long-context models this
-is gigabytes per request, so the transfer is the defining engineering constraint.
-The KV cache is almost always stored **paged** (vLLM PagedAttention style): a flat
-pool of fixed-size blocks plus a per-sequence block table, so transfers move
-non-contiguous block lists, not a single contiguous tensor.
-
----
-
-### 3.1 DistServe
-
-**What it is:** The OSDI 2024 research system (Zhong et al.) that introduced
-disaggregating prefill and decoding onto separate GPUs to optimize *goodput*
-(requests served within both TTFT and TPOT SLOs).
-
-**KV cache transfer:** Layer-by-layer transfer of the KV cache from prefill to
-decode instances. DistServe's key move is **bandwidth-aware placement**: it
-co-locates the prefill and decode segments of a request so that the KV transfer
-rides intra-node **NVLink** (≈600 GB/s peak between A100s), which renders the
-transfer overhead "negligible" relative to recompute. Placement is chosen by a
-search over parallelism configurations using simulation.
-
-**Metadata model:** None beyond layer/block references. Both phases run the
-*identical* model build with an identical KV layout that is assumed out-of-band;
-the transfer carries numerical KV blocks only.
-
-**Results:** Up to 7.4× more requests or 12.6× tighter SLO vs. co-located baselines.
-
-**Assessment:** The foundational disaggregation paper. It established the
-prefill/decode split and the insight that KV-transfer cost dominates placement —
-but it sidesteps the metadata problem entirely by assuming homogeneous instances on
-a high-bandwidth fabric. It is the academic root the production systems below build on.
+**Why this belongs in the descriptor.** All three are expressed today, each by a different
+mechanism: a side-car index file, a naming convention, a library-private data structure. None
+of the three crosses a boundary, so a consumer that did not agree on the mechanism in advance
+cannot act on it. A descriptor that names a tensor's members, describes each as an ordinary
+tensor, and states the rule composing them replaces all three, and can be read without prior
+agreement.
 
 ---
 
-### 3.2 Mooncake
+## 7. The Gaps
 
-**What it is:** The KVCache-centric disaggregated serving platform behind Kimi
-(Moonshot AI), published at FAST 2025 / ACM ToS 2025 (arXiv 2407.00079) and
-open-sourced as `kvcache-ai/Mooncake`. Runs across thousands of nodes serving
->100 billion tokens/day.
+Four of the seven gaps below — alignment, streaming, a transmitted descriptor, and a
+language-agnostic ABI — are properties Arrow already provides for tabular data and no tensor
+solution provides. The other three are the tensor-specific concerns of § 3: layout, device
+placement, and quantization.
 
-**Architecture:** A **disaggregated KVCache pool** that harvests the otherwise
-idle CPU, DRAM, and SSD of the GPU cluster into a shared, tiered cache, fronted by a
-**KVCache-centric scheduler** that maximizes effective throughput under SLOs and
-maximizes prefix-cache reuse.
+![Figure 1](figures/interchange-gap.svg)
 
-**Transfer Engine:** A standalone, reusable, zero-copy RDMA transfer library —
-arguably Mooncake's most influential artifact. It aggregates **multiple RDMA NICs**
-per host and uses **topology-aware path selection**: each server broadcasts a
-topology matrix classifying NICs into preferred/secondary lists per memory region
-(set at registration time), preferring local-NUMA / local-PCIe-switch GPUDirect
-paths and failing over to alternate paths on error. Reported 87 GB/s (4×200 Gbps
-RoCE) and 190 GB/s (8×400 Gbps), ~2.4–4.6× faster than TCP.
+**Figure 1.** What crosses the boundary today, and what a self-describing descriptor changes.
 
-**Metadata model:** Transfers are keyed by KVCache block identifiers / offsets into
-registered memory regions. The tensor's shape, dtype, and paged layout are properties
-of the engine configuration, agreed out-of-band — the Transfer Engine moves
-registered byte ranges, not described tensors.
+**Table 4.** Seven gaps, what they cost today, and the capability each requires.
 
-**Assessment:** The most complete production realization of "KV cache as a
-first-class, poolable, transferable object." Its Transfer Engine is direct prior art
-for Hurray's RDMA data plane (OQ-2), and its KVCache pool is the strongest evidence
-that the ecosystem wants to treat KV cache as durable, shareable tensor data — yet
-it still carries no portable descriptor with the bytes.
+| # | Gap | What happens today | Required capability |
+|:--|:--------------|:------------------|:--------------------------|
+| 1 | No stated alignment | Receivers copy defensively before using a buffer; Arrow Flight loses alignment through gRPC | A normative minimum alignment, stricter where accelerator and IPC paths need page alignment, plus explicit lifetime transfer |
+| 2 | No streaming form | File formats load whole artifacts; readers buffer input they cannot yet use | Descriptor before data, self-delimiting frames, no trailing index or back-reference in the stream |
+| 3 | No descriptor on the wire | Format is fixed at startup and endpoints must match (§ 5) | A descriptor sent with every transfer: shape, element type, layout, quantization, device, and position within a larger tensor |
+| 4 | One layout family per format | Producers repack, or endpoints agree privately; mismatches are resolved by hand-written modules | A layout vocabulary covering strided, tiled, sparse, paged, and composite forms, the composition rule for the last of these (§ 6), an extension path for hardware-specific packings, and negotiation so conversion happens once on the better-placed side |
+| 5 | No device placement | Placement lives in engine configuration; unified-memory systems have no single owning device | A placement model covering host, discrete, unified, and registered memory, in which device affinity can belong to an access rather than to the buffer |
+| 6 | No quantization metadata | Parameters travel in config files or framework-private objects; sub-byte packing order differs between implementations | Scheme identifier, scales, zero points, and block size in the descriptor, with bit-exact packing order (which bits hold which sub-byte element, § 3) and a normative, versioned scheme set |
+| 7 | No language-agnostic ABI | Formats stop at a file boundary or at one language's ecosystem | A stable C ABI carrying the descriptor and buffer handles, with no idioms of the implementation language |
+
+No solution in Table 1 addresses more than three of the seven. DLPack addresses 1 and 7
+inside one process. Arrow addresses 1, 2, and 7 for a tabular data model. GGUF addresses 3
+and 6 for one runtime, in files. The RDMA transports address none of them, which is correct
+for their role: they are a data plane, and what is missing is a description that travels
+above them.
 
 ---
 
-### 3.3 vLLM disaggregated prefilling & the KVConnector API
+## 8. What the Descriptor Must Carry
 
-**What it is:** vLLM's connector framework for disaggregated prefill and KV
-offloading — the de facto integration point the rest of the ecosystem plugs into. All
-implementations live under `vllm/distributed/kv_transfer`.
+Table 4 states seven capabilities. Six of them are properties of a single artifact that does
+not exist today: a descriptor attached to every tensor, on every path it travels. Collecting
+what the preceding sections require, that descriptor must carry:
 
-**Interface (`KVConnectorBase_V1`):** A role-split API. Scheduler-side methods
-(`get_num_new_matched_tokens`, `update_state_after_alloc`, `build_connector_meta`,
-`request_finished`) track which blocks to load/save and assemble per-step metadata;
-worker-side methods (`register_kv_caches`, `start_load_kv`, `wait_for_layer_load`,
-`save_kv_layer`, `wait_for_save`, `get_finished`) register GPU memory and run async
-block transfers. This cleanly decouples transport from model logic.
+- **Shape and element type**, including the sub-byte types quantization produces.
+- **Layout**: which family the tensor uses — strided, tiled, sparse, paged, or composite —
+  together with that family's parameters: strides, tile shape, index buffers, page size and
+  block table, or the member list and composition rule of § 6.
+- **Quantization**: scheme identifier, scales, zero points, group size, and the packing order
+  of § 3, so that a consumer can dequantize without external configuration.
+- **Device placement**: which of the four locations of § 3 each buffer occupies.
+- **Buffer geometry**: the offset, length, and alignment of each buffer, with ownership and
+  lifetime stated, so that a consumer can hold the memory instead of copying it.
+- **Position within a larger tensor**: the offset and extent of this tensor inside the whole,
+  which is what a sharded handoff loses today (§ 4.2).
 
-**NixlConnector:** The RDMA implementation. A lazy **ZMQ side-channel handshake**
-exchanges NIXL *agent identity* and *memory descriptors*; workers compute NIXL
-descriptor IDs for block arrays, and it handles the messy case where prefiller and
-decoder use **different tensor-parallelism degrees** (block-mapping reshuffle).
-Other connectors: `MooncakeConnector`/`MooncakeStoreConnector`, `LMCacheMPConnector`,
-`OffloadingConnector`, `MultiConnector`.
-
-**Metadata model — the crux:** Shape, dtype, layout, and quantization are
-established **once, out-of-band, at `register_kv_caches()` during startup**, and
-assumed constant per layer. Per-transfer, only **raw block buffers + block/request
-IDs** cross the wire. The handshake negotiates *addresses and agent identity*, never
-a tensor descriptor.
-
-**Assessment:** The single most important integration surface in the survey — and
-the clearest statement of the gap. vLLM has already generalized "transfer the KV
-cache" into a pluggable connector, but the thing flowing through that connector is an
-opaque block buffer plus an ID. The connector boundary is exactly where a
-self-describing Hurray descriptor would slot in.
+The seventh capability, negotiation, is not a field. It is what two endpoints do with these
+descriptors before any data moves: each declares what it can consume, and the conversion, if
+one is needed, is performed once by the side better placed to perform it.
 
 ---
 
-### 3.4 NVIDIA Dynamo & TensorRT-LLM disaggregated serving
+## 9. Hurray: A Proposal
 
-**What it is:** NVIDIA's production disaggregated-inference stack. **Dynamo** is the
-datacenter-scale serving framework (disaggregated prefill/decode, GPU autoscaling,
-KV-aware request routing); **TensorRT-LLM** is one of its backends; **NIXL** is the
-transfer library (see §2.13); **KVBM** (KV Block Manager) is a framework-agnostic
-unified memory layer usable standalone (`pip install kvbm`) or within Dynamo.
+**Hurray** is a proposed specification for a tensor interchange format and protocol, designed
+against the seven gaps above. It specifies the descriptor of § 8, a binary encoding for it,
+and the protocol properties Table 4 requires around it: a normative minimum buffer alignment
+with explicit ownership transfer, a self-delimiting stream in which each descriptor precedes
+its data and nothing refers backwards, a capability handshake in which each side declares the
+layouts, element types, and quantization schemes it can consume, and a stable C ABI that any
+language can implement against. The same descriptor is carried on every path — in-process
+handoff, IPC stream, file container, and RDMA data plane — so a tensor does not change form
+when it changes route. Hurray defines no kernels, no scheduler, and no cache policy: compute
+frameworks remain the clients, and existing transports remain the data plane.
 
-**KV Cache Manager:** Cost-aware, framework-agnostic (vLLM, TRT-LLM, SGLang,
-PyTorch), tiering KV cache across GPU / CPU / SSD / filesystem / cloud via NIXL's
-plugin backends to free GPU memory while preserving hit rates.
+**What would be new is the combination.** The individual capabilities all exist somewhere.
+DLPack shares memory inside one process but describes only strides. Arrow supplies the buffer
+and IPC discipline, for a tabular data model. GGUF puts quantization parameters in the
+container, for one runtime and only in files. NIXL and UCX move accelerator memory across a
+network without describing what they move. No solution in Table 1 provides more than three of
+the seven capabilities, and none combines these four:
 
-**Transfer & layout conversion:** TRT-LLM supports MPI, UCX, and NIXL backends over
-RDMA/NVLink. Critically, when context and generation phases use **different
-parallelism** (e.g. TP2 prefill vs. PP2 decode), TRT-LLM performs **"cache layout
-conversion during transmission"** in a dedicated KV-cache-exchange module that is
-"modularly decoupled from the KV cache manager and communication libraries." The
-accompanying metadata, `ctx_params`, carries prompt tokens, the first generated
-token, and communication parameters — i.e. *how to connect and what request this is*,
-not *what shape/layout the tensor has*.
+- one layout vocabulary spanning strided, tiled, sparse, paged, and composite tensors;
+- quantization metadata inside the descriptor rather than beside it;
+- a self-describing tensor carried over an RDMA data plane;
+- a language-agnostic C ABI, so the format can be implemented in any language rather than
+  bound from one.
 
-**Assessment:** The most operationally mature stack, and the most revealing on the
-gap: NVIDIA had to hand-write a layout-conversion module to bridge mismatched
-parallelism because there is no portable descriptor to drive a general conversion.
-That bespoke reshuffle logic is precisely what a layout-aware interchange descriptor
-exists to generalize.
+**The costs are real.** Three objections apply to any format of this kind, and a fourth
+applies to this one.
 
----
+- **Complexity.** Every named layout is a burden on every implementation: a reader handling
+  strided, tiled, sparse, paged, and composite tensors is larger and harder to verify than
+  one handling strided layouts only. Two things bound the cost. The mandatory core can stay
+  small, with the rest optional and negotiated. And an implementation that meets an
+  unsupported layout need only reject it explicitly, which is far cheaper than supporting it
+  and is enough to keep the format safe to extend.
+- **Negotiation cost.** A handshake adds round trips before the first byte moves, and for a
+  single small tensor that is pure overhead. But it is paid once per session, while the
+  conversion it avoids is paid per transfer and grows with the size of the data: at the
+  buffer sizes of § 5, one avoided repack pays for many handshakes. Where it does not pay,
+  the handshake must be skippable, which is a requirement on the design rather than an
+  argument against it.
+- **Adoption.** A new ABI needs framework support, and DLPack already has it almost
+  everywhere. This is the largest risk, and no analysis removes it. Two things reduce it.
+  DLPack itself shows that an ABI spreads when it solves a problem frameworks actually have.
+  And the two are not exclusive: a dense strided tensor crosses either boundary, so a
+  framework can adopt the richer descriptor only where DLPack cannot express what it needs.
+- **Why not extend an existing format?** This is the cheapest option, and it was considered.
+  DLPack's structure is deliberately minimal and fixed; adding layout, quantization, device,
+  and shard fields to it produces a different artifact with the same name, and it would still
+  have no streaming or file form. Arrow's data model is tabular, and its tensor extension
+  inherits that. GGUF is a file format with no ABI and no streaming protocol. Each would have
+  to acquire what the other two have, which is a larger change than specifying the descriptor
+  once and mapping it onto all three.
 
-### 3.5 llm-d
+Hurray is a standardization effort, and the specification is public. The format is documented
+at **[pgillet.github.io/hurray](https://pgillet.github.io/hurray)** and developed in the open
+at **[github.com/pgillet/hurray](https://github.com/pgillet/hurray)**. Review of the
+specification, and of the gap analysis in § 7 that motivates it, is welcome.
 
-**What it is:** A Kubernetes-native distributed-inference framework (backed by Red
-Hat, Google, IBM, and others) that treats prefill/decode disaggregation as a
-first-class orchestration primitive, built on vLLM and an inference-aware gateway.
-
-**KV cache transfer:** **NIXL-powered GPU-to-GPU** KV cache transfer over RDMA
-(InfiniBand / RoCE), with cache-aware routing (route a request to the worker that
-already holds its prefix) and a tiered storage hierarchy. v0.5 integrated the **UCCL**
-backend into the NIXL networking layer to unify over vendor collectives (NCCL/RCCL/MCCL).
-Reported ~70% higher throughput and ~88% faster TTFT vs. monolithic deployments.
-
-**Metadata model:** Inherits vLLM's connector model (§3.3) for the actual KV
-movement and adds Kubernetes-level routing/placement metadata. The KV-cache payload
-itself is still opaque vLLM blocks.
-
-**Assessment:** The Kubernetes-native packaging of everything above. Its existence
-as a community standard (and NVIDIA Dynamo's stated cooperation with it) signals that
-disaggregated KV transfer is consolidating into shared infrastructure — which is
-exactly when a common descriptor format becomes valuable rather than premature.
-
----
-
-### 3.6 LMCache
-
-**What it is:** An open-source KV cache *layer* for vLLM and SGLang (arXiv
-2510.09665) that extracts KV caches out of GPU memory and shares them across engines
-and queries.
-
-**Architecture:** A multi-tier store spanning GPU memory, CPU DRAM (pinned "hot
-cache"), local disk, and remote backends (e.g. Redis), exposed through a modular KV
-connector and a control API (pin, lookup, cleanup, move, compress). Performance comes
-from batched data movement and compute/IO pipelining.
-
-**Distinctive optimizations:** **CacheGen** (KV cache *compression* into a compact
-bitstream for storage/transfer) and **CacheBlend** (reuse of *non-prefix* KV chunks).
-Reports up to 15× throughput improvement with vLLM on multi-round QA and document
-analysis. Both prefix-reuse offloading and PD-disaggregation transfer are supported.
-
-**Metadata model:** Keyed KV chunks; with CacheGen the payload is a *compressed,
-codec-specific* bitstream — so even the "bytes" are no longer a plain tensor buffer,
-and the decoder must know the codec out-of-band.
-
-**Assessment:** Important because it pushes furthest past raw-buffer transfer: it
-compresses and reshapes KV cache for storage and reuse, which makes the *absence* of a
-self-describing format most acute — a CacheGen blob is meaningless without out-of-band
-knowledge of its shape, dtype, layout, and codec. A descriptor layer that can name a
-quantized/compressed KV cache is directly relevant here.
+Several questions remain open and are stated as such. How large should the layout vocabulary
+be, given that every named layout is a burden on every implementation and every omission
+forces a copy? What should negotiation exchange beyond a list of supported layouts, given
+that the better-placed side depends on conversion cost that neither side currently
+expresses? Should device affinity belong to a buffer or to an access? How should quantization
+schemes be parameterized so that new ones do not require a new scheme identifier each time?
 
 ---
 
-### 3.7 The metadata gap
+## 10. Conclusion
 
-Across every system above, the same pattern holds: **the KV cache moves as opaque,
-engine-private bytes, and everything needed to interpret those bytes is agreed
-out-of-band.** Concretely:
+The transports used for tensor data are fast, general, and widely deployed. The descriptions
+of what they carry are not transmitted at all. Compute frameworks compensate individually:
+PyTorch keeps quantization parameters outside the tensor, JAX cannot express sharding across
+a handoff, vLLM fixes its cache format at startup and sends opaque blocks, and TensorRT-LLM
+contains a hand-written layout converter. These are not defects in those systems; they are
+what an interchange layer with an insufficient descriptor forces on their authors.
 
-- The logical tensor (`[layers, 2, heads, seq_len, head_dim]`), its dtype, its paged
-  block layout, and its quantization scheme are fixed by the **model build /
-  engine configuration**, not transmitted.
-- What actually crosses the wire is **block buffers + block IDs** (vLLM, Mooncake,
-  llm-d), **connection/request params** (`ctx_params` in TRT-LLM), or a
-  **codec-specific compressed blob** (LMCache/CacheGen).
-- The handshakes negotiate *addresses, agent identity, and TP mapping* — never a
-  portable tensor descriptor.
-
-The consequences are exactly the symptoms a descriptor format removes:
-
-1. **Point-to-point coupling.** Every connector pair assumes identical engine builds.
-   Cross-engine (vLLM ↔ TRT-LLM), cross-version, or cross-quantization KV transfer
-   needs a bespoke adapter — there is no neutral interchange representation.
-2. **Hand-written layout conversion.** Mismatched parallelism forces ad-hoc reshuffle
-   code (TRT-LLM's exchange module, NixlConnector's TP mapping) instead of a
-   descriptor-driven, general transform.
-3. **Opaque storage.** A KV cache spilled to a pool (Mooncake) or compressed to disk
-   (LMCache) carries no standardized self-description, so it is only reusable by the
-   exact engine that wrote it.
-
-| System | Primary role | KV transport | Travels *with* the bytes | Assumed out-of-band |
-|---|---|---|---|---|
-| DistServe | P/D disaggregation + placement | NVLink (intra-node) | layer/block refs | identical model + layout |
-| Mooncake | KVCache pool + scheduler | Transfer Engine (multi-NIC RDMA) | block keys / offsets | shape, dtype, paged layout |
-| vLLM KVConnector | engine transfer abstraction | NIXL / Mooncake / LMCache | raw blocks + block IDs | format fixed at `register_kv_caches()` |
-| Dynamo / TRT-LLM | framework-agnostic KV mgr + serving | NIXL / UCX / MPI | `ctx_params` (tokens, conn params) | layout; cross-TP reshuffled by bespoke module |
-| llm-d | K8s-native P/D orchestration | NIXL (+ UCCL backend) | block + routing hints | model identity, layout |
-| LMCache | multi-tier KV cache layer | connector + batched movement | compressed KV chunks + keys | engine KV format, CacheGen codec |
-
-This is the gap Hurray fills: a **self-describing tensor descriptor — shape, dtype,
-layout, quantization — carried with the buffer**, so a KV cache becomes portable
-across engines, versions, parallelism strategies, and storage tiers.
+What is missing is a portable description that travels with the bytes, expressive enough to
+state that a tensor is tiled, paged, sparse, block-quantized, or composed of heterogeneous
+regions, and carried identically across in-process, IPC, file, and RDMA paths. Table 4 states
+the capabilities it requires, § 8 its contents, and § 9 what specifying it would provide and
+what it would cost.
 
 ---
 
-### 3.8 Design implications for Hurray
+## References
 
-- **Block-paged layout descriptor (specified, Draft).** The PagedAttention KV cache is
-  the motivating case for the Hurray `block-paged` layout tag (`0x0B`), now specified in
-  [ADR-024](adr/ADR-024-block-paged-indirect-layout.md) and
-  [Block-Paged](spec/layouts/block-paged.md) (Draft). It encodes
-  fixed page size, the block table (logical sequence position → physical page ID),
-  per-sequence page lists (addressed CSR-style by a `seq_ptr` offset array), and
-  prefix sharing across sequences (expressed as aliased page IDs in the block table).
-  With it, a paged KV cache becomes a *first-class Hurray tensor*: a consumer reads the
-  descriptor and knows the page size, head/layer organization, dtype, and quantization
-  without out-of-band agreement — turning TRT-LLM's bespoke "layout conversion during
-  transmission" (§3.4) into a general, descriptor-driven transform.
+[1] DLPack: Open In-Memory Tensor Structure. <https://github.com/dmlc/dlpack>
 
-- **Native protocol (ADR-023).** Hurray's `__hurray__` /
-  `from_hurray` zero-copy handoff lets these engines wrap their existing paged
-  GPU buffers as Hurray tensors without a copy — the producer exposes the page buffers
-  plus a descriptor; the consumer imports them. This is the in-process counterpart to
-  the wire-format descriptor and the natural API for a vLLM `KVConnector`-style
-  integration.
+[2] Apache Arrow. <https://arrow.apache.org>
 
-- **Relationship to NIXL / Transfer Engine (composition, not replacement).** NIXL
-  (§2.13) and Mooncake's Transfer Engine (§3.2) are the **data plane** — they move
-  registered buffers over RDMA. Hurray is the **metadata plane** — it describes what
-  those buffers *are*. They compose: a Hurray descriptor names the KV cache; NIXL
-  moves it. Hurray is explicitly **not** a serving system, scheduler, or cache pool —
-  it is the interchange vocabulary those systems currently improvise per-connector.
+[3] Apache Arrow Flight. <https://arrow.apache.org/docs/format/Flight.html>
 
----
+[4] SafeTensors. Hugging Face. <https://github.com/huggingface/safetensors>
 
-### 3.9 Sources
+[5] GGUF: GPT-Generated Unified Format. <https://github.com/ggerganov/ggml/blob/master/docs/gguf.md>
 
-KV-cache-transfer section compiled from primary sources (accessed June 2026):
+[6] Zarr: chunked, compressed, N-dimensional arrays. <https://zarr.dev>
 
-- DistServe — [arXiv:2401.09670](https://arxiv.org/abs/2401.09670), [OSDI '24](https://www.usenix.org/conference/osdi24/presentation/zhong-yinmin)
-- Mooncake — [arXiv:2407.00079](https://arxiv.org/abs/2407.00079), [USENIX FAST '25](https://www.usenix.org/conference/fast25/presentation/qin), [Transfer Engine design docs](https://kvcache-ai.github.io/Mooncake/design/transfer-engine/index.html), [github.com/kvcache-ai/Mooncake](https://github.com/kvcache-ai/Mooncake)
-- vLLM disaggregated prefilling — [docs.vllm.ai/.../disagg_prefill](https://docs.vllm.ai/en/stable/features/disagg_prefill/), [KV cache transfer & connectors (DeepWiki)](https://deepwiki.com/vllm-project/vllm/9.4-kv-cache-transfer-and-disaggregated-serving)
-- NVIDIA Dynamo / TensorRT-LLM — [Dynamo intro](https://developer.nvidia.com/blog/introducing-nvidia-dynamo-a-low-latency-distributed-inference-framework-for-scaling-reasoning-ai-models/), [Disaggregated Serving in TensorRT-LLM](https://nvidia.github.io/TensorRT-LLM/blogs/tech_blog/blog5_Disaggregated_Serving_in_TensorRT-LLM.html), [Reduce KV cache bottlenecks with Dynamo](https://developer.nvidia.com/blog/how-to-reduce-kv-cache-bottlenecks-with-nvidia-dynamo/)
-- llm-d — [llm-d.ai P/D disaggregation guide](https://llm-d.ai/docs/guide/Installation/pd-disaggregation), [llm-d v0.5 blog](https://llm-d.ai/blog/llm-d-v0.5-sustaining-performance-at-scale), [NVIDIA Dynamo × llm-d](https://developer.nvidia.com/blog/nvidia-dynamo-accelerates-llm-d-community-initiatives-for-advancing-large-scale-distributed-inference/)
-- LMCache — [arXiv:2510.09665](https://arxiv.org/html/2510.09665v2), [github.com/LMCache/LMCache](https://github.com/LMCache/LMCache), [architecture docs](https://docs.lmcache.ai/developer_guide/architecture.html)
+[7] NetCDF. Unidata / UCAR. <https://www.unidata.ucar.edu/software/netcdf/>
 
----
+[8] OPeNDAP (DAP2 / DAP4). <https://www.opendap.org>
 
-## 4. Comparative Summary
+[9] NIXL: NVIDIA Inference Xfer Library. <https://github.com/ai-dynamo/nixl>
 
-| | DLPack | Arrow | SafeTensors | GGUF | ONNX | Zarr | NetCDF | OPeNDAP | NIXL | NCCL | Arrow Flight | MLX | Hurray (goal) |
-|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| **Zero-copy runtime** | ✅ | ✅ | Partial | Partial | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ✅ | ✅ |
-| **RDMA / GPU-direct** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ❌ | ❌ | Optional |
-| **Network streaming** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | Partial | ❌ | ✅ | ❌ | ✅ |
-| **Layout negotiation** | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Language-agnostic ABI** | ✅ | ✅ | ❌ | ❌ | Partial | ❌ | ❌ | ✅ | ❌ | ❌ | ✅ | Partial | ✅ |
-| **Tiled/blocked layouts** | ❌ | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Strides** | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| **Quantization metadata** | ❌ | ❌ | ❌ | ✅ (informal) | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | Partial | ✅ |
-| **Sparsity descriptors** | ❌ | ❌ | ❌ | ❌ | Partial | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
-| **Sub-byte packing** | ❌ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| **On-disk storage** | ❌ | Partial | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | Partial |
-| **Adoption** | High | High | High | High | High | Medium | High | Medium | Emerging | High | Medium | Medium | — |
+[10] NCCL: NVIDIA Collective Communications Library. <https://developer.nvidia.com/nccl>
 
----
+[11] P. Shamis et al., "UCX: An Open Source Framework for HPC Network APIs and Beyond," *HOTI*,
+2015. <https://openucx.org>
 
-## 5. The Gap Hurray Fills
+[12] C. R. Harris et al., "Array programming with NumPy," *Nature* 585, 357–362, 2020.
 
-No existing format combines:
+[13] A. Paszke et al., "PyTorch: An Imperative Style, High-Performance Deep Learning Library,"
+*NeurIPS*, 2019. <https://arxiv.org/abs/1912.01703>
 
-1. **Standardized runtime interchange** (zero-copy, IPC, streaming) — Arrow has IPC but no tensor model; DLPack has zero-copy but no IPC.
-2. **Rich layout metadata** — strides, tiled, panel-packed, sub-byte packed — sufficient for a consumer to know exactly what conversion it needs.
-3. **Co-located quantization descriptors** — scale factors, zero points, block sizes, and scheme identifiers as first-class metadata, not afterthoughts.
-4. **Language-agnostic ABI** — a stable C FFI boundary usable from any language.
-5. **Alignment guarantees** — 64-byte minimum for SIMD; page-aligned for GPU/IPC — expressed in the spec, not left to convention.
+[14] M. Abadi et al., "TensorFlow: A System for Large-Scale Machine Learning," *OSDI*, 2016.
+<https://arxiv.org/abs/1605.08695>
 
-The closest analogy: Parquet is to Zarr as Arrow is to Hurray. Existing formats cover storage well. The runtime interchange layer for tensor data remains genuinely open.
+[15] JAX. <https://docs.jax.dev>
 
-On the transport side, NIXL and NCCL solve the "move bytes fast" problem for GPU tensors using RDMA, but provide no tensor metadata vocabulary — no layout, no quantization, no descriptor. Arrow Flight provides the right streaming RPC model but uses gRPC throughout, which prevents zero-copy and alignment preservation for GB-scale tensor buffers. Hurray combines the descriptor layer missing from NIXL/NCCL with the streaming framing of Arrow Flight and an optional RDMA data plane hook.
+[16] Eigen. <https://eigen.tuxfamily.org>
 
-The disaggregated-inference systems surveyed in §3 (DistServe, Mooncake, vLLM's KVConnector, NVIDIA Dynamo/TensorRT-LLM, llm-d, LMCache) make this gap concrete: they move KV cache buffers between prefill and decode workers continuously, yet every one of them agrees shape, dtype, paged layout, and quantization *out-of-band* and ships only opaque blocks plus IDs. That is the descriptor-layer gap Hurray fills — see §3.7 and §3.8.
+[17] xtensor. <https://xtensor.readthedocs.io>
 
----
+[18] PLASMA: Parallel Linear Algebra Software for Multicore Architectures.
+<https://icl.utk.edu/plasma/>
 
-## 6. Relevant Tensor Shape Reference
+[19] M. Gates et al., "SLATE: Software for Linear Algebra Targeting Exascale," SLATE Working
+Notes. <https://icl.utk.edu/slate/>
 
-Understanding typical shapes informs which layouts and alignment requirements matter most.
+[20] T. Chen et al., "TVM: An Automated End-to-End Optimizing Compiler for Deep Learning,"
+*OSDI*, 2018. <https://arxiv.org/abs/1802.04799>
 
-### LLM Weights (LLaMA-2 70B, float16)
+[21] MLC-LLM. <https://llm.mlc.ai>
 
-| Tensor | Shape | Size |
-|---|---|---|
-| Token embedding | [128256, 8192] | ~2 GB |
-| Attention Q/K/V projection | [8192, 8192] each | ~128 MB |
-| FFN gate/up projection | [8192, 28672] | ~448 MB |
+[22] MLX: an array framework for Apple silicon. <https://ml-explore.github.io/mlx/>
 
-### LLM Activations (Dynamic)
+[23] W. Kwon et al., "Efficient Memory Management for Large Language Model Serving with
+PagedAttention," *SOSP*, 2023. <https://arxiv.org/abs/2309.06180>
 
-| Tensor | Typical shape |
-|---|---|
-| Input token embeddings | [B=32, S=2048, D=8192] |
-| Attention scores | [B=32, H=64, S=2048, S=2048] |
-| KV cache (all layers) | [2, 80, 32, 64, 2048, 128] |
+[24] NVIDIA Dynamo.
+<https://developer.nvidia.com/blog/introducing-nvidia-dynamo-a-low-latency-distributed-inference-framework-for-scaling-reasoning-ai-models/>
 
-### Vision — CNN Feature Maps (NCHW)
+[25] Disaggregated Serving in TensorRT-LLM. NVIDIA.
+<https://nvidia.github.io/TensorRT-LLM/blogs/tech_blog/blog5_Disaggregated_Serving_in_TensorRT-LLM.html>
 
-| Layer | Shape |
-|---|---|
-| Input batch | [32, 3, 224, 224] |
-| Early conv output | [32, 64, 112, 112] |
-| Late conv output | [32, 2048, 7, 7] |
+[26] Y. Zhong et al., "DistServe: Disaggregating Prefill and Decoding for Goodput-optimized
+Large Language Model Serving," *OSDI*, 2024. <https://arxiv.org/abs/2401.09670>
 
-**Key thresholds:**
-- Fits in L2/L3: `[64, 64]` — 8 KB float16
-- Fits in GPU SRAM: `[2048, 2048]` — 8 MB float16
-- Weight matrix: `[8192, 28672]` — 448 MB float16
-- Pathological (quadratic attention): `[32, 64, 32768, 32768]` — terabyte scale
+[27] R. Qin et al., "Mooncake: A KVCache-centric Architecture for Serving LLM Chatbot,"
+*USENIX FAST*, 2025. <https://arxiv.org/abs/2407.00079>
 
----
+[28] vLLM: disaggregated prefilling and KV cache connectors.
+<https://docs.vllm.ai/en/stable/features/disagg_prefill/>
 
-## 7. Memory Layout Quick Reference
+[29] llm-d: Kubernetes-native distributed inference.
+<https://llm-d.ai/docs/guide/Installation/pd-disaggregation>
 
-The following layouts appear in production AI/ML inference pipelines:
+[30] LMCache: a KV cache layer for LLM serving. <https://arxiv.org/html/2510.09665v2>
 
-| Layout | Best for | Notes |
-|---|---|---|
-| Row-major (C order) | GEMM A matrix, activations, attention scores | Default in most frameworks |
-| Column-major (F order) | GEMM B matrix, some BLAS conventions | Eigen default |
-| Tiled / blocked | High-intensity GEMM, convolutions | Requires repacking; cache-optimal |
-| Panel-packed | Innermost GEMM kernel | Ephemeral; amortized repacking cost |
-| NHWC | Inference convolutions | Channel-contiguous; SIMD-friendly |
-| NCHW | Training convolutions (NVIDIA) | Historical cuDNN default |
-| Paged (vLLM-style) | KV cache in autoregressive LLM serving | Variable-length sequence support |
-| CSR / BSR | Sparse weight matrices | Post-pruning inference |
-| Structured 2:4 | NVIDIA Sparse Tensor Cores | Requires metadata mask |
-| Sub-byte packed (int4) | Quantized weights | Block structure with interleaved scales |
+[31] Y. Liu et al., "CacheGen: KV Cache Compression and Streaming for Fast Large Language
+Model Serving," *ACM SIGCOMM*, 2024. <https://arxiv.org/abs/2310.07240>
 
----
+[32] T. Dettmers et al., "SpQR: A Sparse-Quantized Representation for Near-Lossless LLM Weight
+Compression," 2023. <https://arxiv.org/abs/2306.03078>
 
-## 8. Region-Heterogeneous Tensor Structures
+[33] C. Hooper et al., "KVQuant: Towards 10 Million Context Length LLM Inference with KV Cache
+Quantization," 2024. <https://arxiv.org/abs/2401.18079>
 
-The layouts surveyed in §2 each describe a *homogeneous* array: one element type, one
-layout, one (optional) quantization scheme spanning the whole index space. A separate class
-of prior art describes a *single logical array whose index space is partitioned into
-regions that differ in structure* — some dense, some sparse, some constant, each with its
-own backing storage and sometimes its own compression or precision. This is the class
-Hurray's General Subpaving layout (tag 0x06, ADR-026) targets. It matters directly to the
-array-database vision, where one very large tensor with structurally heterogeneous regions
-is a first-class use case rather than an edge case.
+[34] Z. Liu et al., "KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache," 2024.
+<https://arxiv.org/abs/2402.02750>
 
-Two distinct composition models appear in the literature, and they are not interchangeable:
+[35] W. Zhang et al., "AMReX: A Framework for Block-Structured Adaptive Mesh Refinement,"
+*JOSS*, 2019. <https://amrex-codes.github.io>
 
-- **Partition (exact-cover, non-overlapping):** the index space is tiled by disjoint boxes
-  that together cover it exactly; each element belongs to exactly one region. This is what
-  Hurray subpaving implements. Prior art: AMReX/Chombo `DisjointBoxLayout`, OpenVDB tiles,
-  HDF5 Virtual Datasets (relaxed to allow gaps).
-- **Overlay (overlapping composition):** a base spanning the whole index space plus one or
-  more sparse corrections at scattered positions that share indices with the base. Prior
-  art: SpQR / KVQuant outlier quantization, TileDB timestamped fragments. This model
-  *cannot* be expressed by a non-overlapping partition and is out of scope for subpaving.
+[36] K. Museth, "VDB: High-Resolution Sparse Volumes with Dynamic Topology," *ACM TOG*, 2013.
+<https://www.openvdb.org>
 
-### 8.1 Comparison
+[37] HDF5 Virtual Datasets. The HDF Group.
+<https://docs.hdfgroup.org/hdf5/develop/_v_d_s.html>
 
-| Structure | Segment | Partition shape | Per-region inner layout | Per-region buffers | Per-region quant/precision | Composition model | Maturity |
-|---|---|---|---|---|---|---|---|
-| AMReX / Chombo `BoxArray` / `DisjointBoxLayout` | HPC AMR | Irregular boxes | Uniform (dense FAB) | ✅ independent | ❌ | Partition (exact-cover per level) | Production (DOE Exascale) |
-| OpenVDB / NanoVDB | VFX / graphics | Hierarchical tiles + 8³ leaves | Heterogeneous (constant tile vs dense leaf) | ✅ (linearized in NanoVDB) | Partial (per-node value quant) | Partition (hierarchical) | Production (ASWF standard) |
-| HDF5 Virtual Dataset (VDS) | Scientific storage | Arbitrary rectangular selections | Heterogeneous (per source dataset) | ✅ per source | Via per-source compression | Partition, but permits gaps/overlap | Standard since HDF5 1.10 |
-| TileDB dense array w/ sparse fragments | Array DB | N/A (temporal) | Dense + sparse fragments | ✅ per fragment | ❌ | Overlay (timestamped, last-writer-wins) | Production |
-| Zarr v3 ZEP0003 variable chunks | Scientific storage | Rectilinear variable grid | Uniform | ✅ per chunk | ❌ (array-level codec) | Partition (rectilinear only) | Emerging (behind flag, Zarr-Python 3.2) |
-| MLIR `sparse_tensor` encoding | ML compiler | Per-dimension level, not per-region | Per-*level* type only | N/A | ❌ | Neither (whole-tensor encoding) | Production (LLVM) |
-| SpQR / KVQuant outliers | ML quant | Scattered points (not rectangular) | Dense low-bit + CSR outliers | ✅ (base + CSR) | ✅ (base vs outlier precision) | **Overlay** | Research → adoption |
-| KIVI / HF residual KV cache | ML inference | Regular seq-axis split (recent/old) | Uniform (fp16 vs quantized) | ✅ | ✅ (per-region precision) | Partition (regular, 2 regions) | Production |
-| MoE per-expert quantization | ML inference | Regular expert blocks | Uniform | ✅ per expert | ✅ (per-expert bit-width) | Partition (regular) | Research → adoption |
-| Block-sparse attention (BigBird, FlexAttention) | ML inference | Regular block grid | Uniform dense + mask | ❌ | ❌ | Partition (regular) + mask | Production |
-| ASTC texture blocks | GPU graphics | Regular block grid | Per-block mode/partition | ❌ (packed) | ✅ per-block | Partition (regular) | Production (hardware) |
-| **Hurray General Subpaving (0x06)** | Interchange | **Irregular boxes** | **Any tag: dense/sparse/paged/nested** | **✅ per-region sub-table** | **✅ per-region (ADR-026 D5)** | **Partition (exact-cover, non-overlap)** | Draft |
-
-### 8.2 Findings
-
-- Irregular exact-cover partitioning with independent per-region buffers is a *mature*,
-  production-proven pattern in HPC adaptive-mesh refinement (AMReX/Chombo) and VFX volume
-  storage (OpenVDB/NanoVDB). NanoVDB's pointerless linearization of a heterogeneous-region
-  tree is a direct precedent for encoding such a tensor as a zero-copy, GPU-friendly byte
-  image — matching Hurray's streamability and zero-copy constraints.
-- HDF5 Virtual Datasets are the closest standardized analog to Hurray subpaving: a logical
-  N-D dataset defined as per-region mappings to heterogeneous backing storage. Notably, VDS
-  chose *permissive* coverage (gaps and overlap allowed) where Hurray mandates exact-cover
-  and non-overlap.
-- Mainstream ML mostly wants per-region *quantization/precision* on *regular* partitions
-  (KIVI recent/old KV split; per-expert MoE bit-widths), not irregular partitioning. This
-  supports Hurray's per-region quantization mechanism more than its irregular-box
-  generality.
-- The dominant ML within-tensor heterogeneity pattern — outlier quantization (SpQR,
-  KVQuant) — is an **overlay** (dense base + scattered sparse high-precision residual over
-  shared indices). It is architecturally incompatible with subpaving's non-overlap
-  constraint and is therefore explicitly out of scope for tag 0x06.
-
-**Relevance to Hurray:** region-heterogeneous *partition* tensors are demanded and proven
-in the HPC/scientific/graphics segments that the array-database vision targets, justifying
-General Subpaving as a first-class layout; per-region quantization is independently demanded
-in ML inference; but the largest ML heterogeneity pattern (outlier overlays) needs a
-distinct overlapping-composition primitive that subpaving must not absorb.
-
----
-
-*This document summarizes the state of the art as of April 2026 (KV cache transfer section, §3, added June 2026; region-heterogeneous tensor structures section, §8, added July 2026), based on the foundational research conversation that preceded the Hurray project and follow-up surveys. It is intended to inform the spec, architecture decisions, and implementation priorities.*
+[38] Sharded checkpoints and their JSON weight map. Hugging Face.
+<https://huggingface.co/docs/transformers/big_models>

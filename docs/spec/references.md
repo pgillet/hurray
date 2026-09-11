@@ -109,7 +109,7 @@ Apache Arrow: A cross-language development platform for in-memory data.
 <https://arrow.apache.org>
 
 *Referenced by:* `buffer-protocol.md` and `interchange.md` — IPC framing and
-buffer protocol design reference. `docs/prior-art.md` § 2.2.
+buffer protocol design reference. `docs/prior-art.md` § 4.2.1.
 
 ---
 
@@ -120,7 +120,7 @@ Apache Arrow Flight: A framework for high-performance data services.
 <https://arrow.apache.org/docs/format/Flight.html>
 
 *Referenced by:* `interchange.md` — streaming RPC model reference.
-`docs/prior-art.md` § 2.3.
+`docs/prior-art.md` § 4.2.2.
 
 ---
 
@@ -130,7 +130,7 @@ Hugging Face SafeTensors: Safe serialization for tensors.
 
 <https://github.com/huggingface/safetensors>
 
-*Referenced by:* `docs/prior-art.md` § 2.4.
+*Referenced by:* `docs/prior-art.md` § 4.3.1.
 
 ---
 
@@ -142,7 +142,7 @@ GGUF: GPT-Generated Unified Format (llama.cpp).
 
 *Referenced by:* `quantization/per-block-affine.md` — per-block affine
 quantization covers the GGUF block quantization family (`Q4_0`, `Q4_1`, `Q8_0`).
-`docs/prior-art.md` § 2.5.
+`docs/prior-art.md` § 4.3.2.
 
 ---
 
@@ -155,7 +155,6 @@ interoperability.
 
 *Referenced by:* `element-types.md` — type system breadth reference.
 `data-model.md` — zero-size dimension policy comparison.
-`docs/prior-art.md` § 2.6.
 
 ---
 
@@ -165,7 +164,7 @@ Zarr: Chunked, compressed, N-dimensional arrays.
 
 <https://zarr.dev>
 
-*Referenced by:* `docs/prior-art.md` § 2.7 — chunk/shard layout reference.
+*Referenced by:* `docs/prior-art.md` § 4.3.3 — chunk/shard layout reference.
 
 ---
 
