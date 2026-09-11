@@ -18,8 +18,9 @@ memory layout cannot be fixed in advance and where quantization and device place
 tabular counterpart. It examines the formats, protocols, and transports in use today and
 shows that each one excels in a specific area but lacks support for the others. DLPack
 shares memory inside one process but describes only strides. GGUF stores quantization
-parameters well, but only for one runtime and only in files. NIXL, NCCL, and UCX move accelerator
-memory across a network at full hardware speed, but they transfer byte ranges with no
+parameters well, but only for one runtime and only in files. NIXL, NCCL, and UCX move
+accelerator memory across a network at full hardware speed, but they transfer byte ranges
+with no
 description attached. The consequence is visible in disaggregated large-language-model
 inference, where the key-value cache is transferred for every request: all production
 systems examined here fix shape, element type, layout, and quantization outside the
@@ -27,10 +28,10 @@ transfer, send only opaque blocks and identifiers, and require hand-written conv
 whenever the two endpoints differ. From this evidence the review identifies seven gaps and
 states the capability each one requires: zero-copy sharing with a stated alignment,
 self-delimiting streaming, self-description, layout negotiation, device and memory-placement
-description, quantization metadata in the descriptor, and a language-agnostic ABI
-(application binary interface). It then states what a tensor descriptor must carry to
-provide them, and introduces **Hurray**, a proposed specification for a tensor interchange
-format designed to close all seven ([github.com/pgillet/hurray](https://github.com/pgillet/hurray),
+description, quantization metadata in the descriptor, and a language-agnostic ABI. It then
+states what a tensor descriptor must carry to provide them, and introduces **Hurray**, a
+proposed specification for a tensor interchange format designed to close all seven
+([github.com/pgillet/hurray](https://github.com/pgillet/hurray),
 [pgillet.github.io/hurray](https://pgillet.github.io/hurray)).
 
 ---
@@ -91,8 +92,8 @@ the term it introduces.
   is placed in a process's address space so that reading it does not copy it — so storage
   and runtime share one representation.
 
-Size is why the first two properties matter in practice. A single weight
-matrix in a 70-billion-parameter model is roughly 448 MB in 16-bit floating point, and a
+Size is why the first two properties matter in practice. A single weight matrix in a
+70-billion-parameter model is roughly 448 MB in 16-bit floating point, and a
 long-context attention cache is several gigabytes per request. A copy imposed by an unstated
 alignment rule costs bandwidth that the computation needs, and doubles peak memory use at
 the point where accelerator memory is scarcest.
@@ -100,10 +101,9 @@ the point where accelerator memory is scarcest.
 ### 2.2 Two data models, and the question this review asks
 
 Arrow was designed for the **tabular model**: data as rows of records (typically from a
-relational database), each row a set of
-named, typed fields, stored column by column so that each column is one flat buffer of one
-type. The operations that model serves are filter, join, group, and aggregate. Its layout
-question has essentially one answer — a column is a contiguous array with a validity bitmap
+relational database), each row a set of named, typed fields, stored column by column so that
+each column is one flat buffer of one type. The operations that model serves are filter,
+join, group, and aggregate. Its layout question has essentially one answer — a column is a contiguous array with a validity bitmap
 beside it — which is why Arrow can fix the layout in the specification and still serve every
 consumer.
 
@@ -148,11 +148,11 @@ reading fewer bytes per parameter directly raises throughput. Quantization store
 a low-precision integer together with a scale and, optionally, a zero point, so that the
 value is approximated by `scale × (quantized − zero_point)`. Those parameters may apply to
 the whole tensor, to one channel, or to a group of consecutive elements, typically 32 or 64.
-Where elements are narrower than a byte, several share a byte in an order that has to be
-stated, because more than one convention is in use. None of this is recoverable from the
-bytes: a tensor that loses its layout can still be read, incorrectly, whereas a tensor that
-loses its quantization parameters cannot be read at all. That is why they have to travel
-with it.
+Where elements are narrower than a byte (int4, int2), several share a byte in an order that
+has to be stated, because more than one convention is in use. None of this is recoverable
+from the bytes: a tensor that loses its layout can still be read, incorrectly, whereas a
+tensor that loses its quantization parameters cannot be read at all. That is why they have
+to travel with it.
 
 **Device and memory placement.** A buffer lives in *host memory* (the system RAM the CPU
 addresses), in *device memory* (an accelerator's own memory, such as a discrete GPU's, which
