@@ -116,11 +116,6 @@ The survey then considers Hurray, an open-source project that defines a
 broader tensor descriptor covering layout, quantization, memory
 placement, and tensor composition.
 
-The project is available at:
-
-**Website:** https://pgillet.github.io/hurray/  
-**GitHub:** https://github.com/pgillet/hurray
-
 Hurray is currently a beta, pre-1.0 project. Its relevance therefore
 depends less on its current adoption than on the question examined in
 this paper: **which information should a common tensor interchange
@@ -253,7 +248,9 @@ buffers where they currently reside.
 ### 2.7 Sharding and tensor composition
 
 Large tensors are often divided among devices. This is called
-**sharding**.
+**sharding**. Distributed training systems treat the partitioning of tensors
+over device meshes as a first-class concern, and repartitioning between
+operators that require different distributions as an explicit cost [17].
 
 For example, a matrix with shape `[65536,16384]` might be divided by
 rows across eight GPUs. Each GPU stores a `[8192,16384]` shard.
@@ -330,7 +327,7 @@ contain.
 
 ## 4. DLPack: In-Memory Tensor Exchange
 
-DLPack is one of the most widely used mechanisms for exchanging tensors
+DLPack [1] is one of the most widely used mechanisms for exchanging tensors
 between machine-learning frameworks.
 
 Its basic `DLTensor` structure carries a data pointer, a device, the
@@ -362,7 +359,7 @@ is easy for frameworks to adopt.
 
 ## 5. Apache Arrow
 
-Apache Arrow is the most mature example of a common physical data
+Apache Arrow [2] is the most mature example of a common physical data
 representation shared across many languages and systems.
 
 Arrow is primarily designed for structured and columnar data. Its basic
@@ -376,7 +373,7 @@ Arrow also has substantial tensor support.
 
 ### 5.1 Standalone Tensor
 
-Arrow defines a standalone `Tensor` structure for multidimensional
+Arrow defines a standalone `Tensor` structure [3] for multidimensional
 arrays. The representation contains tensor shape and strides and can
 therefore describe conventional strided multidimensional arrays.
 
@@ -385,7 +382,7 @@ Standalone tensor bodies are aligned to 64-byte boundaries.
 
 ### 5.2 SparseTensor
 
-Arrow separately defines `SparseTensor`.
+Arrow separately defines `SparseTensor` [3].
 
 This is significant because sparse tensors cannot in general be reduced
 to shape plus strides. Arrow defines standard sparse index structures
@@ -396,7 +393,7 @@ Arrow therefore covers more than one tensor layout family.
 ### 5.3 Tensor-valued Arrow columns
 
 Arrow also defines the canonical extension types
-`arrow.fixed_shape_tensor` and `arrow.variable_shape_tensor`.
+`arrow.fixed_shape_tensor` and `arrow.variable_shape_tensor` [4].
 
 These allow tensor-valued observations to participate in Arrow's normal
 columnar data model. The fixed-shape representation records tensor shape
@@ -411,9 +408,11 @@ or paged physical layout.
 
 ### 5.4 Arrow Flight
 
-Arrow Flight provides high-performance network transfer for Arrow data.
-Flight uses Arrow IPC and gRPC with implementation optimizations
-designed to avoid unnecessary serialization and memory copies.
+Arrow Flight [5] provides high-performance network transfer for Arrow
+data. Flight uses Arrow IPC and gRPC with implementation optimizations
+designed to avoid unnecessary serialization and memory copies, and
+published benchmarks report multi-gigabyte-per-second transfers with high
+utilization of the available network bandwidth [6].
 
 Flight is therefore strong prior art for network data interchange. The
 more relevant difference for computational tensors is what the
@@ -442,7 +441,7 @@ These principles are a major influence on Hurray.
 
 ### 6.1 SafeTensors
 
-SafeTensors is a simple format for storing named tensors, particularly
+SafeTensors [7] is a simple format for storing named tensors, particularly
 model weights. Its header records tensor names, types, shapes, and byte
 ranges. The format supports memory-mapped and selective access.
 
@@ -452,7 +451,7 @@ tensor, or a kernel-specific packed matrix.
 
 ### 6.2 GGUF
 
-GGUF is a model format developed in the GGML ecosystem. It stores model
+GGUF [8] is a model format developed in the GGML ecosystem. It stores model
 metadata and named tensors in one file and is especially relevant
 because it supports many quantized tensor types.
 
@@ -467,8 +466,8 @@ quantization descriptor intended for arbitrary runtimes.
 
 ### 6.3 Zarr and NetCDF
 
-Zarr divides large multidimensional arrays into independently stored
-chunks. NetCDF provides named multidimensional scientific variables and
+Zarr [9] divides large multidimensional arrays into independently stored
+chunks. NetCDF [10] provides named multidimensional scientific variables and
 supports partial access, with modern NetCDF storage able to use chunked
 layouts through HDF5.
 
@@ -484,16 +483,16 @@ accelerator kernels.
 Tensor formats and communication libraries solve different problems. The
 former describe data. The latter move it.
 
-UCX provides communication primitives over different hardware transports
+UCX [11] provides communication primitives over different hardware transports
 and generally treats transferred memory as buffers whose meaning is
 supplied by the application.
 
-NIXL targets point-to-point data movement in distributed inference and
+NIXL [12] targets point-to-point data movement in distributed inference and
 abstracts memory and storage types including GPU HBM, CPU DRAM, SSDs,
 and distributed storage. On suitable systems, it can use GPU Direct RDMA
 to transfer data directly between registered GPU memory regions.
 
-NCCL provides optimized collective and point-to-point communication
+NCCL [13] provides optimized collective and point-to-point communication
 between GPUs. It can use several paths depending on the hardware,
 including PCIe, NVLink, InfiniBand, and network sockets.
 
@@ -505,18 +504,18 @@ providing the description shared by the applications at either end.
 
 ## 8. Comparison
 
-| System | Main use | Tensor shape/type | Physical layout | Quantization | Device / memory | Composition | File | Network / stream |
-|:----------|:-------------|:--------|:-----------|:----------|:----------|:-----------|:------|:-------|
-| DLPack | In-process framework exchange | Yes | Dense strides | No generic scheme | Device | Single tensor | No | No |
-| Arrow Tensor | Tensor IPC | Yes | Dense strides | No generic scheme | Not central | Single tensor | IPC | IPC |
-| Arrow SparseTensor | Sparse tensor IPC | Yes | Standard sparse formats | No generic scheme | Not central | Multi-buffer sparse tensor | IPC | IPC |
-| Arrow tensor extensions | Tensor-valued columns | Yes | C-contiguous + logical permutation | No generic scheme | External | Arrow arrays/tables | Arrow IPC | Flight / IPC |
-| SafeTensors | Model files | Yes | Conventional dense | Limited | No live placement | Named tensors | Yes | No standard runtime stream |
-| GGUF | Model files | Yes | GGML encodings | GGML quantized types | No live placement | Named tensors | Yes | No runtime protocol |
-| Zarr / NetCDF | Large arrays | Yes | Storage-oriented | Application specific | No live placement | Dataset hierarchy | Yes | Remote access possible |
-| UCX | Communication | No tensor model | Opaque buffers | Opaque | Memory buffers | Application-defined | No | Yes |
-| NIXL | Inference data movement | No tensor model | Opaque buffers | Opaque | CPU/GPU/storage aware | Application-defined | Storage paths | Yes |
-| NCCL | GPU communication | Type + count | Opaque buffer layout | Opaque | GPU-oriented | Application-defined | No | Yes |
+| System | Main use | Tensor model and layout | Quantization | Device / memory | Composition | File | Network / stream |
+|:----------|:-------------|:----------------|:----------|:----------|:-----------|:------|:-------|
+| DLPack | In-process framework exchange | Shape, type, dense strides | No generic scheme | Device | Single tensor | No | No |
+| Arrow Tensor | Tensor IPC | Shape, type, dense strides | No generic scheme | Not central | Single tensor | IPC | IPC |
+| Arrow SparseTensor | Sparse tensor IPC | Shape, type, standard sparse formats | No generic scheme | Not central | Multi-buffer sparse tensor | IPC | IPC |
+| Arrow tensor extensions | Tensor-valued columns | Shape, type, C-contiguous + logical permutation | No generic scheme | External | Arrow arrays/tables | Arrow IPC | Flight / IPC |
+| SafeTensors | Model files | Shape, type, conventional dense | Limited | No live placement | Named tensors | Yes | No standard runtime stream |
+| GGUF | Model files | Shape, type, GGML encodings | GGML quantized types | No live placement | Named tensors | Yes | No runtime protocol |
+| Zarr / NetCDF | Large arrays | Shape, type, storage-oriented | Application specific | No live placement | Dataset hierarchy | Yes | Remote access possible |
+| UCX | Communication | None; opaque buffers | Opaque | Memory buffers | Application-defined | No | Yes |
+| NIXL | Inference data movement | None; opaque buffers | Opaque | CPU/GPU/storage aware | Application-defined | Storage paths | Yes |
+| NCCL | GPU communication | Element type and count only | Opaque | GPU-oriented | Application-defined | No | Yes |
 
 Existing systems already provide strong support for conventional dense
 tensors, sparse IPC, persistent model storage, scientific arrays, and
@@ -536,19 +535,25 @@ Transformer inference stores previously computed keys and values in a
 **KV cache**. Production systems commonly divide this cache into
 reusable blocks rather than allocating one contiguous buffer.
 
-Kwon et al. introduced PagedAttention and vLLM, applying paging ideas to
-KV-cache management. Logical cache blocks can map to non-contiguous
+Kwon et al. introduced PagedAttention and vLLM [14], applying paging ideas
+to KV-cache management. Logical cache blocks can map to non-contiguous
 physical blocks.
 
-DistServe separates prefill and decode onto different GPUs. Once those
+DistServe [15] separates prefill and decode onto different GPUs. Once those
 phases run on different workers, the KV cache must cross the boundary
 between them.
 
-Mooncake develops this further by treating KV cache as distributed state
+Mooncake [16] develops this further by treating KV cache as distributed state
 spanning GPU memory, CPU DRAM, and SSD storage.
 
+![Figure 1](figures/kv-cache-transfer.svg)
+
+**Figure 1.** KV cache transfer between a prefill worker and a decode worker.
+The transport moves the blocks; what the blocks represent is agreed outside the
+transfer.
+
 Different workers can also use different parallel decompositions.
-TensorRT-LLM's disaggregated-serving support includes cache-layout
+TensorRT-LLM's disaggregated-serving support [18] includes cache-layout
 transformation when context and generation workers use different
 parallel strategies.
 
@@ -589,13 +594,8 @@ capabilities.
 
 ## 11. Hurray
 
-Hurray is an open-source project that implements this broader tensor
-description.
-
-**Website:** https://pgillet.github.io/hurray/  
-**Repository and specification:** https://github.com/pgillet/hurray
-
-The project is currently beta and pre-1.0.
+Hurray [19], [20] is an open-source project that implements this broader
+tensor description. The project is currently beta and pre-1.0.
 
 ### 11.1 Interoperability boundary
 
@@ -716,9 +716,18 @@ than describe the complete tensor.
 | Representation negotiation | Application | Application | No | No | Application | Yes |
 
 This is not a scorecard. Simpler formats can be easier to implement and
-more interoperable. Hurray makes a different trade-off: it describes
-more physical representations in order to avoid forcing every
-computational tensor through one common dense layout.
+more interoperable: DLPack's simplicity has helped its adoption, Arrow's
+strict physical formats make zero-copy interoperability predictable, and
+SafeTensors' restricted model makes files easy to parse safely. Hurray makes
+a different trade-off: it describes more physical representations in order to
+avoid forcing every computational tensor through one common dense layout.
+
+A richer descriptor has to justify its complexity, and the clearest case is
+where converting the representation is itself expensive. If two runtimes both
+understand the same tiled or paged representation, converting a large tensor
+to row-major solely for interchange wastes memory bandwidth. If they do not
+understand the same representation, the conversion is unavoidable and should
+be explicit.
 
 ---
 
@@ -735,6 +744,11 @@ Without a shared tensor description, the two applications need a private
 agreement covering model-dependent dimensions, element type, block size,
 block-table format, shard mapping, GPU buffers, synchronization, and the
 relationship between transferred blocks and the request.
+
+![Figure 2](figures/interchange-gap.svg)
+
+**Figure 2.** The private agreement the two applications need today, and what a
+self-describing descriptor replaces it with.
 
 With a common descriptor, the consumer can make one of three decisions.
 
@@ -789,50 +803,7 @@ provide small canonical byte-level examples with known results.
 
 ---
 
-## 15. Discussion
-
-The existing tensor interchange landscape already provides strong
-solutions for many cases.
-
-DLPack covers dense strided tensors in memory. Apache Arrow provides a
-mature language-independent data ecosystem with dense and sparse tensor
-support. SafeTensors and GGUF store model tensors. Zarr and NetCDF
-handle large scientific arrays. UCX, NIXL, and NCCL move data
-efficiently.
-
-The harder case appears when a tensor crosses these boundaries while its
-physical representation still matters.
-
-A model weight can be quantized and packed. A sparse tensor uses several
-buffers. A distributed tensor has a shard mapping. A KV cache can be
-paged, sharded, and resident in GPU memory at the same time.
-
-The frameworks that create these tensors already know this information.
-The question is whether they should exchange it through a common format
-or continue translating it into pairwise interfaces.
-
-There are good reasons to keep interfaces narrow. DLPack's simplicity
-has helped adoption. Arrow's strict physical formats make zero-copy
-interoperability predictable. SafeTensors' restricted model makes files
-easy to parse safely.
-
-A richer descriptor therefore has to justify its complexity.
-
-The clearest case is where converting the representation is itself
-expensive. If two runtimes both understand the same tiled or paged
-representation, converting a large tensor to row-major solely for
-interchange wastes memory bandwidth. If they do not understand the same
-representation, the conversion is unavoidable and should be explicit.
-
-Hurray describes which representation is present rather than requiring
-one universal physical tensor layout.
-
-Its value will depend on how large a common set of representations can
-be shared by independent runtimes.
-
----
-
-## 16. Conclusion
+## 15. Conclusion
 
 AI/ML systems increasingly move tensors between frameworks,
 accelerators, processes, machines, and storage.
