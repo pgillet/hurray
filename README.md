@@ -76,9 +76,9 @@ rebinding of allocated tags.
 ## Documentation
 
 - [Website and specification](https://pgillet.github.io/hurray)
-- [Prior art survey](docs/prior-art.md) ([PDF](docs/prior-art.pdf)) — a state-of-the-art
-  review of tensor interchange: what exists, what it cannot express, and the capabilities
-  that shortfall demands
+- [Tensor data interchange survey](docs/prior-art.md) ([PDF](docs/prior-art.pdf)) — what the
+  existing formats, protocols, and transports preserve of a tensor, what they leave out, and
+  where Hurray fits
 - [Architecture decisions](docs/adr/) — every non-obvious choice, with its alternatives
 - [Project structure](PROJECT_STRUCTURE.md)
 - Open questions are marked inline in the spec: `grep -rn "OQ-" docs/spec/`
