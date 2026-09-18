@@ -7,7 +7,9 @@ hurray/
 ├── CLAUDE.md                   # AI agent configuration and conventions
 ├── Cargo.toml                  # Workspace root
 ├── docs/
-│   ├── prior-art.md            # Research snapshot: formats, protocols, libraries
+│   ├── prior-art.md            # Survey of tensor interchange solutions, and the Hurray proposal
+│   ├── prior-art.pdf           # Generated from prior-art.md by website/build-prior-art-pdf.py
+│   ├── figures/                # SVG diagrams for the docs (render on GitHub, site, and PDF)
 │   ├── spec/                   # Format specification (source of truth)
 │   │   ├── README.md           # Scope, goals, RFC 2119 notice, versioning
 │   │   ├── data-model.md       # Shape/dimension model
