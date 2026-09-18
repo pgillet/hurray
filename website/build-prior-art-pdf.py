@@ -35,7 +35,8 @@ OUTPUT = REPO / "docs" / "prior-art.pdf"
 HEADER = """\
 #show figure: set block(breakable: true)
 #show figure.where(kind: table): set figure.caption(position: bottom)
-#show table: set text(size: 8.2pt, hyphenate: false)
+#set table(inset: 3pt)
+#show table: set text(size: 7.6pt, hyphenate: false)
 #show table: set par(justify: false, leading: 0.5em)
 #set par(justify: true, spacing: 0.85em)
 """
