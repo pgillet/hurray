@@ -585,7 +585,7 @@ A common descriptor can make it explicit.
 
 ---
 
-## 10. What Is Still Needed
+## 10. What Is Still Needed, and What Hurray Proposes
 
 The survey suggests several requirements that are useful together:
 
@@ -606,14 +606,13 @@ Supporting many representations creates complexity. A useful standard
 therefore needs a small common subset and explicit optional
 capabilities.
 
----
-
-## 11. Hurray
-
 Hurray [19], [20] is an open-source project that implements this broader
-tensor description. The project is currently beta and pre-1.0.
+tensor description. The project is currently beta and pre-1.0. The rest
+of this section states what it standardizes and how it addresses each
+requirement above. Its scope boundary comes first, because it determines
+what the format does not attempt.
 
-### 11.1 Interoperability boundary
+### 10.1 Interoperability boundary
 
 **Hurray's interoperability boundary is the tensor representation
 itself.**
@@ -643,70 +642,58 @@ The surrounding runtime and communication stack answer:
 This keeps Hurray complementary to DLPack, CUDA IPC, UCX, NIXL, NCCL,
 and similar systems.
 
-### 11.2 Tensor descriptor
+### 10.2 How Hurray addresses the requirements
 
 Hurray's central object is a language-independent tensor descriptor. It
 describes properties including logical element type, storage type,
 shape, memory layout, quantization, device and memory class, buffers,
-synchronization, and composition.
+synchronization, and composition. The same description can be bound to
+different kinds of buffers depending on where it is used: a file offset,
+a host pointer, and a GPU memory handle are different ways of locating
+data, and they do not change the tensor's shape, quantization, or
+layout.
 
-The same tensor description can be bound to different kinds of buffers
-depending on where it is used. A file offset, host pointer, and GPU
-memory handle are different ways of locating data; they do not change
-the tensor's shape, quantization, or layout.
+The eight requirements are addressed as follows.
 
-### 11.3 Layouts
-
-Hurray currently defines twelve layout families, including conventional
-dense layouts as well as strided, sparse, space-filling, paged, and
-composite representations.
-
-Each layout has a tag and layout-specific parameters. A consumer can
-therefore identify the address mapping rather than assuming that every
-tensor is row-major.
-
-### 11.4 Quantization
-
-Hurray treats quantization separately from storage type. Its current
-specification includes normative schemes for common affine quantization
-cases and additional low-precision representations such as NF4 and MXFP.
-
-This lets runtimes reason independently about logical type, storage
-type, and quantization.
-
-### 11.5 Device and memory
-
-Hurray carries device, memory, and synchronization information with the
-tensor. It does not replace CUDA IPC, RDMA registration, NIXL, or
-another memory-transfer API. Those mechanisms provide actual buffer
-access.
-
-### 11.6 Composition
-
-Hurray supports composite descriptions so that one logical object can
-refer to several regions or tensors. This provides a basis for sharded
-tensors, sparse representations, quantization parameters stored
-separately from values, paged structures, and heterogeneous regions.
-
-### 11.7 Streaming and files
-
-Hurray defines a streaming form in which the tensor descriptor precedes
-its associated payload. A receiver can therefore determine what is
-arriving before all tensor bytes have arrived.
-
-Hurray also defines a persistent file representation containing named
-tensors and an index for locating them. The file form reuses the same
-tensor descriptor as the streaming form.
-
-### 11.8 C ABI
-
-Hurray provides a C ABI as its language-neutral runtime boundary,
-following the same practical approach used by DLPack and Arrow's C
-interfaces.
+1.  **Layouts.** Hurray currently defines twelve layout families,
+    including conventional dense layouts as well as strided, sparse,
+    space-filling, paged, and composite representations. Each layout has
+    a tag and layout-specific parameters, so a consumer can identify the
+    address mapping rather than assuming that every tensor is row-major.
+2.  **Quantization.** Hurray treats quantization separately from storage
+    type. Its current specification includes normative schemes for
+    common affine quantization cases and additional low-precision
+    representations such as NF4 and MXFP. This lets runtimes reason
+    independently about logical type, storage type, and quantization.
+3.  **Device and memory.** Device, memory, and synchronization
+    information travels with the tensor. This does not replace CUDA IPC,
+    RDMA registration, NIXL, or another memory-transfer API; those
+    mechanisms provide the actual buffer access.
+4.  **Several buffers.** One descriptor can reference the buffers a
+    tensor is made from, such as values and their indexes, or values and
+    their scales, rather than a single base pointer.
+5.  **Shards and composition.** Composite descriptions let one logical
+    object refer to several regions or tensors. This provides a basis
+    for sharded tensors, sparse representations, quantization parameters
+    stored separately from values, paged structures, and heterogeneous
+    regions.
+6.  **Streams and files.** The streaming form places the tensor
+    descriptor before its payload, so a receiver can determine what is
+    arriving before all tensor bytes have arrived. The persistent file
+    form contains named tensors and an index for locating them, and
+    reuses the same tensor descriptor as the streaming form.
+7.  **Negotiation.** Because the descriptor names the layout, element
+    type, and quantization scheme explicitly, two endpoints can compare
+    what each supports before a large payload moves. The worked example
+    below turns that comparison into three outcomes: direct use,
+    relocation without reformatting, or explicit conversion.
+8.  **Language-neutral interface.** Hurray provides a C ABI as its
+    runtime boundary, following the same practical approach used by
+    DLPack and Arrow's C interfaces.
 
 ---
 
-## 12. Hurray Compared with Existing Solutions
+## 11. Hurray Compared with Existing Solutions
 
 Hurray overlaps with DLPack on language-independent tensor exchange,
 with Arrow on publicly specified buffer representations, with
@@ -747,7 +734,7 @@ be explicit.
 
 ---
 
-## 13. Example: Exchanging a Paged KV Cache
+## 12. Example: Exchanging a Paged KV Cache
 
 Consider a prefill worker that has produced a BF16 KV cache stored in
 GPU memory, divided into 64-token blocks, sharded across four GPUs,
@@ -785,7 +772,7 @@ conversion is required.
 
 ---
 
-## 14. Open Questions
+## 13. Open Questions
 
 Hurray is not yet a mature standard.
 
@@ -819,7 +806,7 @@ provide small canonical byte-level examples with known results.
 
 ---
 
-## 15. Conclusion
+## 14. Conclusion
 
 AI/ML systems increasingly move tensors between frameworks,
 accelerators, processes, machines, and storage.
