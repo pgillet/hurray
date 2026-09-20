@@ -29,8 +29,9 @@ also be split, or **sharded**, across several devices.
 
 Several interchange solutions cover parts of this information. DLPack
 describes strided tensors in memory, including their device. Apache
-Arrow defines dense and sparse tensor IPC representations and has added
-fixed- and variable-shape tensor types to its columnar data model.
+Arrow defines dense and sparse tensor IPC (inter-process communication)
+representations and has added fixed- and variable-shape tensor types to
+its columnar data model.
 SafeTensors and GGUF store model tensors in files, with GGUF supporting
 many quantized representations. Zarr and NetCDF store large
 multidimensional arrays. NIXL and UCX move memory efficiently between
@@ -177,9 +178,9 @@ specifies how the blocks and their contents are ordered. Tiling can
 improve cache locality or match the matrix representation expected by
 accelerator hardware.
 
-A **packed layout** rearranges values for a particular instruction or
-kernel. The result may no longer be described by one ordinary stride per
-dimension.
+A **packed layout** rearranges values into the exact order a particular
+instruction or kernel reads them, and the result may no longer be
+described by one ordinary stride per dimension.
 
 A **paged layout** divides the tensor into separately allocated blocks.
 A table maps logical regions of the tensor to those physical blocks.
@@ -193,7 +194,10 @@ wants to use the existing representation directly.
 
 A **sparse tensor** avoids storing positions whose value is implicitly
 zero or another default value. Instead, it stores selected values plus
-indexes identifying their positions.
+indexes identifying their positions. Instead of storing a
+million-element matrix with only ten thousand non-zero values, a sparse
+representation stores those ten thousand values and the indexes that
+locate them.
 
 COO, or coordinate format, records coordinates for stored values. CSR,
 or compressed sparse row format, compresses indexes by matrix row. CSC
@@ -235,7 +239,8 @@ Tensor data can reside in different kinds of memory.
 **Host memory** is memory directly available to the CPU. **Accelerator
 memory** is memory associated with a GPU or another accelerator.
 **Unified memory** provides an address-space abstraction shared across
-processors, with the underlying system managing access or migration.
+processors, as on Apple Silicon, with the underlying system managing
+access or migration.
 
 Other relevant cases include pinned host memory, operating-system shared
 memory, GPU memory accessible by peer devices, and memory registered for
@@ -280,13 +285,17 @@ information about constituent tensors.
 ### 3.2 Avoid copies when possible
 
 **Zero-copy interchange** means that the receiver can use an existing
-data buffer directly instead of copying the tensor merely to cross an
+data buffer directly, by being passed a pointer or a memory handle rather
+than the bytes, instead of copying the tensor merely to cross an
 interface.
 
 Zero-copy is not always possible. The receiver must understand the
 representation, be able to access the memory, satisfy alignment
 requirements, and observe the correct lifetime and synchronization
-rules.
+rules. **Buffer alignment** is the requirement that a buffer start at an
+address that is a multiple of some size, commonly 64 bytes, because
+vector instructions and direct device transfers reach full rate only on
+aligned buffers.
 
 A format cannot guarantee zero-copy in every situation. It can provide
 enough information for the receiver to determine whether zero-copy is
@@ -312,7 +321,10 @@ demand.
 A tensor format is more useful when its definition does not depend on a
 Python or C++ object. DLPack and Apache Arrow both use language-neutral
 specifications and C-compatible interfaces to connect independent
-implementations.
+implementations. Such an interface is an **ABI**, or application
+binary interface: a fixed binary representation of structures and calls
+that separately compiled components can rely on without agreeing at
+source level.
 
 ### 3.6 Stay separate from the transport
 
@@ -362,12 +374,16 @@ is easy for frameworks to adopt.
 Apache Arrow [2] is the most mature example of a common physical data
 representation shared across many languages and systems.
 
-Arrow is primarily designed for structured and columnar data. Its basic
-objects are arrays, record batches, and tables. The Arrow specification
-defines their in-memory representation independently of a particular
-language implementation. The C Data Interface allows libraries in one
-process to share Arrow buffers, while Arrow IPC provides file and stream
-representations.
+Arrow is primarily designed for the **tabular model**: data as a set of
+records, typically rows from a relational database, each a set of named
+typed fields, stored **column by column** so that each column is one flat
+buffer of one type. Its basic objects are arrays, record batches, and
+tables. The Arrow specification defines their in-memory representation
+independently of a particular language implementation. The C Data
+Interface allows libraries in one process to share Arrow buffers, while
+Arrow IPC provides file and stream representations. **IPC** is
+inter-process communication: the mechanisms by which separate processes
+exchange data, such as shared memory.
 
 Arrow also has substantial tensor support.
 
