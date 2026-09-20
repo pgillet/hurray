@@ -295,7 +295,9 @@ requirements, and observe the correct lifetime and synchronization
 rules. **Buffer alignment** is the requirement that a buffer start at an
 address that is a multiple of some size, commonly 64 bytes, because
 vector instructions and direct device transfers reach full rate only on
-aligned buffers.
+aligned buffers. Synchronization matters because the producer may not
+have finished: if an accelerator is still writing the data, the consumer
+must wait for the appropriate synchronization point before reading it.
 
 A format cannot guarantee zero-copy in every situation. It can provide
 enough information for the receiver to determine whether zero-copy is
