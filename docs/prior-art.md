@@ -239,8 +239,7 @@ Tensor data can reside in different kinds of memory.
 **Host memory** is memory directly available to the CPU. **Accelerator
 memory** is memory associated with a GPU or another accelerator.
 **Unified memory** provides an address-space abstraction shared across
-processors, as on Apple Silicon, with the underlying system managing
-access or migration.
+processors, with the underlying system managing access or migration.
 
 Other relevant cases include pinned host memory, operating-system shared
 memory, GPU memory accessible by peer devices, and memory registered for
