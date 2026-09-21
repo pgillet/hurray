@@ -707,19 +707,19 @@ It is complementary to UCX, NIXL, and NCCL, which move the data rather
 than describe the complete tensor.
 
 | Capability | DLPack | Arrow tensor facilities | SafeTensors | GGUF | NIXL/UCX/NCCL | Hurray |
-|:--------------|:-------|:----------|:---------|:------------|:------------|:--------|
-| Shape and element type | Yes | Yes | Yes | Yes | Limited / application | Yes |
-| Dense strides | Yes | Yes | No general views | Encoding-specific | Opaque | Yes |
-| Standard sparse representation | No | Yes | No | No general sparse model | Opaque | Yes |
-| Specialized layouts | No generic model | No generic model | No | GGML-specific cases | Opaque | Yes / extensible |
-| Paged tensor layout | No | No | No | No general model | Opaque | Yes |
-| Generic quantization metadata | No | No | No | GGML-specific types | Opaque | Yes |
-| Device information | Yes | Not central | No | No | Transport-specific | Yes |
-| Sharding / composition | No | Higher-level structures | Named tensors | Named tensors | Application-defined | Yes |
-| In-process ABI | Yes | Yes | No | Library-specific | APIs | Yes |
-| Stream representation | No | IPC / Flight | No runtime stream | File-oriented | Transport | Yes |
-| Indexed file | No | Arrow IPC file | Yes | Yes | No | Yes |
-| Representation negotiation | Application | Application | No | No | Application | Yes |
+|:-------------|:---------|:-----------|:---------|:----------|:----------|:------------|
+| Shape and element type | Struct fields | IPC message fields | Header fields | Tensor entry fields | Type and count | Descriptor fields |
+| Dense strides | Strides field | Strides in Tensor message | Row-major only | Fixed by tensor type | Opaque bytes | Strided layout tag |
+| Standard sparse representation | Not defined | SparseTensor message | Not defined | Not defined | Opaque bytes | Sparse layout tags |
+| Specialized layouts | Not defined | Not defined | Not defined | Within GGML types | Opaque bytes | Layout tag, extensible |
+| Paged tensor layout | Not defined | Not defined | Not defined | Not defined | Opaque bytes | Paged layout tag |
+| Generic quantization metadata | Not defined | Not defined | Stored type only | GGML tensor type | Opaque bytes | Quantization descriptor |
+| Device information | Device field | Not central | Not defined | Not defined | Transport handles | Device, memory fields |
+| Sharding / composition | Single tensor | Higher-level structures | Named tensors | Named tensors | Application-defined | Composite descriptor |
+| In-process ABI | C struct ABI | C Data Interface | Not defined | Library-specific | Library APIs | C ABI |
+| Stream representation | Not defined | Arrow IPC, Flight | Not defined | File-oriented | Byte transport only | Streaming form |
+| Indexed file | Not defined | Arrow IPC file | Header offsets | Tensor offsets | Not defined | File form with index |
+| Representation negotiation | Application | Application | Not defined | Not defined | Application | Compared up front |
 
 This is not a scorecard. Simpler formats can be easier to implement and
 more interoperable: DLPack's simplicity has helped its adoption, Arrow's
