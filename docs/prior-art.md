@@ -617,22 +617,41 @@ what the format does not attempt.
 
 ### 10.1 Interoperability boundary
 
-**Hurray's interoperability boundary is the tensor representation
-itself.**
+**Hurray standardizes the representation needed to decide whether a
+tensor can be consumed directly. It does not standardize the mechanism
+that makes the tensor accessible.**
 
-It defines enough information for an independent runtime to determine
-what a set of buffers represents and whether it can consume that
+Those are two independent questions, and keeping them apart is what lets
+a descriptor be useful without duplicating a transport.
+
+**Representation compatibility** asks whether the two sides agree on what
+the bytes mean: element type, shape, layout, quantization, buffer
+relationships, composition. **Memory accessibility** asks whether the
+consumer can reach those buffers where they currently are.
+
+Neither answer implies the other. Two runtimes may agree exactly on BF16,
+a paged layout, and 64-token blocks, and still need NIXL or CUDA IPC
+before either can touch the other's buffers. Conversely, CUDA IPC may
+give one runtime access to another's GPU allocation, and that access is
+useless unless both sides agree on what the bytes mean.
+
+![Figure 2](figures/two-axes.svg)
+
+**Figure 2.** Representation compatibility and memory accessibility are
+independent. A descriptor settles the rows; allocators and transports
+settle the columns.
+
+Hurray addresses the rows. It standardizes the tensor's logical type and
+shape, physical layout, quantization information, buffer relationships,
+device and memory information, composition, and the synchronization
+information needed to determine when the data can be consumed, which is
+enough for an independent runtime to decide whether it can consume the
 representation directly.
-
-Hurray standardizes the tensor's logical type and shape, physical
-layout, quantization information, buffer relationships, device and
-memory information, composition, and the synchronization information
-needed to determine when the data can be consumed.
 
 It does not standardize how a GPU buffer is allocated, how RDMA or CUDA
 IPC establishes access to it, how a communication library moves it, how
 a kernel is scheduled, or how a runtime internally converts an
-unsupported representation.
+unsupported representation. Those determine the columns.
 
 In short, Hurray answers:
 
@@ -751,13 +770,15 @@ agreement covering model-dependent dimensions, element type, block size,
 block-table format, shard mapping, GPU buffers, synchronization, and the
 relationship between transferred blocks and the request.
 
-![Figure 2](figures/interchange-gap.svg)
+![Figure 3](figures/interchange-gap.svg)
 
-**Figure 2.** Application-specific agreement and descriptor-based interchange.
+**Figure 3.** Application-specific agreement and descriptor-based interchange.
 A descriptor covers the representation; agreement about the request and the
 model remains application-specific.
 
 With a common descriptor, the consumer can make one of three decisions.
+They are the quadrants of Figure 2, reached from the row the descriptor
+establishes.
 
 **Direct use.** The consumer supports the same representation. No layout
 conversion is necessary.
