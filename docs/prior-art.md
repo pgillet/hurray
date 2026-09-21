@@ -753,8 +753,9 @@ relationship between transferred blocks and the request.
 
 ![Figure 2](figures/interchange-gap.svg)
 
-**Figure 2.** The private agreement the two applications need today, and what a
-self-describing descriptor replaces it with.
+**Figure 2.** Application-specific agreement and descriptor-based interchange.
+A descriptor covers the representation; agreement about the request and the
+model remains application-specific.
 
 With a common descriptor, the consumer can make one of three decisions.
 
