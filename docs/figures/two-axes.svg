@@ -37,6 +37,6 @@
   <text x="698" y="238" font-family="DejaVu Sans, Helvetica, sans-serif" font-size="10.5" text-anchor="middle" fill="#334155">The descriptor says which</text>
   <text x="698" y="252" font-family="DejaVu Sans, Helvetica, sans-serif" font-size="10.5" text-anchor="middle" fill="#334155">conversion is required.</text>
 
-  <text x="24" y="300" font-family="DejaVu Sans, Helvetica, sans-serif" font-size="10.5" fill="#475569">A tensor descriptor determines which row you are in: it states the representation, so the two sides can compare.</text>
-  <text x="24" y="318" font-family="DejaVu Sans, Helvetica, sans-serif" font-size="10.5" fill="#475569">Allocators and transports determine which column: CUDA IPC, shared memory, RDMA registration, NIXL, UCX, NCCL.</text>
+  <text x="24" y="300" font-family="DejaVu Sans, Helvetica, sans-serif" font-size="10.5" fill="#475569">A tensor descriptor establishes representation compatibility: it states what the bytes mean, so the two sides can compare.</text>
+  <text x="24" y="318" font-family="DejaVu Sans, Helvetica, sans-serif" font-size="10.5" fill="#475569">Allocators, memory-sharing mechanisms and transports establish accessibility: CUDA IPC, shared memory, RDMA, NIXL, UCX, NCCL.</text>
 </svg>

@@ -292,7 +292,7 @@ Zero-copy is not always possible. The receiver must understand the
 representation, be able to access the memory, satisfy alignment
 requirements, and observe the correct lifetime and synchronization
 rules. **Buffer alignment** is the requirement that a buffer start at an
-address that is a multiple of some size, commonly 64 bytes. Particular
+address that is a multiple of some specified size. Particular
 instructions and device interfaces can require it, and where they do
 not, it can still affect throughput. A format can state a minimum
 alignment rather than leaving it to convention. Synchronization matters
@@ -608,11 +608,10 @@ Supporting many representations creates complexity. A useful standard
 therefore needs a small common subset and explicit optional
 capabilities.
 
-Hurray [19], [20] is an open-source project that implements this broader
+Hurray [19], [20] is an open-source project that defines this broader
 tensor description. The project is currently beta and pre-1.0. The rest
 of this section states what it standardizes and how it addresses each
-requirement above. Its scope boundary comes first, because it determines
-what the format does not attempt.
+requirement above.
 
 ### 10.1 Interoperability boundary
 
@@ -637,20 +636,21 @@ useless unless both sides agree on what the bytes mean.
 ![Figure 2](figures/two-axes.svg)
 
 **Figure 2.** Representation compatibility and memory accessibility are
-independent. A descriptor settles the rows; allocators and transports
-settle the columns.
+independent. A tensor descriptor establishes representation
+compatibility; allocators, memory-sharing mechanisms, and transports
+establish accessibility.
 
-Hurray addresses the rows. It standardizes the tensor's logical type and
-shape, physical layout, quantization information, buffer relationships,
-device and memory information, composition, and the synchronization
-information needed to determine when the data can be consumed, which is
-enough for an independent runtime to decide whether it can consume the
-representation directly.
+Hurray standardizes representation compatibility. It defines the tensor's
+logical type and shape, physical layout, quantization information, buffer
+relationships, device and memory information, composition, and the
+synchronization information needed to determine when the data can be
+consumed, which is enough for an independent runtime to decide whether it
+can consume the representation directly.
 
 It does not standardize how a GPU buffer is allocated, how RDMA or CUDA
 IPC establishes access to it, how a communication library moves it, how
 a kernel is scheduled, or how a runtime internally converts an
-unsupported representation. Those determine the columns.
+unsupported representation.
 
 In short, Hurray answers:
 
@@ -776,8 +776,8 @@ A descriptor covers the representation; agreement about the request and the
 model remains application-specific.
 
 With a common descriptor, the consumer can make one of three decisions.
-They are the quadrants of Figure 2, reached from the row the descriptor
-establishes.
+The result depends on both representation compatibility and memory
+accessibility.
 
 **Direct use.** The consumer supports the same representation. No layout
 conversion is necessary.
