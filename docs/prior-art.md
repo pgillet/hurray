@@ -42,9 +42,9 @@ This paper compares these solutions and the tensor information they
 preserve. The comparison shows a practical gap for tensors whose
 physical representation matters to computation. Layout, quantization,
 device memory, paging, and sharding increasingly appear at the
-boundaries between runtimes, but no widely used interchange format
-combines them in one tensor description that can be reused across
-memory, files, and network transfers.
+boundaries between runtimes, but among the systems surveyed here, no
+widely used interchange format combines these properties in one tensor
+description reusable across memory, files, and network transfers.
 
 We then present **Hurray**, an open-source tensor interchange project
 designed for this use case. Hurray defines a language-independent
@@ -252,9 +252,8 @@ buffers where they currently reside.
 ### 2.7 Sharding and tensor composition
 
 Large tensors are often divided among devices. This is called
-**sharding**. Distributed training systems treat the partitioning of tensors
-over device meshes as a first-class concern, and repartitioning between
-operators that require different distributions as an explicit cost [17].
+**sharding**. Distributed training systems treat tensor partitioning
+over devices as a first-class concern [17].
 
 For example, a matrix with shape `[65536,16384]` might be divided by
 rows across eight GPUs. Each GPU stores a `[8192,16384]` shard.
@@ -473,9 +472,10 @@ GGUF [8] is a model format developed in the GGML ecosystem. It stores model
 metadata and named tensors in one file and is especially relevant
 because it supports many quantized tensor types.
 
-Types such as `Q4_0`, `Q4_K`, and other GGML encodings identify concrete
-low-precision representations. Their scales, blocks, and packing are
-defined as part of those tensor types.
+Types such as `Q4_0` and `Q4_K` identify concrete GGML encodings. Their
+block structure, scales, and packing follow the definition of the
+selected GGML tensor type rather than a generic quantization descriptor
+stored with each tensor.
 
 GGUF therefore provides strong prior art for preserving quantized
 representations in a portable artifact. Its quantization model is tied
@@ -528,11 +528,11 @@ providing the description shared by the applications at either end.
 | Arrow Tensor | Tensor IPC | Shape, type, dense strides | No generic scheme | Not central | Single tensor | IPC | IPC |
 | Arrow SparseTensor | Sparse tensor IPC | Shape, type, standard sparse formats | No generic scheme | Not central | Multi-buffer sparse tensor | IPC | IPC |
 | Arrow tensor extensions | Tensor-valued columns | Shape, type, C-contiguous + logical permutation | No generic scheme | External | Arrow arrays/tables | Arrow IPC | Flight / IPC |
-| SafeTensors | Model files | Shape, type, conventional dense | Limited | No live placement | Named tensors | Yes | No standard runtime stream |
+| SafeTensors | Model files | Shape, type, conventional dense | No generic scheme | No live placement | Named tensors | Yes | No standard runtime stream |
 | GGUF | Model files | Shape, type, GGML encodings | GGML quantized types | No live placement | Named tensors | Yes | No runtime protocol |
 | Zarr / NetCDF | Large arrays | Shape, type, storage-oriented | Application specific | No live placement | Dataset hierarchy | Yes | Remote access possible |
 | UCX | Communication | None; opaque buffers | Opaque | Memory buffers | Application-defined | No | Yes |
-| NIXL | Inference data movement | None; opaque buffers | Opaque | CPU/GPU/storage aware | Application-defined | Storage paths | Yes |
+| NIXL | Inference data movement | None; opaque buffers | Opaque | CPU/GPU/storage aware | Application-defined | Storage backends | Yes |
 | NCCL | GPU communication | Element type and count only | Opaque | GPU-oriented | Application-defined | No | Yes |
 
 Existing systems already provide strong support for conventional dense
@@ -703,11 +703,13 @@ The eight requirements are addressed as follows.
     arriving before all tensor bytes have arrived. The persistent file
     form contains named tensors and an index for locating them, and
     reuses the same tensor descriptor as the streaming form.
-7.  **Negotiation.** Because the descriptor names the layout, element
-    type, and quantization scheme explicitly, two endpoints can compare
-    what each supports before a large payload moves. The worked example
-    below turns that comparison into three outcomes: direct use,
-    relocation without reformatting, or explicit conversion.
+7.  **Negotiation.** Naming the layout, element type, and quantization
+    scheme explicitly is what makes capability comparison possible;
+    Hurray's interchange protocol carries the exchange itself, with each
+    side advertising the layouts it supports and a request stating an
+    ordered preference. The worked example below turns the outcome into
+    three cases: direct use, relocation without reformatting, or
+    explicit conversion.
 8.  **Language-neutral interface.** Hurray provides a C ABI as its
     runtime boundary, following the same practical approach used by
     DLPack and Arrow's C interfaces.
@@ -726,18 +728,18 @@ than describe the complete tensor.
 
 | Capability | DLPack | Arrow tensor facilities | SafeTensors | GGUF | NIXL/UCX/NCCL | Hurray |
 |:-------------|:---------|:-----------|:---------|:----------|:----------|:------------|
-| Shape and element type | Struct fields | IPC message fields | Header fields | Tensor entry fields | Type and count | Descriptor fields |
+| Shape and element type | Struct fields | IPC message fields | Header fields | Tensor entry fields | Opaque buffers; NCCL: datatype + count | Descriptor fields |
 | Dense strides | Strides field | Strides in Tensor message | Row-major only | Fixed by tensor type | Opaque bytes | Strided layout tag |
 | Standard sparse representation | Not defined | SparseTensor message | Not defined | Not defined | Opaque bytes | Sparse layout tags |
 | Specialized layouts | Not defined | Not defined | Not defined | Within GGML types | Opaque bytes | Layout tag, extensible |
 | Paged tensor layout | Not defined | Not defined | Not defined | Not defined | Opaque bytes | Paged layout tag |
-| Generic quantization metadata | Not defined | Not defined | Stored type only | GGML tensor type | Opaque bytes | Quantization descriptor |
+| Generic quantization metadata | Not defined | Not defined | No standardized scheme | GGML tensor type | Opaque bytes | Quantization descriptor |
 | Device information | Device field | Not central | Not defined | Not defined | Transport handles | Device, memory fields |
 | Sharding / composition | Single tensor | Higher-level structures | Named tensors | Named tensors | Application-defined | Composite descriptor |
 | In-process ABI | C struct ABI | C Data Interface | Not defined | Library-specific | Library APIs | C ABI |
 | Stream representation | Not defined | Arrow IPC, Flight | Not defined | File-oriented | Byte transport only | Streaming form |
 | Indexed file | Not defined | Arrow IPC file | Header offsets | Tensor offsets | Not defined | File form with index |
-| Representation negotiation | Application | Application | Not defined | Not defined | Application | Compared up front |
+| Representation negotiation | Application | Application | Not defined | Not defined | Application | Capability comparison / negotiation |
 
 This is not a scorecard. Simpler formats can be easier to implement and
 more interoperable: DLPack's simplicity has helped its adoption, Arrow's
@@ -893,7 +895,9 @@ quantized, sparse, tiled, paged, sharded, and resident on accelerators.
 
 ## References
 
-1.  DLPack Project. *DLPack: Open In-Memory Tensor Structure*. DMLC.
+1.  DLPack Project. *DLPack: Open In-Memory Tensor Structure*,
+    specification and `dlpack.h` (v1.1). DMLC.
+    https://dmlc.github.io/dlpack/latest/ and
     https://github.com/dmlc/dlpack
 2.  Apache Arrow Project. *Apache Arrow Columnar Format*. Apache
     Software Foundation. https://arrow.apache.org/docs/format/
@@ -905,9 +909,9 @@ quantized, sparse, tiled, paged, sharded, and resident on accelerators.
 5.  Apache Arrow Project. *Arrow Flight RPC*.
     https://arrow.apache.org/docs/format/Flight.html
 6.  T. Ahmad, Z. Al Ars, and H. P. Hofstee. "Benchmarking Apache Arrow
-    Flight---A Wire-Speed Protocol for Data Transfer, Querying and
-    Microservices." arXiv:2204.03032, 2022.
-    https://arxiv.org/abs/2204.03032
+    Flight: A Wire-Speed Protocol for Data Transfer, Querying and
+    Microservices." *ACM Conference on Big Data and Internet of Things
+    (BID)*, 2022. https://doi.org/10.1145/3527199.3527264
 7.  Hugging Face. *SafeTensors*.
     https://github.com/huggingface/safetensors
 8.  GGML Project. *GGUF Specification*.
@@ -927,14 +931,16 @@ quantized, sparse, tiled, paged, sharded, and resident on accelerators.
 15. Y. Zhong et al. "DistServe: Disaggregating Prefill and Decoding for
     Goodput-optimized Large Language Model Serving." *OSDI*, 2024.
     https://www.usenix.org/conference/osdi24/presentation/zhong-yinmin
-16. R. Qin et al. "Mooncake: A KVCache-centric Disaggregated
-    Architecture for LLM Serving." arXiv:2407.00079, 2024.
-    https://arxiv.org/abs/2407.00079
+16. R. Qin et al. "Mooncake: Trading More Storage for Less Computation
+    ---A KVCache-centric Architecture for Serving LLM Chatbot." *23rd
+    USENIX Conference on File and Storage Technologies (FAST)*, 2025.
+    https://www.usenix.org/conference/fast25/presentation/qin
 17. L. Zheng et al. "Alpa: Automating Inter- and Intra-Operator
     Parallelism for Distributed Deep Learning." *OSDI*, 2022.
     https://www.usenix.org/conference/osdi22/presentation/zheng-lianmin
-18. NVIDIA. *TensorRT-LLM: Disaggregated Serving and KV Cache Transfer*.
-    https://nvidia.github.io/TensorRT-LLM/
+18. NVIDIA. *TensorRT-LLM: Disaggregated Serving*, including KV cache
+    transfer and cache layout conversion across parallel strategies.
+    https://nvidia.github.io/TensorRT-LLM/advanced/disaggregated-service.html
 19. Hurray Project. *Hurray: A Zero-Copy, Streamable, Language-Agnostic
     Tensor Interchange Format for AI/ML Inference Pipelines and
     Scientific Arrays*. https://github.com/pgillet/hurray
