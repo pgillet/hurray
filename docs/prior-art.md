@@ -262,12 +262,12 @@ Describing each shard independently does not describe the global tensor.
 The receiver also needs to know which part of the global tensor each
 shard represents.
 
-A related concept is **tensor composition**: describing one tensor or
-tensor artifact using several constituent tensors or regions.
-Composition covers shards of one distributed tensor, several named
-tensors grouped in one model, sparse values and their index tensors, a
-quantized tensor and its scale tensors, and heterogeneous regions stored
-in different formats.
+A related concept is **tensor composition**. In this paper, that means
+describing one tensor or tensor artifact using several constituent
+tensors or regions. It can cover shards of one distributed tensor,
+several named tensors grouped in one model, sparse values and their
+index tensors, a quantized tensor and its scale tensors, and
+heterogeneous regions stored in different formats.
 
 ---
 
@@ -523,10 +523,10 @@ providing the description shared by the applications at either end.
 ## 8. Comparison
 
 | System | Main use | Tensor model and layout | Quantization | Device / memory | Composition | File | Network / stream |
-|:----------|:-------------|:----------------|:----------|:----------|:-----------|:------|:-------|
+|:----------|:------------|:--------------|:----------|:----------|:-----------|:---------|:---------|
 | DLPack | In-process framework exchange | Shape, type, dense strides | No generic scheme | Device | Single tensor | No | No |
-| Arrow Tensor | Tensor IPC | Shape, type, dense strides | No generic scheme | Not central | Single tensor | IPC | IPC |
-| Arrow SparseTensor | Sparse tensor IPC | Shape, type, standard sparse formats | No generic scheme | Not central | Multi-buffer sparse tensor | IPC | IPC |
+| Arrow Tensor | Tensor IPC | Shape, type, dense strides | No generic scheme | Not central | Single tensor | Standalone IPC | Standalone IPC |
+| Arrow SparseTensor | Sparse tensor IPC | Shape, type, standard sparse formats | No generic scheme | Not central | Multi-buffer sparse tensor | Standalone IPC | Standalone IPC |
 | Arrow tensor extensions | Tensor-valued columns | Shape, type, C-contiguous + logical permutation | No generic scheme | External | Arrow arrays/tables | Arrow IPC | Flight / IPC |
 | SafeTensors | Model files | Shape, type, conventional dense | No generic scheme | No live placement | Named tensors | Yes | No standard runtime stream |
 | GGUF | Model files | Shape, type, GGML encodings | GGML quantized types | No live placement | Named tensors | Yes | No runtime protocol |
@@ -550,8 +550,8 @@ structures or application protocols.
 ## 9. Distributed LLM Inference as a Concrete Case
 
 Transformer inference stores previously computed keys and values in a
-**KV cache**. Production systems commonly divide this cache into
-reusable blocks rather than allocating one contiguous buffer.
+**KV cache**. Systems such as vLLM divide this cache into reusable
+blocks rather than allocating one contiguous buffer.
 
 Kwon et al. introduced PagedAttention and vLLM [14], applying paging ideas
 to KV-cache management. Logical cache blocks can map to non-contiguous
@@ -896,7 +896,7 @@ quantized, sparse, tiled, paged, sharded, and resident on accelerators.
 ## References
 
 1.  DLPack Project. *DLPack: Open In-Memory Tensor Structure*,
-    specification and `dlpack.h` (v1.1). DMLC.
+    specification and `dlpack.h`. DMLC.
     https://dmlc.github.io/dlpack/latest/ and
     https://github.com/dmlc/dlpack
 2.  Apache Arrow Project. *Apache Arrow Columnar Format*. Apache
