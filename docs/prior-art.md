@@ -294,11 +294,11 @@ requirements, and observe the correct lifetime and synchronization
 rules. **Buffer alignment** is the requirement that a buffer start at an
 address that is a multiple of some size, commonly 64 bytes. Particular
 instructions and device interfaces can require it, and where they do
-not, it can still affect throughput. A format that intends its buffers
-to be used in place therefore states a minimum instead of leaving it to
-convention. Synchronization matters because the producer may not
-have finished: if an accelerator is still writing the data, the consumer
-must wait for the appropriate synchronization point before reading it.
+not, it can still affect throughput. A format can state a minimum
+alignment rather than leaving it to convention. Synchronization matters
+because the producer may not have finished: if an accelerator is still
+writing the data, the consumer must wait for the appropriate
+synchronization point before reading it.
 
 A format cannot guarantee zero-copy in every situation. It can provide
 enough information for the receiver to determine whether zero-copy is
@@ -379,14 +379,13 @@ representation shared across many languages and systems.
 
 Arrow is primarily designed for the **tabular model**: data as a set of
 records, typically rows from a relational database, each a set of named
-typed fields, stored **column by column** so that each column is one flat
-buffer of one type. Its basic objects are arrays, record batches, and
-tables. The Arrow specification defines their in-memory representation
-independently of a particular language implementation. The C Data
-Interface allows libraries in one process to share Arrow buffers, while
-Arrow IPC provides file and stream representations. **IPC** is
-inter-process communication: the mechanisms by which separate processes
-exchange data, such as shared memory.
+typed fields, stored in a **columnar** physical representation, with
+buffers defined by each Arrow type. Its basic objects are arrays, record
+batches, and tables. The Arrow specification defines their in-memory
+representation independently of a particular language implementation.
+The C Data Interface allows libraries in one process to share Arrow
+buffers, while **Arrow IPC** defines serialized messages for exchanging
+Arrow data between processes or storing it in streams and files.
 
 Arrow also has substantial tensor support.
 
