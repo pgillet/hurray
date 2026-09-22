@@ -59,6 +59,12 @@ def split_front_matter(text: str) -> tuple[str, str, str]:
     return title, re.sub(r"\s+", " ", subtitle).strip(), "\n".join(lines[rule + 1 :])
 
 
+def parse_author(head: str) -> str:
+    """Read the author block: a bold name followed by an email address."""
+    m = re.search(r"^\*\*([^*:]+)\*\*\s*$\s*^<?([\w.+-]+@[\w.-]+)>?\s*$", head, re.M)
+    return f"{m.group(1).strip()} · {m.group(2).strip()}" if m else ""
+
+
 def promote_table_captions(body: str) -> str:
     """Turn a `**Table N.** …` paragraph above a table into that table's caption.
 
@@ -127,6 +133,7 @@ def main() -> None:
     require_tools()
     source = SOURCE.read_text(encoding="utf-8")
     title, subtitle, body = split_front_matter(source)
+    author = parse_author(source.split("\n---", 1)[0])
     body = tighten_references(promote_table_captions(body))
 
     revision = re.search(r"\*\*Revision:\*\*\s*(.+)", source)
@@ -134,7 +141,10 @@ def main() -> None:
     date = re.split(r"\s*·\s*Also available", revision.group(1))[0].strip() if revision else ""
 
     if args.check:
-        print(f"ok: {SOURCE.relative_to(REPO)} parses; title {title!r}, revision {date!r}")
+        print(
+            f"ok: {SOURCE.relative_to(REPO)} parses; title {title!r}, "
+            f"author {author!r}, revision {date!r}"
+        )
         return
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -156,6 +166,7 @@ def main() -> None:
                 "-V", f"header-includes={HEADER}",
                 "-M", f"title={title}",
                 "-M", f"subtitle={subtitle}",
+                "-M", f"author={author}",
                 "-M", f"date={date}",
             ],
             check=True,

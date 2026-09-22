@@ -1,5 +1,8 @@
 # Tensor Data Interchange for AI/ML Systems: A Survey and the Hurray Proposal
 
+**Pascal Gillet**  
+<pascalgillet@ymail.com>
+
 **Revision:** September 2026 · Also available as [PDF](prior-art.pdf)
 
 **Hurray project:** https://pgillet.github.io/hurray/  
