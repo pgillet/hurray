@@ -371,7 +371,16 @@ for sparse indexes, paged KV caches, arbitrary accelerator tiling, or
 generic quantization parameters.
 
 DLPack's main strength is precisely that a small common representation
-is easy for frameworks to adopt.
+is easy for frameworks to adopt, and the Python array ecosystem has
+converged on it. The Python Array API Standard [25] weighed the Python
+buffer protocol and `__cuda_array_interface__` against it and chose
+DLPack as its recommended protocol, on the grounds that a device-specific
+protocol leaves a consumer no defined order in which to try protocols,
+and that "DLPack has the widest support". The CUDA Array Interface [26]
+is itself worth noting here, because it demonstrates the same model on
+GPUs: a device pointer, shape, `typestr`, optional strides, and a
+`stream` field naming the stream on which the producer may still have
+work in flight, so the consumer knows what to synchronize against.
 
 ---
 
@@ -1029,3 +1038,8 @@ quantized, sparse, tiled, paged, sharded, and resident on accelerators.
 24. PyTorch Project. *torch.distributed.tensor: DTensor, DeviceMesh, and
     placement types*.
     https://docs.pytorch.org/docs/stable/distributed.tensor.html
+25. Consortium for Python Data API Standards. *Array API Standard: Data
+    interchange mechanisms*.
+    https://data-apis.org/array-api/latest/design_topics/data_interchange.html
+26. Numba Project. *CUDA Array Interface (version 3)*.
+    https://numba.readthedocs.io/en/stable/cuda/cuda_array_interface.html
