@@ -510,11 +510,12 @@ accelerator kernels.
 
 ### 6.4 ONNX
 
-ONNX [21] is a model interchange format, and its tensor representation is
-part of that. `TensorProto` carries `dims`, a `data_type`, and the values
-either in typed fields or in `raw_data`. `SparseTensorProto` pairs a
-values tensor with an indices tensor and the dense `dims`. Quantization
-is expressed by annotation rather than inside the tensor: a
+ONNX [21] is a model interchange format, and its tensor representation
+is part of that. `TensorProto` carries `dims`, a `data_type`, and the
+values either in typed fields or in `raw_data`. `SparseTensorProto`
+pairs a values tensor with an indices tensor and the dense `dims`.
+Quantization parameters can be associated with tensors through
+annotations rather than fields of `TensorProto` itself: a
 `TensorAnnotation` maps a tensor name to the names of its quantization
 parameter tensors through `quant_parameter_tensor_names`, so scale and
 zero point are themselves tensors. The data type enum includes low-bit
@@ -941,8 +942,8 @@ At the same time, the tensors used by current compute systems are
 becoming more varied. PagedAttention made block-based KV-cache storage a
 central part of LLM serving. DistServe separated prefill and decode
 across GPUs. Mooncake treats KV cache as distributed state spanning GPU
-memory, host memory, and storage. Distributed training systems routinely
-partition and repartition tensors across devices.
+memory, host memory, and storage. Distributed training systems treat
+tensor partitioning across devices as a first-class concern.
 
 In these cases, moving the bytes is only part of the problem. The
 receiver also needs to know how those bytes represent the tensor.
