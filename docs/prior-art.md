@@ -114,7 +114,8 @@ This paper surveys existing approaches to tensor interchange. It covers
 in-memory interfaces, data formats, scientific array storage,
 communication systems, and recent work on distributed inference. The
 systems considered include DLPack, Apache Arrow, SafeTensors, GGUF,
-Zarr, NetCDF, NIXL, UCX, and NCCL.
+ONNX, Zarr, NetCDF, NIXL, UCX, and NCCL, with MLIR, PJRT, and PyTorch
+DTensor considered as adjacent approaches.
 
 The survey then considers Hurray, an open-source project that defines a
 broader tensor descriptor covering layout, quantization, memory
@@ -523,9 +524,9 @@ variants. Tensor data need not sit inside the file: setting
 `location`, with optional `offset`, `length`, and `checksum`.
 
 ONNX therefore covers more of this paper's subject than a weights-only
-format does. Its scope is different: the tensors exist to define and
-initialize a computation graph, the storage model is more constrained
-than an execution-layout descriptor, and it is not intended as a
+format does. Its scope is different. The tensor representation is part of a
+computational-model interchange format, the storage model is more
+constrained than an execution-layout descriptor, and it is not intended as a
 transport-independent physical tensor descriptor carried unchanged
 through runtime memory, streams, and files.
 
@@ -566,9 +567,10 @@ a layout, and a memory space. Its layout is either a strided form with an
 offset and per-dimension strides, or a semi-affine map, which the
 documentation notes is "sufficiently flexible to represent a wide variety
 of dense storage layouts, including row- and column-major and tiled".
-That is at least as expressive as the layout vocabulary discussed here.
-The difference is not expressiveness: `memref` is a type in a compiler
-intermediate representation, used inside a compilation pipeline, rather
+This is a highly expressive layout model covering many of the dense
+layouts discussed here. The relevant difference here is not simply
+layout expressiveness: `memref` is a type in a compiler intermediate
+representation, used inside a compilation pipeline, rather
 than a stable binary format that two independently built runtimes
 exchange directly. Expressiveness of a tensor representation is not by
 itself sufficient to make it an interchange format.
@@ -579,8 +581,9 @@ devices, buffers, and memory spaces as first-class objects:
 `PJRT_Device_AddressableMemories` returns the memories a device can
 address, and `PJRT_Memory_AddressableByDevices` returns the devices that
 can address a memory. Buffer layout is exposed as tiled or strided and
-may be backend-specific. PJRT establishes accessibility; it does not
-define a portable representation of what the buffer contains.
+may be backend-specific. PJRT describes and exposes device and
+memory accessibility; it does not define a portable representation of
+what the buffer contains.
 
 **PyTorch DTensor.** DTensor [24] represents a logical tensor distributed
 over a `DeviceMesh`, with placements per mesh dimension: `Shard` for a
@@ -602,7 +605,7 @@ than metadata kept beside it.
 | Arrow tensor extensions | Tensor-valued columns | Shape, type, C-contiguous + logical permutation | No generic scheme | External | Arrow arrays/tables | Arrow IPC | Flight / IPC |
 | SafeTensors | Model files | Shape, type, conventional dense | No generic scheme | No live placement | Named tensors | Yes | No standard runtime stream |
 | GGUF | Model files | Shape, type, GGML encodings | GGML quantized types | No live placement | Named tensors | Yes | No runtime protocol |
-| ONNX | Model interchange | Shape, type, dense and sparse | Annotated parameter tensors | No live placement | Graph initializers | Yes, plus external data | No |
+| ONNX | Model interchange | Shape, type, dense and sparse | Annotated parameter tensors | No live placement | Within a model graph | Yes, plus external data | No |
 | Zarr / NetCDF | Large arrays | Shape, type, storage-oriented | Application specific | No live placement | Dataset hierarchy | Yes | Remote access possible |
 | UCX | Communication | None; opaque buffers | Opaque | Memory buffers | Application-defined | No | Yes |
 | NIXL | Inference data movement | None; opaque buffers | Opaque | CPU/GPU/storage aware | Application-defined | Storage backends | Yes |
@@ -929,7 +932,10 @@ access to large multidimensional datasets.
 
 Communication systems cover the data path. UCX, NIXL, and NCCL can move
 memory efficiently without needing to understand the complete tensor
-stored in that memory.
+stored in that memory. ONNX carries tensor and quantization metadata as
+part of model interchange, while MLIR, PJRT, and DTensor demonstrate
+richer layout, memory-accessibility, and distributed-placement
+abstractions within compilers and runtimes.
 
 At the same time, the tensors used by current compute systems are
 becoming more varied. PagedAttention made block-based KV-cache storage a
