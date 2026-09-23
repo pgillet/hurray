@@ -122,8 +122,9 @@ placement, and tensor composition.
 
 Hurray is currently a beta, pre-1.0 project. Its relevance therefore
 depends less on its current adoption than on the question examined in
-this paper: **which information should a common tensor interchange
-format carry?**
+this paper: **can one stable tensor descriptor carry enough of the
+execution representation --- layout, quantization, placement, buffers,
+and composition --- to be reused at runtime, in streams, and in files?**
 
 ---
 
@@ -497,6 +498,28 @@ files. Their layouts primarily optimize persistence and data access
 rather than the in-memory representation expected directly by
 accelerator kernels.
 
+### 6.4 ONNX
+
+ONNX [21] is a model interchange format, and its tensor representation is
+part of that. `TensorProto` carries `dims`, a `data_type`, and the values
+either in typed fields or in `raw_data`. `SparseTensorProto` pairs a
+values tensor with an indices tensor and the dense `dims`. Quantization
+is expressed by annotation rather than inside the tensor: a
+`TensorAnnotation` maps a tensor name to the names of its quantization
+parameter tensors through `quant_parameter_tensor_names`, so scale and
+zero point are themselves tensors. The data type enum includes low-bit
+types, among them `UINT4`, `INT4`, `FLOAT4E2M1`, and the `FLOAT8`
+variants. Tensor data need not sit inside the file: setting
+`data_location` to `EXTERNAL` moves the bytes to a file identified by
+`location`, with optional `offset`, `length`, and `checksum`.
+
+ONNX therefore covers more of this paper's subject than a weights-only
+format does. Its scope is different: the tensors exist to define and
+initialize a computation graph, the storage model is more constrained
+than an execution-layout descriptor, and it is not intended as a
+transport-independent physical tensor descriptor carried unchanged
+through runtime memory, streams, and files.
+
 ---
 
 ## 7. Moving Data: UCX, NIXL, and NCCL
@@ -523,7 +546,44 @@ providing the description shared by the applications at either end.
 
 ---
 
-## 8. Comparison
+## 8. Adjacent Systems: Compilers, Runtimes, and Frameworks
+
+Three systems describe parts of a tensor without being interchange
+formats. They mark the boundary between describing a representation and
+exchanging one.
+
+**MLIR memref.** The `memref` type [22] carries a shape, an element type,
+a layout, and a memory space. Its layout is either a strided form with an
+offset and per-dimension strides, or a semi-affine map, which the
+documentation notes is "sufficiently flexible to represent a wide variety
+of dense storage layouts, including row- and column-major and tiled".
+That is at least as expressive as the layout vocabulary discussed here.
+The difference is not expressiveness: `memref` is a type in a compiler
+intermediate representation, used inside a compilation pipeline, rather
+than a stable binary format that two independently built runtimes
+exchange directly. Expressiveness of a tensor representation is not by
+itself sufficient to make it an interchange format.
+
+**PJRT.** PJRT [23] is a device plugin API rather than a data format, and
+it is relevant to the accessibility side of the problem. It exposes
+devices, buffers, and memory spaces as first-class objects:
+`PJRT_Device_AddressableMemories` returns the memories a device can
+address, and `PJRT_Memory_AddressableByDevices` returns the devices that
+can address a memory. Buffer layout is exposed as tiled or strided and
+may be backend-specific. PJRT establishes accessibility; it does not
+define a portable representation of what the buffer contains.
+
+**PyTorch DTensor.** DTensor [24] represents a logical tensor distributed
+over a `DeviceMesh`, with placements per mesh dimension: `Shard` for a
+tensor dimension split across devices, `Replicate` for a full copy on
+each, and `Partial` for values pending reduction. It is framework-specific
+rather than an interchange format, but it shows that placement and
+sharding are increasingly part of the tensor abstraction itself rather
+than metadata kept beside it.
+
+---
+
+## 9. Comparison
 
 | System | Main use | Tensor model and layout | Quantization | Device / memory | Composition | File | Network / stream |
 |:----------|:------------|:--------------|:----------|:----------|:-----------|:---------|:---------|
@@ -533,14 +593,21 @@ providing the description shared by the applications at either end.
 | Arrow tensor extensions | Tensor-valued columns | Shape, type, C-contiguous + logical permutation | No generic scheme | External | Arrow arrays/tables | Arrow IPC | Flight / IPC |
 | SafeTensors | Model files | Shape, type, conventional dense | No generic scheme | No live placement | Named tensors | Yes | No standard runtime stream |
 | GGUF | Model files | Shape, type, GGML encodings | GGML quantized types | No live placement | Named tensors | Yes | No runtime protocol |
+| ONNX | Model interchange | Shape, type, dense and sparse | Annotated parameter tensors | No live placement | Graph initializers | Yes, plus external data | No |
 | Zarr / NetCDF | Large arrays | Shape, type, storage-oriented | Application specific | No live placement | Dataset hierarchy | Yes | Remote access possible |
 | UCX | Communication | None; opaque buffers | Opaque | Memory buffers | Application-defined | No | Yes |
 | NIXL | Inference data movement | None; opaque buffers | Opaque | CPU/GPU/storage aware | Application-defined | Storage backends | Yes |
 | NCCL | GPU communication | Element type and count only | Opaque | GPU-oriented | Application-defined | No | Yes |
 
-Existing systems already provide strong support for conventional dense
-tensors, sparse IPC, persistent model storage, scientific arrays, and
-high-performance communication.
+Each of these systems solves a different part of the problem. DLPack is a
+compact in-memory tensor ABI. Arrow is a language-independent memory
+representation with tensor structures and IPC. SafeTensors and GGUF are
+persistent model storage, GGUF including practical quantized model
+representations. Zarr and NetCDF are large chunked multidimensional
+storage. ONNX is model interchange carrying tensor, sparse, quantization,
+and external-data metadata. UCX, NIXL, and NCCL move data. The adjacent
+systems of § 8 cover compiler representation, device and memory
+abstraction, and distributed placement.
 
 The less standardized case is a tensor that is simultaneously, for
 example, quantized, paged, sharded, resident in GPU memory, and composed
@@ -550,7 +617,7 @@ structures or application protocols.
 
 ---
 
-## 9. Distributed LLM Inference as a Concrete Case
+## 10. Distributed LLM Inference as a Concrete Case
 
 Transformer inference stores previously computed keys and values in a
 **KV cache**. Systems such as vLLM divide this cache into reusable
@@ -590,7 +657,7 @@ A common descriptor can make it explicit.
 
 ---
 
-## 10. What Is Still Needed, and What Hurray Proposes
+## 11. What Is Still Needed, and What Hurray Proposes
 
 The survey suggests several requirements that are useful together:
 
@@ -616,7 +683,7 @@ tensor description. The project is currently beta and pre-1.0. The rest
 of this section states what it standardizes and how it addresses each
 requirement above.
 
-### 10.1 Interoperability boundary
+### 11.1 Interoperability boundary
 
 **Hurray standardizes the representation needed to decide whether a
 tensor can be consumed directly. It does not standardize the mechanism
@@ -666,7 +733,7 @@ The surrounding runtime and communication stack answer:
 This keeps Hurray complementary to DLPack, CUDA IPC, UCX, NIXL, NCCL,
 and similar systems.
 
-### 10.2 How Hurray addresses the requirements
+### 11.2 How Hurray addresses the requirements
 
 Hurray's central object is a language-independent tensor descriptor. It
 describes properties including logical element type, storage type,
@@ -719,7 +786,7 @@ The eight requirements are addressed as follows.
 
 ---
 
-## 11. Hurray Compared with Existing Solutions
+## 12. Hurray Compared with Existing Solutions
 
 Hurray overlaps with DLPack on language-independent tensor exchange,
 with Arrow on publicly specified buffer representations, with
@@ -760,7 +827,7 @@ be explicit.
 
 ---
 
-## 12. Example: Exchanging a Paged KV Cache
+## 13. Example: Exchanging a Paged KV Cache
 
 Consider a prefill worker that has produced a BF16 KV cache stored in
 GPU memory, divided into 64-token blocks, sharded across four GPUs,
@@ -801,7 +868,7 @@ conversion is required.
 
 ---
 
-## 13. Open Questions
+## 14. Open Questions
 
 Hurray is not yet a mature standard.
 
@@ -835,7 +902,7 @@ provide small canonical byte-level examples with known results.
 
 ---
 
-## 14. Conclusion
+## 15. Conclusion
 
 AI/ML systems increasingly move tensors between frameworks,
 accelerators, processes, machines, and storage.
@@ -949,3 +1016,16 @@ quantized, sparse, tiled, paged, sharded, and resident on accelerators.
     Scientific Arrays*. https://github.com/pgillet/hurray
 20. Hurray Project. *Hurray Project Website*.
     https://pgillet.github.io/hurray/
+21. ONNX Project. *Open Neural Network Exchange: IR specification and
+    `onnx.proto`*, including `TensorProto`, `SparseTensorProto`,
+    `TensorAnnotation`, and external data.
+    https://onnx.ai/onnx/repo-docs/IR.html and
+    https://github.com/onnx/onnx/blob/main/onnx/onnx.proto
+22. MLIR Project. *Builtin Dialect: MemRefType*. LLVM.
+    https://mlir.llvm.org/docs/Dialects/Builtin/#memreftype
+23. OpenXLA Project. *PJRT: uniform device API*, and the PJRT C API
+    header. https://openxla.org/xla/pjrt and
+    https://github.com/openxla/xla/blob/main/xla/pjrt/c/pjrt_c_api.h
+24. PyTorch Project. *torch.distributed.tensor: DTensor, DeviceMesh, and
+    placement types*.
+    https://docs.pytorch.org/docs/stable/distributed.tensor.html
