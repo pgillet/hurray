@@ -287,10 +287,9 @@ information about constituent tensors.
 
 ### 3.2 Avoid copies when possible
 
-**Zero-copy interchange** means that the receiver can use an existing
-data buffer directly, by being passed a pointer or a memory handle rather
-than the bytes, instead of copying the tensor merely to cross an
-interface.
+**Zero-copy interchange** means the receiver reads the producer's existing
+buffer rather than a copy of it. What crosses the interface is a pointer
+or a memory handle, not the bytes.
 
 Zero-copy is not always possible. The receiver must understand the
 representation, be able to access the memory, satisfy alignment
