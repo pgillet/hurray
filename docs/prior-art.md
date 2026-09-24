@@ -759,10 +759,11 @@ layout.
 The eight requirements are addressed as follows.
 
 1.  **Layouts.** Hurray currently defines twelve layout families,
-    including conventional dense layouts as well as strided, sparse,
+    covering conventional dense layouts as well as strided, sparse,
     space-filling, paged, and composite representations. Each layout has
-    a tag and layout-specific parameters, so a consumer can identify the
-    address mapping rather than assuming that every tensor is row-major.
+    a tag and layout-specific parameters, so the address mapping is
+    stated per tensor rather than fixed by a single format-wide
+    convention.
 2.  **Quantization.** Hurray treats quantization separately from storage
     type. Its current specification includes normative schemes for
     common affine quantization cases and additional low-precision
