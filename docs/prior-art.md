@@ -5,6 +5,8 @@
 
 **Revision:** September 2026 · Also available as [PDF](prior-art.pdf)
 
+**DOI:** [10.5281/zenodo.23023990](https://doi.org/10.5281/zenodo.23023990)
+
 **Hurray project:** https://pgillet.github.io/hurray/  
 **Source code and specification:** https://github.com/pgillet/hurray
 
