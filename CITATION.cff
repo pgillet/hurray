@@ -1,0 +1,69 @@
+cff-version: 1.2.0
+message: >-
+  If you use Hurray in your research, please cite the survey paper under
+  "preferred-citation" below rather than this repository.
+title: Hurray
+abstract: >-
+  A zero-copy, streamable, language-agnostic tensor interchange format for AI/ML
+  inference pipelines and scientific arrays. Hurray defines a language-independent
+  descriptor for a tensor's element type, shape, memory layout, quantization, device
+  placement, buffers, and composition. The same descriptor encoding is shared by a
+  self-delimiting streaming format for runtime interchange and a file format with a
+  footer index for random access and mmap-based zero-copy loading.
+type: software
+authors:
+  - family-names: Gillet
+    given-names: Pascal
+    email: pascalgillet@ymail.com
+    # Add your ORCID once the account exists — it is what makes the citation resolve to
+    # you rather than to a name string:
+    # orcid: "https://orcid.org/0000-0000-0000-0000"
+repository-code: "https://github.com/pgillet/hurray"
+url: "https://www.pascalgillet.net/hurray/"
+license:
+  - Apache-2.0
+  - MIT
+keywords:
+  - tensor interchange
+  - zero-copy
+  - quantization
+  - memory layout
+  - sparse tensors
+  - machine learning systems
+  - inference
+  - Rust
+# No version or date-released yet: 0.1.0 is unreleased and the repository carries no
+# tags. Add both here when the first release is cut, so the citation names a fixed state.
+preferred-citation:
+  type: report
+  title: >-
+    Tensor Data Interchange for AI/ML Systems: A Survey and the Hurray Proposal
+  abstract: >-
+    A survey of tensor interchange solutions — DLPack, Apache Arrow, SafeTensors, GGUF,
+    Zarr, NetCDF, ONNX, NIXL, UCX, and NCCL — comparing the tensor information each one
+    preserves. The comparison shows a practical gap for tensors whose physical
+    representation matters to computation: layout, quantization, device memory, paging,
+    and sharding increasingly appear at the boundaries between runtimes, yet no widely
+    used interchange format combines them in one tensor description reusable across
+    memory, files, and network transfers. The paper then presents Hurray, an
+    open-source tensor interchange project designed for this use case.
+  authors:
+    - family-names: Gillet
+      given-names: Pascal
+      email: pascalgillet@ymail.com
+      # orcid: "https://orcid.org/0000-0000-0000-0000"
+  year: 2026
+  month: 9
+  doi: 10.5281/zenodo.23023990
+  url: "https://doi.org/10.5281/zenodo.23023990"
+  license: CC-BY-4.0
+  keywords:
+    - tensor interchange
+    - zero-copy
+    - DLPack
+    - Apache Arrow
+    - GGUF
+    - SafeTensors
+    - quantization
+    - KV cache
+    - disaggregated inference
