@@ -65,6 +65,17 @@ def parse_author(head: str) -> str:
     return f"{m.group(1).strip()} · {m.group(2).strip()}" if m else ""
 
 
+def parse_doi(head: str) -> str:
+    """Read the DOI from the title block.
+
+    The title block is not rendered into the PDF — the body starts after the rule — so a
+    DOI declared only there would reach every form of the paper except the archived one,
+    which is the one form that must state its own citation.
+    """
+    m = re.search(r"^\*\*DOI:\*\*\s*\[?([\d.]+/[^\]\s)]+)", head, re.M)
+    return m.group(1).strip() if m else ""
+
+
 def promote_table_captions(body: str) -> str:
     """Turn a `**Table N.** …` paragraph above a table into that table's caption.
 
@@ -139,6 +150,10 @@ def main() -> None:
     revision = re.search(r"\*\*Revision:\*\*\s*(.+)", source)
     # The header's "also available as PDF" pointer is meaningless inside the PDF itself.
     date = re.split(r"\s*·\s*Also available", revision.group(1))[0].strip() if revision else ""
+
+    doi = parse_doi(source.split("\n---", 1)[0])
+    if doi:
+        date = f"{date} · doi:{doi}" if date else f"doi:{doi}"
 
     if args.check:
         print(

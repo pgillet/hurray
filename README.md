@@ -106,3 +106,9 @@ inference workloads require. See [prior art](docs/prior-art.md) for the wider su
 ## License
 
 Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.
+
+The survey paper — `docs/prior-art.md`, `docs/prior-art.pdf`, and the figures it
+references in `docs/figures/` — is licensed under
+[CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/) instead. It is prose, not
+software, and CC-BY is what lets other surveys quote and redistribute it with attribution
+intact. Archived at [10.5281/zenodo.23023990](https://doi.org/10.5281/zenodo.23023990).
