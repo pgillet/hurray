@@ -1112,7 +1112,8 @@ The matrix MUST be updated whenever a new `hurray-python` release changes any of
 
 ## Packaging
 
-- The package MUST be installable via `pip install hurray`.
+- The package MUST be installable via `pip install pyhurray`. The distribution name
+  and the import name differ: the module imported MUST be `hurray`.
 - Wheels MUST be provided for CPython ≥ 3.10 on Linux (x86_64, aarch64),
   macOS (x86_64, arm64), and Windows (x86_64).
 - The package MUST NOT require a Rust toolchain at install time (pre-built wheels

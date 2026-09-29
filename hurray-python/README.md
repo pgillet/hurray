@@ -6,6 +6,14 @@ Built with [PyO3](https://pyo3.rs) and [maturin](https://www.maturin.rs).
 
 ## Quick start
 
+The distribution is `pyhurray`; the module is `hurray`.
+
+```bash
+pip install pyhurray
+```
+
+To build from this checkout instead:
+
 ```bash
 pip install maturin
 maturin develop

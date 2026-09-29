@@ -13,10 +13,13 @@ together under a single `MAJOR.MINOR.PATCH` tag.
 | Artifact | Registry | How |
 |----------|----------|-----|
 | `hurray-core`, `hurray-io`, `hurray-ffi`, `hurray-inspect` | [crates.io](https://crates.io) (source) | `cargo publish`, in dependency order |
-| `hurray` (from `hurray-python`) | [PyPI](https://pypi.org) (wheels) | `maturin` |
+| `pyhurray` (from `hurray-python`) | [PyPI](https://pypi.org) (wheels) | `maturin` |
 | Documentation site `/docs/<tag>/` | GitHub Pages | automatic on tag (`docs.yml`) |
 
 `conformance` is `publish = false` (internal tooling) and is never published.
+
+The Python distribution is `pyhurray` (the name `hurray` is taken on PyPI); the module it
+installs is imported as `hurray`.
 
 **Crate dependency order** (publish parents before children):
 
@@ -29,7 +32,7 @@ hurray-core  →  hurray-io , hurray-ffi  →  hurray-inspect
 - **crates.io:** a maintainer account with an API token, or configure crates.io
   [Trusted Publishing](https://crates.io/docs/trusted-publishing) (GitHub Actions OIDC — no
   stored token).
-- **PyPI:** create the `hurray` project and configure
+- **PyPI:** create the `pyhurray` project and configure
   [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (recommended) or an API
   token.
 - Install tooling: `cargo install cargo-release` and `pipx install maturin` (or
