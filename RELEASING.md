@@ -29,14 +29,19 @@ hurray-core  →  hurray-io , hurray-ffi  →  hurray-inspect
 
 ## One-time setup
 
-- **crates.io:** a maintainer account with an API token, or configure crates.io
-  [Trusted Publishing](https://crates.io/docs/trusted-publishing) (GitHub Actions OIDC — no
-  stored token).
-- **PyPI:** create the `pyhurray` project and configure
-  [Trusted Publishing](https://docs.pypi.org/trusted-publishers/) (recommended) or an API
-  token.
+Publishing is a **human act** — nothing here uploads on a tag push. Both registries
+therefore need an **API token**; [Trusted
+Publishing](https://docs.pypi.org/trusted-publishers/) does not apply, because it
+authenticates a GitHub Actions job rather than a person. (crates.io could not use it for a
+first release anyway: it can only be configured on a crate that already exists.)
+
+- **crates.io:** a maintainer account with an API token (`cargo login`).
+- **PyPI:** an account with an API token. There is nothing to create in advance — **a
+  distribution name is claimed by its first upload, not by registering**. Registering an
+  account does not hold `pyhurray`, and a PyPI *pending publisher* explicitly does not
+  either.
 - Install tooling: `cargo install cargo-release` and `pipx install maturin` (or
-  `pip install maturin`).
+  `pip install maturin`), plus `pipx install twine` to upload the wheels.
 
 ## Release checklist
 
@@ -51,7 +56,8 @@ hurray-core  →  hurray-io , hurray-ffi  →  hurray-inspect
    triggers the docs deploy, which builds `/docs/X.Y.Z/` from that tag and makes it
    `stable`.
 5. **Publish crates** to crates.io in dependency order.
-6. **Publish the Python wheel(s)** to PyPI.
+6. **Build the Python distributions** — run the **Build Python wheels** workflow against
+   the tag, then download the `pyhurray-dist` artifact and **upload it yourself**.
 7. **GitHub Release.** Create a release for the tag with the changelog section as notes.
 
 ## Commands
@@ -67,12 +73,25 @@ cargo release minor        # or: patch / X.Y.Z
 cargo release minor --execute
 ```
 
-Python wheel to PyPI (start simple; add a multi-platform matrix later with
-[`cibuildwheel`](https://cibuildwheel.pypa.io/) or `maturin-action` in CI):
+Python distributions to PyPI. The build runs in CI and the upload does not: `pyproject.toml`
+builds `abi3-py310`, which is one wheel *per platform*, and one machine cannot
+cross-compile macOS and Windows — while
+[`python-bindings.md` §Packaging](docs/impl/python-bindings.md) requires wheels for Linux
+(x86_64, aarch64), macOS (x86_64, arm64) and Windows (x86_64), and forbids needing a Rust
+toolchain at install time. So CI builds the artifacts and a human ships them:
 
 ```sh
-maturin publish -m hurray-python/Cargo.toml
+# 1. Actions tab → "Build Python wheels" → Run workflow → pick the tag.
+#    (Or: gh workflow run build-wheels.yml --ref X.Y.Z)
+# 2. Download the single bundled artifact once the run is green:
+gh run download --name pyhurray-dist --dir dist
+
+# 3. Check what you are about to make permanent, then upload it:
+twine check dist/*
+twine upload dist/*
 ```
+
+The workflow only ever *builds* — it has no upload step and no registry credentials.
 
 ## Notes
 
