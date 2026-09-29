@@ -1,0 +1,110 @@
+name: Build Python wheels
+
+# Builds the `pyhurray` sdist and one wheel per platform, and stops there — it never
+# uploads. Releasing stays a human act performed from RELEASING.md; this workflow exists
+# only because the one thing a manual release cannot do is cross-compile: `maturin
+# publish` from a single machine cannot produce macOS and Windows wheels, and
+# docs/impl/python-bindings.md §Packaging requires them (plus "MUST NOT require a Rust
+# toolchain at install time", which an sdist-only release would violate on those
+# platforms).
+#
+# To use it: run it from the Actions tab against the release tag, download the single
+# `pyhurray-dist` artifact, and upload that directory by hand.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Same maturin the docs site builds with, so the wheel and the published Python API
+  # reference are never produced by two different versions.
+  MATURIN_VERSION: "v1.15.0"
+  TWINE_VERSION: "5.1.1"
+
+jobs:
+  wheels:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # One platform failing must not hide the state of the others: a release operator
+      # needs to see the whole matrix in one run, not rediscover it one target at a time.
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-latest,  target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest,   target: x86_64-apple-darwin }
+          - { os: macos-latest,   target: aarch64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          target: ${{ matrix.target }}
+          # auto = the oldest manylinux this toolchain can target, i.e. the widest glibc
+          # range. Ignored on macOS and Windows.
+          manylinux: auto
+          # No `-i`: the abi3-py310 feature makes one wheel per platform cover CPython
+          # >= 3.10, so whichever interpreter the runner happens to have does not change
+          # the wheel tag.
+          args: --release --out dist --manifest-path hurray-python/Cargo.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: sdist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # maturin vendors the sibling crates (hurray-core / -io / -ffi) into the tarball,
+      # so the sdist builds standalone and does not wait on the crates.io publish.
+      - uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: ${{ env.MATURIN_VERSION }}
+          command: sdist
+          args: --out dist --manifest-path hurray-python/Cargo.toml
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  bundle:
+    name: Bundle for upload
+    needs: [wheels, sdist]
+    runs-on: ubuntu-latest
+    steps:
+      # Collapses the per-target artifacts into one, so the release operator downloads a
+      # single directory rather than assembling six.
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Catches broken long_description / metadata before the upload, which is the point
+      # of no return: a PyPI version can be yanked but never replaced.
+      - name: Check the distributions
+        run: |
+          python -m pip install "twine==${TWINE_VERSION}"
+          python -m twine check dist/*
+          ls -l dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pyhurray-dist
+          path: dist/
+          if-no-files-found: error
