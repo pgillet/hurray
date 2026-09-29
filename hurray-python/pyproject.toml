@@ -3,7 +3,7 @@ requires = ["maturin>=1.7,<2"]
 build-backend = "maturin"
 
 [project]
-name = "hurray"
+name = "pyhurray"
 version = "0.1.0"
 description = "Python bindings for the Hurray tensor interchange format"
 readme = "README.md"
@@ -24,6 +24,9 @@ scipy  = ["scipy>=1.10"]
 dev    = ["maturin>=1.7", "pytest>=8.0", "numpy>=1.24"]
 
 [tool.maturin]
+# The distribution is `pyhurray` because `hurray` is taken on PyPI; the import
+# name stays `hurray`, so maturin needs the module name spelled out here.
+module-name = "hurray"
 # abi3-py310 is declared as a pyo3 feature in Cargo.toml; maturin picks it up
 # from there. The extension-module feature is required for cdylib builds.
 features = ["extension-module"]

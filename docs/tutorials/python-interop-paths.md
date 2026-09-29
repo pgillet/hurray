@@ -73,7 +73,7 @@ loaded = hurray.load("out.hrry")["a"]
 file format, or `hurray.StreamWriter` / `hurray.StreamReader` for the streaming one
 (see [Python: Streaming](../cookbook/hurray-python-streaming.md)).
 
-**What it costs.** A hard dependency on `hurray`, and your users install a compiled
+**What it costs.** A hard dependency on `pyhurray`, and your users install a compiled
 extension. For a library whose Hurray support is one feature among many, that is the
 main objection — and path 2 exists precisely to avoid it.
 
@@ -228,7 +228,7 @@ def to_hurray(matrix):
         import hurray
     except ImportError as exc:
         raise RuntimeError(
-            "Hurray support requires the 'hurray' package: pip install hurray"
+            "Hurray support requires the hurray module: pip install pyhurray"
         ) from exc
     return hurray.from_scipy(matrix)
 ```
