@@ -8,6 +8,7 @@ Sources for the public documentation site. Design and structure are specified in
 - `site/` — [Zola](https://www.getzola.org/) project for the outer shell (landing, FAQ,
   blog, community).
 - `build-site.sh` — reconstructs the full deployable tree into `website/public/`.
+- `social-preview.typ` — source for the GitHub social preview card (see below).
 
 ## Prerequisites
 
@@ -31,6 +32,26 @@ cd website/site && zola serve        # live-reload the outer shell
 ```
 
 Build output (`book/book/`, `site/public/`, `public/`) is git-ignored.
+
+## Social preview card
+
+`site/static/img/hurray-social-preview.png` is the 1280×640 card GitHub serves when the
+repository is linked anywhere — LinkedIn, Slack, X, Discord. It is **not** part of the
+site build; it is uploaded by hand under repository *Settings → General → Social preview*,
+and it is committed here so the artwork is versioned rather than living only in that
+upload.
+
+Regenerate it with [Typst](https://github.com/typst/typst/releases) (0.13+):
+
+```sh
+typst compile website/social-preview.typ \
+      website/site/static/img/hurray-social-preview.png --ppi 72
+```
+
+The page is 1280×640 pt and `--ppi 72` makes that 1280×640 px exactly. The wordmark is
+rebuilt in Typst rather than imported from `hurray-logo.svg`: the SVG's ink (`#12201e`) is
+designed for light backgrounds and disappears on the dark card, and its `<text>` elements
+need a `ui-monospace`/`Menlo`/`Consolas` font that a build machine is unlikely to have.
 
 ## Canonical URLs (single sources)
 
