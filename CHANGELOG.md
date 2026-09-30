@@ -13,6 +13,10 @@ workspace share one version and are released together.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-09-30
+
+First release. Everything below is new, because nothing preceded it.
+
 ### Added
 
 - **`hurray-core`** — tensor descriptor with binary encode/decode; element-type system
@@ -33,4 +37,27 @@ workspace share one version and are released together.
 - The full **format specification**, implementation requirements, cookbook, and ADRs,
   published as a versioned documentation site.
 
-[Unreleased]: https://github.com/pgillet/hurray/commits/main
+### Not implemented
+
+0.1.0 does not implement everything the specification defines. The
+[implementation status page](docs/impl/implementation-status.md) is generated from the code
+and is the authoritative account; the gaps worth knowing before you depend on this release:
+
+- **Level 3 network transport** — specified in
+  [`interchange`](docs/spec/interchange.md), implemented by no crate. None of the message
+  types, capability flags, or the RDMA data plane exist anywhere. `hurray-io` implements
+  the stream framing and the file container — Levels 1 and 2 — and stops there.
+- **`hurray-ffi` reads a descriptor but not every layout.** The C surface exposes the type
+  tag, layout tag, rank, shape, byte offset and buffer table; layout-specific fields (CSR
+  `nnz`, tile shape, the block table) have no accessor yet, so a C caller cannot interpret
+  every layout it can decode. Level 2 (writing) is not exposed at all.
+- **Streaming over a file descriptor in `hurray-python` is Unix-only.** Paths, `bytes` and
+  the in-memory writer work everywhere; passing an object with `fileno()` raises
+  `hurray.UnsupportedError` on Windows.
+
+The specification remains **Draft** at this release, which is what a `0.x` ships against:
+the `1.x` compatibility contract has not been opened, and tag assignments are not yet
+frozen.
+
+[Unreleased]: https://github.com/pgillet/hurray/compare/0.1.0...HEAD
+[0.1.0]: https://github.com/pgillet/hurray/releases/tag/0.1.0
