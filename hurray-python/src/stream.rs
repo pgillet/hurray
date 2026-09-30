@@ -24,7 +24,15 @@
 //! silently losing the composition. `next_item` recognises the head and yields a
 //! `hurray.Composite` (ADR-036), which is why one `next()` is one item whether that
 //! item is a tensor or a whole composite tree.
+//!
+//! ## Streaming over a descriptor is Unix-only
+//!
+//! Paths, `bytes` and the in-memory sink work everywhere. Passing an object with
+//! `fileno()` — a socket, a pipe, an open file — works on Unix and raises
+//! `hurray.UnsupportedError` on Windows, where `fileno()` is a CRT descriptor for files
+//! but a raw `SOCKET` for sockets (see issue #215).
 
+#[cfg(unix)]
 use std::os::fd::RawFd;
 
 use pyo3::prelude::*;
@@ -82,6 +90,7 @@ fn build_runtime() -> PyResult<Runtime> {
 /// Without the `dup` the stream would close the caller's descriptor out from under
 /// them on `finish` — a socket handed to a writer would stop working the moment the
 /// writer was done with it (ADR-035 § 3).
+#[cfg(unix)]
 fn dup_fd(fd: RawFd) -> PyResult<std::os::fd::OwnedFd> {
     // SAFETY: borrow_raw only asserts the descriptor is valid for this call; the clone
     // below is what takes ownership, and the borrow is dropped immediately after.
@@ -97,8 +106,37 @@ fn dup_fd(fd: RawFd) -> PyResult<std::os::fd::OwnedFd> {
 /// or a pipe as well as a regular file. A dedicated reactor type per descriptor kind
 /// would be faster, but it would require knowing which kind this is, and the caller
 /// gave us an integer.
+#[cfg(unix)]
 fn file_from_fd(fd: std::os::fd::OwnedFd) -> tokio::fs::File {
     tokio::fs::File::from_std(std::fs::File::from(fd))
+}
+
+/// The transport behind an object with `fileno()`, or `None` if it has no descriptor.
+///
+/// `None` means "not this argument shape" and the caller goes on to try a path or bytes;
+/// `Some(Err(..))` means the object *did* offer a descriptor that cannot be used.
+///
+/// Platform-split because a CPython `fileno()` is not one thing: on Unix it is a
+/// descriptor `dup` clones and `File` adopts, while on Windows it is a CRT descriptor for
+/// files but a raw `SOCKET` for sockets — two handle spaces that need different
+/// conversions and different ownership rules. Guessing between them would hand back a
+/// stream that reads garbage from the wrong handle, so the Windows build refuses the
+/// argument and says why (see issue #215).
+#[cfg(unix)]
+fn transport_from_fileno(obj: &Bound<'_, PyAny>) -> Option<PyResult<tokio::fs::File>> {
+    let fd = fileno_of(obj).ok()?;
+    Some(dup_fd(fd).map(file_from_fd))
+}
+
+#[cfg(not(unix))]
+fn transport_from_fileno(obj: &Bound<'_, PyAny>) -> Option<PyResult<tokio::fs::File>> {
+    let _ = fileno_of(obj).ok()?;
+    // Fully qualified: importing it at module scope would be an unused import on Unix,
+    // which -D warnings rejects.
+    Some(Err(crate::errors::UnsupportedError::new_err(
+        "streaming to or from a file descriptor is Unix-only; \
+         pass a path (or, for a reader, bytes) instead",
+    )))
 }
 
 /// Resolves the `source` argument to something readable: a path, an object with
@@ -111,8 +149,8 @@ fn resolve_source(
     if let Ok(data) = source.extract::<Vec<u8>>() {
         return Ok(Box::new(std::io::Cursor::new(data)));
     }
-    if let Ok(fd) = fileno_of(source) {
-        return Ok(Box::new(file_from_fd(dup_fd(fd)?)));
+    if let Some(transport) = transport_from_fileno(source) {
+        return Ok(Box::new(transport?));
     }
     let path: String = source.extract().map_err(|_| {
         pyo3::exceptions::PyTypeError::new_err(
@@ -127,7 +165,10 @@ fn resolve_source(
 }
 
 /// The file descriptor behind an object, if it has one.
-fn fileno_of(obj: &Bound<'_, PyAny>) -> PyResult<RawFd> {
+///
+/// `i32`, not `RawFd`: `fileno()` is a Python-level integer on every platform, and only
+/// what [`transport_from_fileno`] does with it is platform-specific.
+fn fileno_of(obj: &Bound<'_, PyAny>) -> PyResult<i32> {
     let fd = obj.call_method0("fileno")?.extract::<i32>()?;
     if fd < 0 {
         return Err(FileError::new_err(format!("fileno() returned {fd}")));
@@ -216,6 +257,9 @@ unsafe impl Send for SendSlice {}
 /// `bytes`. An object with no descriptor — `io.BytesIO` — should be passed as
 /// `.getvalue()`.
 ///
+/// The `fileno()` source is **Unix-only**; on Windows it raises
+/// `hurray.UnsupportedError`, and a path or `bytes` works as usual.
+///
 /// ## Examples (Python)
 ///
 /// ```python
@@ -257,6 +301,8 @@ impl StreamReader {
     ///
     /// - `TypeError` — `source` is not a path, bytes, or an object with `fileno()`.
     /// - `hurray.FileError` — the path could not be opened, or `fileno()` failed.
+    /// - `hurray.UnsupportedError` — `source` has a `fileno()` and the platform is not
+    ///   Unix; pass a path or `bytes` there.
     ///
     /// ## Examples
     ///
@@ -406,6 +452,9 @@ impl StreamReader {
 /// A filesystem path, an object with `fileno()`, or nothing at all — in which case the
 /// stream is built in memory and returned by `getvalue()`.
 ///
+/// The `fileno()` destination is **Unix-only**; on Windows it raises
+/// `hurray.UnsupportedError`, and a path or the in-memory form works as usual.
+///
 /// ## Examples (Python)
 ///
 /// ```python
@@ -435,6 +484,8 @@ impl StreamWriter {
     ///
     /// - `TypeError` — `destination` is not a path or an object with `fileno()`.
     /// - `hurray.FileError` — the path could not be created, or `fileno()` failed.
+    /// - `hurray.UnsupportedError` — `destination` has a `fileno()` and the platform is
+    ///   not Unix; pass a path there, or omit it for an in-memory stream.
     ///
     /// ## Examples
     ///
@@ -459,8 +510,8 @@ impl StreamWriter {
                 (Box::new(buffer.clone()), Some(buffer))
             }
             Some(dest) => {
-                if let Ok(fd) = fileno_of(dest) {
-                    (Box::new(file_from_fd(dup_fd(fd)?)), None)
+                if let Some(transport) = transport_from_fileno(dest) {
+                    (Box::new(transport?), None)
                 } else {
                     let path: String = dest.extract().map_err(|_| {
                         pyo3::exceptions::PyTypeError::new_err(

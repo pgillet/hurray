@@ -44,6 +44,12 @@ access by name, which a stream deliberately does not.
 | bytes in hand | `hurray.StreamReader(data)` |
 | nowhere to put it | `hurray.StreamWriter()` and then `getvalue()` |
 
+> **Descriptors are Unix-only.** Passing an object with `fileno()` raises
+> `hurray.UnsupportedError` on Windows, where `fileno()` is a CRT descriptor for files but
+> a raw `SOCKET` for sockets — two handle spaces that cannot share one conversion. Paths,
+> `bytes` and the in-memory writer work everywhere. See
+> [issue #215](https://github.com/pgillet/hurray/issues/215).
+
 ```python
 import socket
 
