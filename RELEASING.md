@@ -41,7 +41,9 @@ first release anyway: it can only be configured on a crate that already exists.)
   account does not hold `pyhurray`, and a PyPI *pending publisher* explicitly does not
   either.
 - Install tooling: `cargo install cargo-release` and `pipx install maturin` (or
-  `pip install maturin`), plus `pipx install twine` to upload the wheels.
+  `pip install maturin`), plus `pipx install 'twine>=6.1'` to upload the wheels — maturin
+  writes `Metadata-Version: 2.4`, and twine 5.x rejects it as *"missing required fields:
+  Name, Version"*, which is a parser limit wearing the costume of a broken package.
 
 ## Release checklist
 
