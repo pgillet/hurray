@@ -21,7 +21,10 @@ env:
   # Same maturin the docs site builds with, so the wheel and the published Python API
   # reference are never produced by two different versions.
   MATURIN_VERSION: "v1.15.0"
-  TWINE_VERSION: "5.1.1"
+  # >= 6.1: maturin 1.15 writes `Metadata-Version: 2.4`, which twine 5.x rejects as
+  # "missing required fields: Name, Version" — its pkginfo only parses up to 2.3, and
+  # reports the failure as if the fields were absent rather than the version unknown.
+  TWINE_VERSION: "7.0.0"
 
 jobs:
   wheels:
