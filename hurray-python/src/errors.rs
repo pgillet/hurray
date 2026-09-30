@@ -13,7 +13,7 @@
 //! │                                    (distinct from builtins.BufferError)
 //! └── hurray.CopyRequiredError       — copy=False requested but copy is needed
 //! NotImplementedError
-//! └── hurray.UnsupportedError        — unsupported element type or layout
+//! └── hurray.UnsupportedError        — unsupported element type, layout, or platform
 //! RuntimeError
 //! └── hurray.InternalError           — unexpected Rust panics
 //! OSError
@@ -57,8 +57,8 @@ pyo3::create_exception!(
     hurray,
     UnsupportedError,
     pyo3::exceptions::PyNotImplementedError,
-    "Raised when an element type, memory layout, or device combination is\n\
-     not supported by the current Hurray version.\n\
+    "Raised when an element type, memory layout, device combination, or platform\n\
+     capability is not supported by the current Hurray version.\n\
      Subclass of :exc:`NotImplementedError`."
 );
 

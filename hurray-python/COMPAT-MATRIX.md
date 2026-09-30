@@ -41,3 +41,11 @@ Consumers MUST verify the version before dereferencing the pointer; a mismatch
 raises `hurray.UnsupportedError`. The check is exact equality, so version 4 is both
 the minimum and the maximum this release accepts. See ADR-023 for the protocol,
 ADR-030 for the multi-buffer change, and ADR-034 for the readable context.
+
+### Platform differences
+
+One capability differs by platform in 0.1.x: `hurray.StreamReader` and
+`hurray.StreamWriter` accept an object with `fileno()` — a socket, a pipe, an open file —
+on **Unix only**. On Windows that argument raises `hurray.UnsupportedError`; paths,
+`bytes` and the in-memory writer are unaffected, as is everything outside streaming.
+Tracked in [issue #215](https://github.com/pgillet/hurray/issues/215).

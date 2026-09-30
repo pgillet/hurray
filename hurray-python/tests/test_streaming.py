@@ -8,10 +8,21 @@ pass even if the implementation read everything up front.
 
 import socket
 import struct
+import sys
 
 import pytest
 
 import hurray
+
+# Streaming over a descriptor is Unix-only (issue #215): `fileno()` is a CRT descriptor
+# for files but a raw SOCKET for sockets on Windows. `socket.socketpair()` exists there,
+# so these have to be skipped by platform rather than by whether the call is available.
+unix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="streaming over a file descriptor is Unix-only"
+)
+windows_only = pytest.mark.skipif(
+    sys.platform != "win32", reason="the Unix build accepts a descriptor"
+)
 
 
 def _tensor(seed: float):
@@ -75,6 +86,7 @@ def test_round_trip_through_a_path(tmp_path):
     assert len(list(hurray.StreamReader(path))) == 2
 
 
+@unix_only
 def test_round_trip_through_a_socket():
     """The case a path-only test would miss, and the reason the format exists."""
     producer, consumer = socket.socketpair()
@@ -91,6 +103,7 @@ def test_round_trip_through_a_socket():
         consumer.close()
 
 
+@unix_only
 def test_the_caller_keeps_its_own_descriptor():
     """The stream dups the fd, so finishing must not close the caller's socket."""
     producer, consumer = socket.socketpair()
@@ -101,6 +114,24 @@ def test_the_caller_keeps_its_own_descriptor():
         # If the writer had closed the caller's fd, this would raise OSError.
         producer.send(b"still open")
         assert consumer.recv(1024).endswith(b"still open")
+    finally:
+        producer.close()
+        consumer.close()
+
+
+@windows_only
+def test_a_descriptor_is_refused_on_windows_with_an_alternative():
+    """The Windows wheel ships without fd streaming; the refusal must say what to do.
+
+    Paths and bytes still work there — only the descriptor path is missing, so a bare
+    TypeError would send the caller looking for a bug that is not theirs.
+    """
+    producer, consumer = socket.socketpair()
+    try:
+        with pytest.raises(hurray.UnsupportedError, match="Unix-only"):
+            hurray.StreamWriter(producer)
+        with pytest.raises(hurray.UnsupportedError, match="Unix-only"):
+            hurray.StreamReader(consumer)
     finally:
         producer.close()
         consumer.close()
