@@ -146,20 +146,26 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # need tags to detect whether a released baseline exists
       - uses: dtolnay/rust-toolchain@stable
-      # cargo-semver-checks compares the public API against the last published release.
-      # It is meaningful only once the crates have a release on crates.io, so this job is
-      # dormant until the first MAJOR.MINOR.PATCH tag exists, then it gates API changes
-      # (in 0.x, a breaking change requires a minor bump; post-1.0 it must not break).
+      # cargo-semver-checks compares the public API against the last *published* release,
+      # so the gate is whether crates.io has one — not whether a git tag exists. The tag
+      # is pushed before the publish, so gating on it meant the 0.1.0 tag switched this
+      # job on against a registry that had never heard of the crate, and it failed with
+      # "hurray-core not found in registry". Once the crates are published the job wakes
+      # up on its own and gates API changes (in 0.x a breaking change requires a minor
+      # bump; post-1.0 it must not break).
       - id: baseline
         run: |
-          if git tag | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+          # crates.io rejects requests without a User-Agent, which would look like a
+          # missing crate rather than a refused request.
+          code=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -A 'hurray-ci (https://github.com/pgillet/hurray)' \
+            https://crates.io/api/v1/crates/hurray-core || echo 000)
+          if [ "$code" = "200" ]; then
             echo "have=yes" >> "$GITHUB_OUTPUT"
           else
             echo "have=no" >> "$GITHUB_OUTPUT"
-            echo "No release tag yet — cargo-semver-checks needs a published baseline; skipping."
+            echo "hurray-core is not on crates.io (HTTP $code) — no baseline to compare against; skipping."
           fi
       - if: steps.baseline.outputs.have == 'yes'
         uses: taiki-e/install-action@v2
