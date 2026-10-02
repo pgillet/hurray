@@ -5,6 +5,9 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+# Ships to PyPI as `pyhurray`, never to crates.io: a PyO3 extension crate is of no use
+# to a Rust dependent. Marked so a workspace-wide publish cannot send it there by default.
+publish = false
 
 [features]
 # extension-module is off by default so `cargo test` can link libpython.

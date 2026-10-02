@@ -35,11 +35,12 @@ Publishing](https://docs.pypi.org/trusted-publishers/) does not apply, because i
 authenticates a GitHub Actions job rather than a person. (crates.io could not use it for a
 first release anyway: it can only be configured on a crate that already exists.)
 
-- **crates.io:** a maintainer account with an API token (`cargo login`).
+- **crates.io:** a maintainer account with a scoped API token — see below.
 - **PyPI:** an account with an API token. There is nothing to create in advance — **a
   distribution name is claimed by its first upload, not by registering**. Registering an
   account does not hold `pyhurray`, and a PyPI *pending publisher* explicitly does not
-  either.
+  either. Scope the token to the `pyhurray` project once it exists; the very first upload
+  has to use an account-wide token, which is the other reason to revoke afterwards.
 - Install tooling: `cargo install cargo-release`, and **twine ≥ 6.1** to upload the
   distributions. maturin is *not* needed here — CI builds the wheels (see below), so the
   release machine only uploads them.
@@ -58,6 +59,33 @@ first release anyway: it can only be configured on a crate that already exists.)
   #                   ~/.venvs/release/bin/pip install 'twine>=6.1'
   #                   then call ~/.venvs/release/bin/twine
   ```
+
+### The crates.io token
+
+Create it at [crates.io/settings/tokens](https://crates.io/settings/tokens). A token is a
+bearer credential: anything holding it can act as you, within its scopes, until it
+expires. Give it the least that still completes a release.
+
+| Field | Value | Why |
+|---|---|---|
+| **Endpoint scopes** | `publish-new`, `publish-update` | `publish-new` creates crates that do not exist yet — `publish-update` cannot, so a first release needs both. `publish-update` alone would make the token useless for a new crate; omitting it would make the token single-use. |
+| | *not* `yank` | Yanking is rare, recoverable and doable from the web UI. A publish token that can also retract published versions is strictly worse. |
+| | *not* `change-owners` | Ownership is the one thing a leaked token should never be able to change. |
+| | *never* `legacy` | Every endpoint, which is the opposite of scoping. |
+| **Crate scope** | `hurray-*` **and** `hurray` | Patterns glob only with a trailing `*`, so `hurray-*` does **not** match the bare name `hurray`. Scopes cover present *and future* crates matching them, so this keeps working for crates not yet written. |
+| **Expiry** | 30 days | Short enough to bound a leak, long enough to finish a release and a follow-up patch. |
+
+Then `cargo login` and paste it. **Revoke it when the release is done** rather than waiting
+for the expiry: the token lives in `~/.cargo/credentials.toml` in plain text and in your
+shell history if you passed it as an argument, and there is no reason for a publish
+credential to outlive the publish. Revoking does not affect anything already published.
+
+> **The long-term fix is not a better token.**
+> [Trusted Publishing](https://crates.io/docs/trusted-publishing) replaces the stored
+> credential with a short-lived OIDC exchange from a GitHub Actions job. It is unavailable
+> for a crate's *first* release — it can only be configured on a crate that already exists
+> — and it authenticates a workflow, not a person, so it only becomes relevant if
+> publishing ever moves into CI. Until then, scoped and revoked is the standard to hold.
 
 ## Release checklist
 
