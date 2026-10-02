@@ -40,10 +40,24 @@ first release anyway: it can only be configured on a crate that already exists.)
   distribution name is claimed by its first upload, not by registering**. Registering an
   account does not hold `pyhurray`, and a PyPI *pending publisher* explicitly does not
   either.
-- Install tooling: `cargo install cargo-release` and `pipx install maturin` (or
-  `pip install maturin`), plus `pipx install 'twine>=6.1'` to upload the wheels — maturin
-  writes `Metadata-Version: 2.4`, and twine 5.x rejects it as *"missing required fields:
-  Name, Version"*, which is a parser limit wearing the costume of a broken package.
+- Install tooling: `cargo install cargo-release`, and **twine ≥ 6.1** to upload the
+  distributions. maturin is *not* needed here — CI builds the wheels (see below), so the
+  release machine only uploads them.
+
+  The twine floor is not cosmetic: maturin writes `Metadata-Version: 2.4`, and twine 5.x
+  rejects it as *"missing required fields: Name, Version"* — a parser limit wearing the
+  costume of a broken package.
+
+  On a distribution that marks its Python as externally managed (PEP 668), a plain
+  `pip install twine` refuses with `error: externally-managed-environment`. Use a tool
+  installer or a virtualenv rather than `--break-system-packages`:
+
+  ```sh
+  pipx install 'twine>=6.1'          # or: uv tool install 'twine>=6.1'
+  # or, with no pipx: python3 -m venv ~/.venvs/release
+  #                   ~/.venvs/release/bin/pip install 'twine>=6.1'
+  #                   then call ~/.venvs/release/bin/twine
+  ```
 
 ## Release checklist
 
@@ -64,8 +78,11 @@ first release anyway: it can only be configured on a crate that already exists.)
 
 ## Commands
 
-Rust crates (dry run first — `cargo release` bumps versions, updates the inter-crate deps,
-commits, tags, and publishes in dependency order):
+Rust crates. Two routes, and they are **alternatives, not steps** — `cargo release` does
+the bump, the commit, the tag *and* the publish as one act, so it replaces checklist steps
+3–5 rather than following them. Pick one before you start:
+
+**A — `cargo release`** (it has not yet done a release for this project):
 
 ```sh
 # Dry run — shows exactly what it would do, changes nothing:
@@ -73,6 +90,19 @@ cargo release minor        # or: patch / X.Y.Z
 
 # Execute (bumps, tags, publishes core → io/ffi → inspect):
 cargo release minor --execute
+```
+
+**B — the tag already exists**, because you bumped and tagged by hand. Do **not** then run
+`cargo release`: it would bump *again*, to the next version. Publish each crate in
+dependency order, waiting for each to appear in the index before the crate that depends on
+it — `cargo publish` blocks on this by default, but a `--dry-run` of a downstream crate
+fails until its dependency is actually live:
+
+```sh
+cargo publish -p hurray-core
+cargo publish -p hurray-io
+cargo publish -p hurray-ffi
+cargo publish -p hurray-inspect
 ```
 
 Python distributions to PyPI. The build runs in CI and the upload does not: `pyproject.toml`
