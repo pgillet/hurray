@@ -1,0 +1,18 @@
+[package]
+name = "hurray"
+description = "Umbrella name for the Hurray tensor interchange format. Depend on hurray-core, hurray-io, or hurray-ffi — this crate holds the name and points at them."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/hurray"
+readme = "README.md"
+keywords = ["tensor", "interchange", "zero-copy", "inference", "format"]
+categories = ["data-structures", "encoding", "science"]
+
+# No dependencies on purpose. Re-exporting hurray-core here would create a second public
+# API to keep in sync, duplicate its documentation, and commit the name to one crate's
+# shape forever. Placeholder → facade stays possible later; the reverse does not.
+[dependencies]
