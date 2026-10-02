@@ -13,10 +13,16 @@ together under a single `MAJOR.MINOR.PATCH` tag.
 | Artifact | Registry | How |
 |----------|----------|-----|
 | `hurray-core`, `hurray-io`, `hurray-ffi`, `hurray-inspect` | [crates.io](https://crates.io) (source) | `cargo publish`, in dependency order |
+| `hurray` | [crates.io](https://crates.io) (source) | `cargo publish`, any time — it depends on nothing |
 | `pyhurray` (from `hurray-python`) | [PyPI](https://pypi.org) (wheels) | `maturin` |
 | Documentation site `/docs/<tag>/` | GitHub Pages | automatic on tag (`docs.yml`) |
 
-`conformance` is `publish = false` (internal tooling) and is never published.
+`conformance` and `hurray-python` are `publish = false` and never go to crates.io — the
+first is internal tooling, the second ships to PyPI as `pyhurray`.
+
+`hurray` is the umbrella name holding the namespace next to the crates that do the work.
+It contains no code and depends on nothing, so it has no place in the dependency order —
+but it **does** share the workspace version, so it is released along with everything else.
 
 The Python distribution is `pyhurray` (the name `hurray` is taken on PyPI); the module it
 installs is imported as `hurray`.
@@ -131,6 +137,7 @@ cargo publish -p hurray-core
 cargo publish -p hurray-io
 cargo publish -p hurray-ffi
 cargo publish -p hurray-inspect
+cargo publish -p hurray          # no dependencies; order does not matter
 ```
 
 Python distributions to PyPI. The build runs in CI and the upload does not: `pyproject.toml`
