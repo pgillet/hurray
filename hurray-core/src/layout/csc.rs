@@ -7,7 +7,7 @@
 ///
 /// CSC is the column analog of CSR and is defined **only for rank-2 tensors**.
 /// A conforming implementation MUST reject a CSC descriptor whose tensor rank
-/// is not 2 (checked by [`LayoutDescriptor::validate_against_shape`]).
+/// is not 2 (checked by [`crate::layout::LayoutDescriptor::validate_against_shape`]).
 ///
 /// Three buffers are required:
 ///

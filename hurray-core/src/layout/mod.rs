@@ -159,7 +159,7 @@ pub fn is_private_tag(tag: u8) -> bool {
 ///
 /// The complement of "unknown": a named tag carries structure this implementation
 /// knows how to check, so it MUST NOT be wrapped in
-/// [`UnknownLayout`](UnknownLayout), which has neither a buffer count nor shape
+/// [`UnknownLayout`], which has neither a buffer count nor shape
 /// constraints.
 ///
 /// # Examples

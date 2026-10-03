@@ -27,7 +27,7 @@ pub struct StridedLayout {
     ///
     /// Positive: forward; negative: reversed; zero: broadcast (virtual) dimension.
     /// `strides.len()` MUST equal the tensor rank (validated by
-    /// [`LayoutDescriptor::validate_against_shape`]).
+    /// [`crate::layout::LayoutDescriptor::validate_against_shape`]).
     pub strides: Vec<i64>,
 }
 
@@ -35,7 +35,7 @@ impl StridedLayout {
     /// Creates a new [`StridedLayout`] with the given per-dimension strides.
     ///
     /// No rank validation is performed here — call
-    /// [`LayoutDescriptor::validate_against_shape`] to check that
+    /// [`crate::layout::LayoutDescriptor::validate_against_shape`] to check that
     /// `strides.len() == shape.rank()`.
     ///
     /// # Examples

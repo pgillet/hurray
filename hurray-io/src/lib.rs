@@ -2,7 +2,7 @@
 //!
 //! Async streaming and file format read/write for the hurray tensor interchange format.
 //!
-//! This crate builds on [`hurray-core`] and provides async I/O via Tokio.
+//! This crate builds on [`hurray_core`] and provides async I/O via Tokio.
 //!
 //! ## Feature flags
 //!

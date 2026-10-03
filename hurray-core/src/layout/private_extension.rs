@@ -23,7 +23,7 @@ pub const PRIVATE_LAYOUT_TAG_MAX: u8 = 0xFE;
 /// - `extension_data` (`Vec<u8>`): opaque layout-specific metadata.
 ///
 /// The `Unknown` variant (for unrecognized tags in permissive mode) is
-/// separate; see [`UnknownLayout`].
+/// separate; see [`crate::layout::UnknownLayout`].
 ///
 /// # Examples
 ///

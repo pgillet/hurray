@@ -16,7 +16,7 @@ use crate::{Error, Result};
 /// - `hilbert_rank >= 2`
 /// - Every tensor dimension must equal `2^hilbert_order`
 ///   (validated at shape-binding time via
-///   [`LayoutDescriptor::validate_against_shape`])
+///   [`crate::layout::LayoutDescriptor::validate_against_shape`])
 ///
 /// The normative index mapping is the Skilling (2004) algorithm; see
 /// `docs/spec/layouts/hilbert.md § Normative Index Mapping`.
@@ -46,7 +46,7 @@ impl HilbertLayout {
     /// and `hilbert_rank >= 2`.
     ///
     /// Shape consistency (`shape[k] == 2^hilbert_order` for all `k`) is
-    /// deferred to [`LayoutDescriptor::validate_against_shape`] because
+    /// deferred to [`crate::layout::LayoutDescriptor::validate_against_shape`] because
     /// the layout descriptor does not carry the shape.
     ///
     /// # Errors

@@ -36,6 +36,15 @@ jobs:
       - run: cargo check --workspace --all-features
       # Compile-check benchmarks so they don't bit-rot (they are not run in CI).
       - run: cargo check -p hurray-core -p hurray-io --benches
+      # The site publishes this rustdoc at /docs/<version>/api/, but the workflow that
+      # builds it runs only on pushes to main and tags — so until this step existed, a
+      # rustdoc break was invisible until after the merge that caused it. That is exactly
+      # how the `hurray` umbrella crate landed: two libs named `hurray` collide on the
+      # output path, and nothing on the PR noticed. -D warnings because a broken
+      # intra-doc link is a broken link on a published page.
+      - run: cargo doc --workspace --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
 
   # hurray-python did not compile for Windows for months (issue #215): every other job
   # runs on Linux, so unconditional std::os::fd went unnoticed until the first wheel
