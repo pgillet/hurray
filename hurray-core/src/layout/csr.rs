@@ -7,7 +7,7 @@
 ///
 /// CSR is defined **only for rank-2 tensors**. A conforming implementation MUST
 /// reject a CSR descriptor whose tensor rank is not 2 (checked by
-/// [`LayoutDescriptor::validate_against_shape`]).
+/// [`crate::layout::LayoutDescriptor::validate_against_shape`]).
 ///
 /// Three buffers are required:
 ///

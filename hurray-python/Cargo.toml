@@ -30,6 +30,12 @@ tokio = { workspace = true }
 name = "hurray"
 # cdylib: the Python extension (.so / .pyd); rlib: lets integration tests link
 crate-type = ["cdylib", "rlib"]
+# Two libs in this workspace are named `hurray` — this one, because that is the Python
+# module name, and the umbrella crate that holds the name on crates.io. rustdoc writes
+# both to the same path, so a workspace-wide `cargo doc` fails on the collision. This is
+# the one to drop: its user-facing reference is the pdoc Python API, and the crate is
+# `publish = false`, so no docs.rs page is lost either.
+doc = false
 
 [lints.rust]
 # PyO3 0.22 create_exception! macro emits cfg(feature = "gil-refs") into the

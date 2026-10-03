@@ -250,7 +250,7 @@ impl BlockPagedLayout {
     ///
     /// This constructor does not validate `page_size >= 1` or `paged_axis == 0` because
     /// the tensor shape is not available at construction time.  Call
-    /// [`LayoutDescriptor::validate_against_shape`] to perform all invariant checks
+    /// [`crate::layout::LayoutDescriptor::validate_against_shape`] to perform all invariant checks
     /// once the shape is known.
     ///
     /// # Examples
