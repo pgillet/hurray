@@ -33,12 +33,11 @@ Level 3 implies Level 2.
 
 | Feature | `hurray-core` + `hurray-io` | `hurray-python` | `hurray-ffi` |
 |---|---|---|---|
-| Level 1 — Reader | ✅ | ✅ | ◐ (a) |
+| Level 1 — Reader | ✅ | ✅ | ✅ |
 | Level 2 — Writer | ✅ | ✅ | ❌ |
-| Level 3 — Network transport | 📄 (b) | 📄 (b) | 📄 (b) |
+| Level 3 — Network transport | 📄 (a) | 📄 (a) | 📄 (a) |
 
-- **(a)** `hurray_descriptor_decode` parses and validates a descriptor through `hurray-core`, so the reading itself is complete, but the C surface exposes only the type tag, layout tag, rank, shape, byte offset, and buffer table. Layout-specific payload fields — CSR `nnz`, tile shape, the block table — have no accessor, so a C caller cannot yet interpret every Tier 1 layout it can decode.
-- **(b)** No crate implements any part of the Level 3 transport: none of the message types, capability flags, or the RDMA data plane appear anywhere in `hurray-core`, `hurray-io`, `hurray-ffi`, `hurray-python`, or `hurray-inspect`. `hurray-io` implements the stream framing and the file container — Levels 1 and 2 — and stops there. The protocol is specified so that an implementation has something to build against; scheduling one is tracked separately.
+- **(a)** No crate implements any part of the Level 3 transport: none of the message types, capability flags, or the RDMA data plane appear anywhere in `hurray-core`, `hurray-io`, `hurray-ffi`, `hurray-python`, or `hurray-inspect`. `hurray-io` implements the stream framing and the file container — Levels 1 and 2 — and stops there. The protocol is specified so that an implementation has something to build against; scheduling one is tracked separately.
 
 ## Element Types
 

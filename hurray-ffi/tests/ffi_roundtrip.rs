@@ -116,12 +116,12 @@ fn encode_rank3_descriptor() -> Vec<u8> {
 // ── Phase 1 — ABI version and status codes ───────────────────────────────────
 
 #[test]
-fn abi_version_is_4() {
+fn abi_version_is_5() {
     // Raised 2 -> 3 by ADR-030: the native protocol capsule now wraps a
     // HurrayBufferList, so a v2 consumer must be told rather than dereference it.
     // Raised 3 -> 4 by ADR-034: the capsule context became HurrayTensorContext, so
     // a v3 consumer must be told rather than assume there is nothing to read.
-    assert_eq!(hurray_c_abi_version(), 4);
+    assert_eq!(hurray_c_abi_version(), 5);
 }
 
 #[test]

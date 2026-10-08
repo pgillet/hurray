@@ -67,7 +67,7 @@ detect.rust = "capability"
 detect.python = "python-attr"
 detect.ffi = "c-symbol"
 rows = [
-  { id = "level-1", name = "Level 1 — Reader", capability = "descriptor_decode", python_attrs = ["Descriptor.decode"], ffi = "partial:ffi-level-1" },
+  { id = "level-1", name = "Level 1 — Reader", capability = "descriptor_decode", python_attrs = ["Descriptor.decode"], c_symbols = ["hurray_descriptor_decode", "hurray_descriptor_shape", "hurray_descriptor_layout_field_u64", "hurray_descriptor_layout_field_u64_array", "hurray_descriptor_layout_field_i64_array"] },
   { id = "level-2", name = "Level 2 — Writer", capability = "descriptor_encode", python_attrs = ["Descriptor.encode"], c_symbols = ["hurray_descriptor_encode"] },
   { id = "level-3", name = "Level 3 — Network transport", rust = "spec-only:transport", python = "spec-only:transport", ffi = "spec-only:transport" },
 ]
@@ -245,14 +245,6 @@ capability flags, or the RDMA data plane appear anywhere in `hurray-core`, `hurr
 framing and the file container — Levels 1 and 2 — and stops there. The protocol is
 specified so that an implementation has something to build against; scheduling one is
 tracked separately.
-"""
-
-ffi-level-1 = """
-`hurray_descriptor_decode` parses and validates a descriptor through `hurray-core`, so the
-reading itself is complete, but the C surface exposes only the type tag, layout tag, rank,
-shape, byte offset, and buffer table. Layout-specific payload fields — CSR `nnz`, tile
-shape, the block table — have no accessor, so a C caller cannot yet interpret every Tier 1
-layout it can decode.
 """
 
 ffi-tag-passthrough = """

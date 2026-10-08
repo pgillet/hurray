@@ -28,7 +28,7 @@ the legacy `"dltensor"` (DLPack v0.8) and the versioned `"dltensor_versioned"`
 ### Native protocol
 
 The `__hurray__` / `hurray.from_hurray` protocol is shipped in 0.1.x.
-The `HURRAY_C_ABI_VERSION` required by the capsule payload format is **4**:
+The `HURRAY_C_ABI_VERSION` required by the capsule payload format is **5**:
 
 - ADR-030 raised it to 3, changing the capsule pointer from a single `HurrayBuffer`
   to a `HurrayBufferList` carrying every buffer of the tensor, so a version-2 consumer
@@ -36,11 +36,16 @@ The `HURRAY_C_ABI_VERSION` required by the capsule payload format is **4**:
 - ADR-034 raised it to 4, making the capsule context a `HurrayTensorContext` so that a
   consumer in any language can read the descriptor and the version — before, only
   `hurray-python` could.
+- ADR-039 raised it to 5, adding layout-payload field reads. The capsule payload format
+  itself is unchanged; the version moved because the C surface grew, and the equality
+  check below makes every bump a capsule-compatibility boundary whether or not the
+  payload changed.
 
 Consumers MUST verify the version before dereferencing the pointer; a mismatch
-raises `hurray.UnsupportedError`. The check is exact equality, so version 4 is both
+raises `hurray.UnsupportedError`. The check is exact equality, so version 5 is both
 the minimum and the maximum this release accepts. See ADR-023 for the protocol,
-ADR-030 for the multi-buffer change, and ADR-034 for the readable context.
+ADR-030 for the multi-buffer change, ADR-034 for the readable context, and ADR-039 for
+the layout-payload reads.
 
 ### Platform differences
 

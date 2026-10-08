@@ -62,6 +62,16 @@ pub const HURRAY_ERR_INTERNAL: HurrayStatus = -10;
 /// An index argument is outside the valid range for the collection.
 pub const HURRAY_ERR_INDEX_OUT_OF_BOUNDS: HurrayStatus = -11;
 
+/// The requested field is valid for this layout but absent from this descriptor.
+///
+/// Distinct from [`HURRAY_ERR_FIELD_NOT_APPLICABLE`]: absence is a state this
+/// format expresses (a cleared flag bit), so it is reported rather than
+/// flattened to a zero the caller could mistake for data.
+pub const HURRAY_ERR_FIELD_NOT_PRESENT: HurrayStatus = -12;
+
+/// The requested field does not belong to this descriptor's layout.
+pub const HURRAY_ERR_FIELD_NOT_APPLICABLE: HurrayStatus = -13;
+
 // ── Error mapping ─────────────────────────────────────────────────────────────
 
 /// Maps a [`hurray_core::Error`] to the closest [`HurrayStatus`] error code.

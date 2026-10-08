@@ -19,7 +19,7 @@ foundation for all non-Python language bindings.
 
 The C ABI carries a single `uint32` version identifier exposed via a constant
 `HURRAY_C_ABI_VERSION` and a runtime accessor `hurray_c_abi_version()`. The
-current version is `4`:
+current version is `5`:
 
 | Version | Changes |
 |---------|---------|
@@ -27,6 +27,7 @@ current version is `4`:
 | `2` | Per-mode buffer handoff sync payloads (`SYNC_PRODUCER_SYNCED`, `SYNC_EVENT`, `SYNC_CONSUMER_STREAM`) and the event-release callback. See [Buffer Handoff Synchronisation](#buffer-handoff-synchronisation). |
 | `3` | `HurrayBufferList` for multi-buffer tensors, and the native protocol capsule now wraps a list rather than a single `HurrayBuffer` (ADR-030). See [Buffer Lists](#buffer-lists). |
 | `4` | `HurrayTensorContext`, so a consumer in any language can read a capsule's descriptor and ABI version (ADR-034). See [Tensor Context](#tensor-context). |
+| `5` | Layout-payload field reads, so a consumer can interpret every Tier 1 layout it can decode (ADR-039). See [Layout Payload Fields](#layout-payload-fields). |
 
 A consumer of the C ABI MUST query `hurray_c_abi_version()` before invoking any
 function whose contract changed in a later version. A consumer compiled against
@@ -129,6 +130,61 @@ HurrayStatus hurray_tensor_context_destroy(struct HurrayTensorContext **ctx);
 - Destroying a null handle is a no-op returning `HURRAY_OK`, so cleanup paths may call
   it unconditionally. Destroy nulls the caller's pointer.
 
+## Layout Payload Fields
+
+Decoding a descriptor yields its layout tag; the payload behind that tag is read
+separately. An implementation MUST expose every layout-specific field of the Tier 1
+layouts (`0x01`–`0x09`), because Compliance Level 1 requires a reader to correctly
+interpret those fields and a consumer that cannot read them cannot address an element.
+
+Fields are named by a `HurrayLayoutField` identifier and read through three typed
+accessors (ADR-039):
+
+| Accessor | Reads |
+|---|---|
+| `hurray_descriptor_layout_field_u64` | every scalar field |
+| `hurray_descriptor_layout_field_u64_array` | `tile_shape`, `morton_bits`, `mode_order` |
+| `hurray_descriptor_layout_field_i64_array` | `strides`, `outer_strides`, `inner_strides` |
+
+### Field Identifiers
+
+`HurrayLayoutField` MUST be a `uint32` with named constants, and MUST NOT be a C enum:
+a caller may pass any integer, and an out-of-range value materialised as a Rust enum is
+undefined behaviour.
+
+The identifier encoding is `0x0001_0000 | (layout_tag << 8) | field_index`. The
+embedded layout tag makes applicability a comparison rather than a table lookup, and
+the identifier space inherits the layout tag space's reserved and private ranges.
+`0x0000_0000` MUST NOT be a valid identifier, so that a zeroed variable is rejected
+rather than read as the first field.
+
+`0x0001_xxxx` is the layout-field range. Each optional descriptor section takes its own
+high-half-word range when it is implemented. Allocation follows the anti-rebind rule in
+[ADR-019](../adr/ADR-019-format-evolvability-as-core-property.md): a retired identifier
+MUST NOT be reused for a different field.
+
+### Field Semantics
+
+- Every scalar payload field in the format is unsigned or boolean, so all of them widen
+  losslessly into `uint64`. A boolean MUST read as `0` or `1`, and a wire tag byte MUST
+  read as its documented value.
+- Stride fields MUST be read through the signed accessor: a negative stride reverses a
+  dimension and a zero stride broadcasts one, both of which an unsigned read would
+  misreport.
+- Array accessors MUST use the capacity/length in-out protocol that
+  `hurray_descriptor_shape` uses: `*out_len` carries the caller's capacity in and the
+  true length out, and a null or insufficient buffer returns
+  `HURRAY_ERR_BUFFER_TOO_SMALL` with the true length written.
+- An absent optional field MUST return `HURRAY_ERR_FIELD_NOT_PRESENT` and MUST NOT
+  write to the output: absence is a state this format expresses through a cleared flag
+  bit, not a value, and reporting it as a zero would be indistinguishable from data.
+- A field identifier that does not belong to the descriptor's layout MUST return
+  `HURRAY_ERR_FIELD_NOT_APPLICABLE`. An identifier outside any allocated range MUST
+  return the same code.
+- Every accessor takes a `level`, which selects the tile to read in a nested tiled
+  layout. `level` MUST be `0` for every layout that does not nest, and a non-zero value
+  MUST be rejected with `HURRAY_ERR_INDEX_OUT_OF_BOUNDS` rather than ignored.
+
 ## Panic Safety
 
 Rust panics MUST NOT propagate across the FFI boundary. Every `extern "C"` function
@@ -156,7 +212,12 @@ typedef int32_t HurrayStatus;
 #define HURRAY_ERR_BUFFER_TOO_SMALL -5
 #define HURRAY_ERR_NULL_POINTER     -6
 #define HURRAY_ERR_INTERNAL_PANIC   -7
-/* ... */
+#define HURRAY_ERR_INVALID_SYNC_MODE    -8
+#define HURRAY_ERR_SYNC_MODE_MISMATCH   -9
+#define HURRAY_ERR_INTERNAL            -10
+#define HURRAY_ERR_INDEX_OUT_OF_BOUNDS -11
+#define HURRAY_ERR_FIELD_NOT_PRESENT   -12
+#define HURRAY_ERR_FIELD_NOT_APPLICABLE -13
 ```
 
 Functions MUST return `HURRAY_ERR_NULL_POINTER` for any required pointer argument

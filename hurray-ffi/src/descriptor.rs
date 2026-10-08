@@ -23,6 +23,13 @@ use crate::{
 /// [`hurray_descriptor_decode`] and destroyed by [`hurray_descriptor_destroy`].
 pub struct HurrayDescriptor(Box<TensorDescriptor>);
 
+impl HurrayDescriptor {
+    /// Borrows the decoded descriptor behind this handle.
+    pub(crate) fn inner(&self) -> &TensorDescriptor {
+        &self.0
+    }
+}
+
 // ── Decode / destroy ──────────────────────────────────────────────────────────
 
 /// Decodes a binary tensor descriptor from a byte buffer.
