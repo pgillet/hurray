@@ -22,6 +22,7 @@
 pub mod buffer;
 pub mod buffer_list;
 pub mod descriptor;
+pub mod layout_field;
 pub(crate) mod panic;
 pub mod status;
 pub mod sync;
@@ -32,8 +33,13 @@ pub mod tensor_context;
 pub use buffer::{hurray_buffer_from_ptr, HurrayBuffer, HurrayReleaseCallback};
 pub use buffer_list::{hurray_buffer_list_new, HurrayBufferList};
 pub use descriptor::{hurray_descriptor_decode, HurrayDescriptor};
+pub use layout_field::{
+    hurray_descriptor_layout_field_i64_array, hurray_descriptor_layout_field_u64,
+    hurray_descriptor_layout_field_u64_array, HurrayLayoutField,
+};
 pub use status::{
-    HurrayStatus, HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INTERNAL,
+    HurrayStatus, HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_ERR_FIELD_NOT_APPLICABLE,
+    HURRAY_ERR_FIELD_NOT_PRESENT, HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INTERNAL,
     HURRAY_ERR_INTERNAL_PANIC, HURRAY_ERR_INVALID_LAYOUT, HURRAY_ERR_INVALID_MAGIC,
     HURRAY_ERR_INVALID_SYNC_MODE, HURRAY_ERR_INVALID_TYPE, HURRAY_ERR_NULL_POINTER,
     HURRAY_ERR_SYNC_MODE_MISMATCH, HURRAY_ERR_VERSION_MISMATCH, HURRAY_OK,
@@ -53,9 +59,9 @@ pub use tensor_context::{hurray_tensor_context_new, HurrayOwnerReleaseFn, Hurray
 /// ```
 /// use hurray_ffi::HURRAY_C_ABI_VERSION;
 ///
-/// assert_eq!(HURRAY_C_ABI_VERSION, 4);
+/// assert_eq!(HURRAY_C_ABI_VERSION, 5);
 /// ```
-pub const HURRAY_C_ABI_VERSION: u32 = 4;
+pub const HURRAY_C_ABI_VERSION: u32 = 5;
 
 /// Returns the [`HURRAY_C_ABI_VERSION`] constant.
 ///
@@ -64,7 +70,7 @@ pub const HURRAY_C_ABI_VERSION: u32 = 4;
 /// # Examples
 ///
 /// ```
-/// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 4);
+/// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 5);
 /// ```
 #[no_mangle]
 pub extern "C" fn hurray_c_abi_version() -> u32 {

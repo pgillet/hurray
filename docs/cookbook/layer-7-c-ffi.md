@@ -254,6 +254,135 @@ sequence is the one any language follows:
 cargo run -p hurray-ffi --example tensor_context
 ```
 
+## Reading a layout's payload fields
+
+Decoding tells you the layout *tag*. It does not, on its own, tell you anything
+inside the layout — and for a sparse or paged tensor that is most of what you
+need. A consumer handed a CSR descriptor reads `layout_tag == 0x07` and still
+cannot address an element until it knows `nnz`.
+
+Payload fields are named by a `HURRAY_LAYOUT_FIELD_*` identifier and read through
+one of three functions — one for scalars, one for unsigned arrays, one for signed
+arrays:
+
+```c
+#include "hurray.h"
+
+/* A scalar: 137 stored non-zeros in this CSR matrix. */
+uint64_t nnz;
+HurrayStatus s = hurray_descriptor_layout_field_u64(
+    desc, HURRAY_LAYOUT_FIELD_CSR_NNZ, 0, &nnz);
+if (s == HURRAY_ERR_FIELD_NOT_APPLICABLE) {
+    /* This descriptor is not CSR. Check layout_tag before asking. */
+}
+```
+
+Arrays follow the same capacity/query pattern as
+[`hurray_descriptor_shape`](#shape-capacityquery-pattern):
+
+```c
+size_t len = 0;
+/* Query-only: out_values=NULL forces BUFFER_TOO_SMALL and writes the true length */
+hurray_descriptor_layout_field_i64_array(
+    desc, HURRAY_LAYOUT_FIELD_STRIDED_STRIDES, 0, NULL, &len);
+
+int64_t *strides = malloc(len * sizeof(int64_t));
+hurray_descriptor_layout_field_i64_array(
+    desc, HURRAY_LAYOUT_FIELD_STRIDED_STRIDES, 0, strides, &len);
+```
+
+Strides are read through the **signed** accessor because their sign carries
+meaning: a negative stride reverses a dimension and a zero stride broadcasts one.
+An unsigned read would report `-4` as `18446744073709551612`.
+
+**Three statuses are specific to these reads:**
+
+| Status | Meaning |
+|---|---|
+| `HURRAY_ERR_FIELD_NOT_APPLICABLE` | The field belongs to a different layout than this descriptor's — or is not a field of the type you asked for (a scalar read of an array field). |
+| `HURRAY_ERR_FIELD_NOT_PRESENT` | The field is valid for this layout but this descriptor does not carry it. Optional fields only: `layer_index`, `outer_strides`, `inner_strides`. |
+| `HURRAY_ERR_INDEX_OUT_OF_BOUNDS` | `level` exceeds the tile nesting depth, or is non-zero for a layout that does not nest. |
+
+Absence is never reported as a zero. `HURRAY_ERR_FIELD_NOT_PRESENT` leaves
+`*out_value` untouched, because a cleared optional field is a state in this
+format rather than a value — see
+[ADR-039](../adr/ADR-039-c-abi-structured-descriptor-fields.md).
+
+### The `level` parameter
+
+Every accessor takes a `level`. It selects which tile to read in a **nested**
+tiled layout, where `0` is the outermost;
+`HURRAY_LAYOUT_FIELD_TILED_DEPTH` reports how many levels remain from there
+down. For every other layout `level` MUST be `0`, and a non-zero value is
+rejected rather than ignored — silently ignoring it would let a caller believe it
+had read a nested level that does not exist.
+
+**Rust:**
+```rust
+use hurray_core::layout::CsrLayout;
+use hurray_core::{
+    BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, SyncMode, TensorDescriptor,
+    MIN_BUFFER_ALIGNMENT,
+};
+use hurray_ffi::{
+    descriptor::hurray_descriptor_destroy,
+    hurray_descriptor_decode,
+    layout_field::{hurray_descriptor_layout_field_u64, HURRAY_LAYOUT_FIELD_CSR_NNZ},
+    HurrayDescriptor, HURRAY_OK,
+};
+
+let buffers = (0..3)
+    .map(|_| {
+        BufferHandle::new(
+            256,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap()
+    })
+    .collect();
+let bytes = TensorDescriptor::new(
+    1,
+    0,
+    ElementType::Float32,
+    Shape::new(vec![8, 8]).unwrap(),
+    0,
+    LayoutDescriptor::Csr(CsrLayout::new(137)),
+    buffers,
+    None,
+    None,
+    None,
+    None,
+)
+.unwrap()
+.encode()
+.unwrap();
+
+let mut desc: *mut HurrayDescriptor = std::ptr::null_mut();
+assert_eq!(
+    unsafe { hurray_descriptor_decode(bytes.as_ptr(), bytes.len(), &mut desc) },
+    HURRAY_OK
+);
+
+let mut nnz: u64 = 0;
+assert_eq!(
+    unsafe {
+        hurray_descriptor_layout_field_u64(desc, HURRAY_LAYOUT_FIELD_CSR_NNZ, 0, &mut nnz)
+    },
+    HURRAY_OK
+);
+assert_eq!(nnz, 137);
+
+assert_eq!(unsafe { hurray_descriptor_destroy(desc) }, HURRAY_OK);
+```
+
+A runnable walk through a sparse, a strided and a nested tiled descriptor:
+
+```bash
+cargo run -p hurray-ffi --example layout_fields
+```
+
 ## Key takeaways
 
 - **No panics cross the boundary.** Every function returns `HURRAY_OK` or a
@@ -261,6 +390,10 @@ cargo run -p hurray-ffi --example tensor_context
   internally — the handle is in an undefined state and MUST NOT be reused.
 - **Opaque handles.** `HurrayBuffer`, `HurrayDescriptor`, `HurrayReader`, and
   `HurrayWriter` are opaque; never dereference or cast their pointers.
+- **Check `layout_tag` before reading payload fields.** A field identifier names
+  the layout it belongs to, so asking the wrong descriptor is diagnosable
+  (`HURRAY_ERR_FIELD_NOT_APPLICABLE`) rather than silent — but the tag is what
+  tells you which identifier to use in the first place.
 - **`HURRAY_ERR_NULL_POINTER` for null required arguments.** Every function
   checks its required pointer arguments and returns this code immediately if
   any is null. Optional context pointers (e.g., `release_context`) MAY be null.

@@ -13,6 +13,31 @@ workspace share one version and are released together.
 
 ## [Unreleased]
 
+### Added
+
+- **`hurray-ffi`** — layout-payload field reads, completing Compliance Level 1 for the C
+  surface. A consumer handed a CSR descriptor could previously read `layout_tag == 0x07`
+  and nothing further — not `nnz`, not which buffer held `row_ptr` — so the C surface was
+  effectively dense-only. Fields are now named by a `HURRAY_LAYOUT_FIELD_*` identifier and
+  read through `hurray_descriptor_layout_field_u64`,
+  `hurray_descriptor_layout_field_u64_array` and
+  `hurray_descriptor_layout_field_i64_array`, covering every layout-specific field of all
+  twelve layouts. Two new status codes, `HURRAY_ERR_FIELD_NOT_PRESENT` and
+  `HURRAY_ERR_FIELD_NOT_APPLICABLE`, keep an absent optional field distinguishable from a
+  field belonging to another layout. See
+  [ADR-039](docs/adr/ADR-039-c-abi-structured-descriptor-fields.md).
+
+### Changed
+
+- `HURRAY_C_ABI_VERSION` is `5`. The addition is source- and binary-additive — no existing
+  signature changed — but the native-protocol capsule check is exact equality, so a
+  capsule produced by a version-4 build is refused by this one and vice versa.
+
+### Fixed
+
+- ADR-038 was on disk but absent from the documentation navigation, so it never appeared
+  on the published site.
+
 ## [0.1.0] - 2026-09-30
 
 First release. Everything below is new, because nothing preceded it.

@@ -20,9 +20,9 @@
 // ```
 // use hurray_ffi::HURRAY_C_ABI_VERSION;
 //
-// assert_eq!(HURRAY_C_ABI_VERSION, 4);
+// assert_eq!(HURRAY_C_ABI_VERSION, 5);
 // ```
-#define HURRAY_C_ABI_VERSION 4
+#define HURRAY_C_ABI_VERSION 5
 
 // Opaque handle to a buffer registered with the Hurray C ABI.
 //
@@ -132,6 +132,22 @@ typedef struct HurraySyncEventPayload {
     void *event_release_context;
 } HurraySyncEventPayload;
 
+// Identifies one field of a tensor descriptor's layout payload.
+//
+// A plain `uint32_t` rather than a `#[repr(C)]` enum: a C caller can pass any
+// integer, and an out-of-range value materialised as a Rust enum is undefined
+// behaviour. Validation happens in Rust, which is sound for every input.
+//
+// The encoding is `0x0001_0000 | (layout_tag << 8) | field_index`, so an
+// identifier carries the layout it belongs to and the applicability check is a
+// comparison rather than a table. `0x0001_xxxx` is the layout-field range;
+// each optional descriptor section takes its own range when it is implemented.
+//
+// Generated headers render these in decimal, so to decode one by hand: CSR
+// `nnz` is `0x0001_0700` = 67328 — range `0x0001`, layout tag `0x07`, field
+// index `0x00`.
+typedef uint32_t HurrayLayoutField;
+
 // Callback invoked exactly once by [`hurray_tensor_context_destroy`] to release
 // whatever keeps the tensor's memory alive.
 //
@@ -141,6 +157,84 @@ typedef struct HurraySyncEventPayload {
 // Implementations MUST NOT call back into the Hurray C ABI from within this
 // callback; doing so may cause deadlocks or use-after-free.
 typedef void (*HurrayOwnerReleaseFn)(void*);
+
+// Strided (`0x03`) per-dimension strides, in logical elements. Signed array.
+#define HURRAY_LAYOUT_FIELD_STRIDED_STRIDES 66304
+
+// Tiled (`0x04`) tile extent per dimension. Unsigned array.
+#define HURRAY_LAYOUT_FIELD_TILED_TILE_SHAPE 66560
+
+// Tiled (`0x04`) layout tag governing the order of tiles.
+#define HURRAY_LAYOUT_FIELD_TILED_OUTER_LAYOUT 66561
+
+// Tiled (`0x04`) layout tag governing the order of elements within a tile.
+#define HURRAY_LAYOUT_FIELD_TILED_INNER_LAYOUT 66562
+
+// Tiled (`0x04`) explicit strides between tiles. Signed array, optional.
+#define HURRAY_LAYOUT_FIELD_TILED_OUTER_STRIDES 66563
+
+// Tiled (`0x04`) explicit strides within a tile. Signed array, optional.
+#define HURRAY_LAYOUT_FIELD_TILED_INNER_STRIDES 66564
+
+// Tiled (`0x04`) number of nesting levels from `level` downward.
+#define HURRAY_LAYOUT_FIELD_TILED_DEPTH 66565
+
+// Morton (`0x05`) per-dimension interleave bit counts. Unsigned array.
+#define HURRAY_LAYOUT_FIELD_MORTON_BITS 66816
+
+// COO (`0x06`) stored non-zero count.
+#define HURRAY_LAYOUT_FIELD_COO_NNZ 67072
+
+// COO (`0x06`) whether coordinates are in lexicographic order. `0` or `1`.
+#define HURRAY_LAYOUT_FIELD_COO_IS_SORTED 67073
+
+// CSR (`0x07`) stored non-zero count.
+#define HURRAY_LAYOUT_FIELD_CSR_NNZ 67328
+
+// CSC (`0x08`) stored non-zero count.
+#define HURRAY_LAYOUT_FIELD_CSC_NNZ 67584
+
+// CSF (`0x09`) stored non-zero count.
+#define HURRAY_LAYOUT_FIELD_CSF_NNZ 67840
+
+// CSF (`0x09`) mode storage order. Unsigned array.
+#define HURRAY_LAYOUT_FIELD_CSF_MODE_ORDER 67841
+
+// Block-paged (`0x0A`) elements per page along the paged axis.
+#define HURRAY_LAYOUT_FIELD_BLOCK_PAGED_PAGE_SIZE 68096
+
+// Block-paged (`0x0A`) total pages in the shared pool.
+#define HURRAY_LAYOUT_FIELD_BLOCK_PAGED_NUM_PAGES 68097
+
+// Block-paged (`0x0A`) index of the paged axis.
+#define HURRAY_LAYOUT_FIELD_BLOCK_PAGED_PAGED_AXIS 68098
+
+// Block-paged (`0x0A`) number of sequences sharing the pool.
+#define HURRAY_LAYOUT_FIELD_BLOCK_PAGED_NUM_SEQS 68099
+
+// Block-paged (`0x0A`) KV role wire byte: key `0x00`, value `0x01`, fused `0x02`.
+#define HURRAY_LAYOUT_FIELD_BLOCK_PAGED_KV_ROLE 68100
+
+// Block-paged (`0x0A`) transformer layer index. Optional.
+#define HURRAY_LAYOUT_FIELD_BLOCK_PAGED_LAYER_INDEX 68101
+
+// Block-paged (`0x0A`) block-table element width: `u32` `0x00`, `u64` `0x01`.
+#define HURRAY_LAYOUT_FIELD_BLOCK_PAGED_INDEX_TYPE 68102
+
+// Composite (`0x0B`) composition rule wire byte.
+#define HURRAY_LAYOUT_FIELD_COMPOSITE_RULE 68352
+
+// Composite (`0x0B`) combine-op wire byte; `0x00` unless the rule is overlay.
+#define HURRAY_LAYOUT_FIELD_COMPOSITE_COMBINE_OP 68353
+
+// Composite (`0x0B`) number of member descriptors following the head.
+#define HURRAY_LAYOUT_FIELD_COMPOSITE_MEMBER_COUNT 68354
+
+// Hilbert (`0x40`) curve order; every dimension equals `2^order`.
+#define HURRAY_LAYOUT_FIELD_HILBERT_ORDER 81920
+
+// Hilbert (`0x40`) curve rank.
+#define HURRAY_LAYOUT_FIELD_HILBERT_RANK 81921
 
 // Operation completed successfully.
 #define HURRAY_OK 0
@@ -177,6 +271,16 @@ typedef void (*HurrayOwnerReleaseFn)(void*);
 
 // An index argument is outside the valid range for the collection.
 #define HURRAY_ERR_INDEX_OUT_OF_BOUNDS -11
+
+// The requested field is valid for this layout but absent from this descriptor.
+//
+// Distinct from [`HURRAY_ERR_FIELD_NOT_APPLICABLE`]: absence is a state this
+// format expresses (a cleared flag bit), so it is reported rather than
+// flattened to a zero the caller could mistake for data.
+#define HURRAY_ERR_FIELD_NOT_PRESENT -12
+
+// The requested field does not belong to this descriptor's layout.
+#define HURRAY_ERR_FIELD_NOT_APPLICABLE -13
 
 // Reads the declared alignment of a buffer handle (in bytes).
 //
@@ -524,7 +628,7 @@ HurrayStatus hurray_buffer_memory_class(const struct HurrayBuffer *buffer,
 // # Examples
 //
 // ```
-// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 4);
+// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 5);
 // ```
  uint32_t hurray_c_abi_version(void) ;
 
@@ -589,6 +693,92 @@ HurrayStatus hurray_descriptor_decode(const uint8_t *bytes,
 
 HurrayStatus hurray_descriptor_element_type_tag(const struct HurrayDescriptor *handle,
                                                 uint8_t *out_tag)
+;
+
+// Reads a signed array field of the descriptor's layout payload.
+//
+// Signed because strides may be negative (reversed) or zero (broadcast), which
+// an unsigned accessor would misreport. The capacity/length protocol is the one
+// [`hurray_descriptor_layout_field_u64_array`] documents.
+//
+// # Errors
+//
+// As [`hurray_descriptor_layout_field_u64_array`].
+//
+// # Safety
+//
+// - `handle` and `out_len` MUST be valid, non-null pointers.
+// - If `out_values` is non-null it MUST be writable for `capacity` × 8 bytes,
+//   where `capacity` is the value at `*out_len` on entry.
+
+HurrayStatus hurray_descriptor_layout_field_i64_array(const struct HurrayDescriptor *handle,
+                                                      HurrayLayoutField field,
+                                                      uint32_t level,
+                                                      int64_t *out_values,
+                                                      uintptr_t *out_len)
+;
+
+// Reads a scalar field of the descriptor's layout payload.
+//
+// Every scalar payload field in the format is unsigned or boolean, so all of
+// them widen losslessly into `uint64_t`: a boolean reads as `0` or `1`, and a
+// wire tag byte reads as its documented value.
+//
+// # Arguments
+//
+// - `handle` — Descriptor created by
+//   [`hurray_descriptor_decode`](crate::hurray_descriptor_decode).
+// - `field` — One of the `HURRAY_LAYOUT_FIELD_*` scalar constants.
+// - `level` — Tiled nesting level to read; MUST be `0` for every other layout.
+// - `out_value` — Non-null pointer; written only on [`HURRAY_OK`].
+//
+// # Errors
+//
+// - [`HURRAY_ERR_FIELD_NOT_APPLICABLE`] — `field` does not belong to this
+//   descriptor's layout, or is not a scalar field.
+// - [`HURRAY_ERR_FIELD_NOT_PRESENT`] — the field is optional and this
+//   descriptor does not carry it.
+// - [`HURRAY_ERR_INDEX_OUT_OF_BOUNDS`] — `level` exceeds the nesting depth, or
+//   is non-zero for a layout that does not nest.
+//
+// # Safety
+//
+// `handle` and `out_value` MUST be valid, non-null pointers, and `handle` MUST
+// NOT have been destroyed.
+
+HurrayStatus hurray_descriptor_layout_field_u64(const struct HurrayDescriptor *handle,
+                                                HurrayLayoutField field,
+                                                uint32_t level,
+                                                uint64_t *out_value)
+;
+
+// Reads an unsigned array field of the descriptor's layout payload.
+//
+// Uses the capacity/length in-out pattern
+// [`hurray_descriptor_shape`](crate::descriptor::hurray_descriptor_shape) uses:
+//
+// 1. Set `*out_len` to the capacity of `out_values` in elements, or `0` if
+//    `out_values` is null.
+// 2. On return `*out_len` always holds the field's true length.
+// 3. A null `out_values` or an insufficient capacity returns
+//    [`HURRAY_ERR_BUFFER_TOO_SMALL`], so the caller can allocate and retry.
+//
+// # Errors
+//
+// As [`hurray_descriptor_layout_field_u64`], plus
+// [`HURRAY_ERR_BUFFER_TOO_SMALL`] per the protocol above.
+//
+// # Safety
+//
+// - `handle` and `out_len` MUST be valid, non-null pointers.
+// - If `out_values` is non-null it MUST be writable for `capacity` × 8 bytes,
+//   where `capacity` is the value at `*out_len` on entry.
+
+HurrayStatus hurray_descriptor_layout_field_u64_array(const struct HurrayDescriptor *handle,
+                                                      HurrayLayoutField field,
+                                                      uint32_t level,
+                                                      uint64_t *out_values,
+                                                      uintptr_t *out_len)
 ;
 
 // Reads the layout tag byte of the tensor descriptor.
