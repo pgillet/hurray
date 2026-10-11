@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-11)
+Accepted (2026-08-11), implemented 2026-08-15 (PRs #150, #151, #153)
 
 Resolves the **Multi-buffer tensors** open question deferred in **ADR-023**
 (hurray-python Native Buffer Interchange Protocol) and supersedes its initial

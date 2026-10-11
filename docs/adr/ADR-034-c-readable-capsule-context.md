@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-20)
+Accepted (2026-08-20), implemented 2026-08-22 (PR #173)
 
 Amends **ADR-023** § 5 (capsule lifetime, which owns the context) and § 8 (the ABI
 version check), and resolves the C-level question **ADR-033** deferred.

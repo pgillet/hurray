@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-15). § 2 amended 2026-08-16: inapplicable accessors raise `AttributeError`, not `UnsupportedError` — see the reasoning in that section.
+Accepted (2026-08-15), implemented 2026-08-19 (PR #159). § 2 amended 2026-08-16: inapplicable accessors raise `AttributeError`, not `UnsupportedError` — see the reasoning in that section.
 
 Amends the **Sparse Tensor Support** section of `docs/impl/python-bindings.md`, which
 currently requires COO / CSR / CSC tensors to be exposed as a distinct
