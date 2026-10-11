@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-20)
+Accepted (2026-08-20), implemented 2026-08-20 (PR #171)
 
 Amends **ADR-023** § 1 (protocol name), § 7 (discovery), and § 8 (error semantics,
 which names the capsule string), and **ADR-030** § 5 (one protocol, one probe). Every

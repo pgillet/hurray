@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-06)
+Accepted (2026-08-06), implemented 2026-08-07 (PRs #128, #129, #130)
 
 Supersedes **ADR-022** (hurray-python Runtime Compliance Modes).
 

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-22)
+Accepted (2026-08-22), implemented 2026-08-22 (PR #176)
 
 Resolves the design questions in issue #157. Extends `docs/impl/python-bindings.md`
 with a streaming section; no existing ADR is amended.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-22)
+Accepted (2026-08-22), implemented 2026-08-23 (PR #178)
 
 Answers the question **ADR-031 § 5** deferred — whether composites belong on the
 unified `hurray.Tensor` class. Amends **ADR-032 § 6** (the error a composite layout

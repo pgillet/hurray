@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-08-18)
+Accepted (2026-08-18), implemented 2026-08-19 (PR #161)
 
 Extends **ADR-031** (One Python `Tensor` class for every layout). Amends its § 1 —
 `layout` returns a `hurray.Layout` instance rather than a string — and leaves § 2–§ 5
