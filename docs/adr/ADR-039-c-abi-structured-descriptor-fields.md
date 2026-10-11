@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-10-08)
+Accepted (2026-10-08), implemented 2026-10-11 (PR #228)
 
 Resolves the design question deferred to `architect` by
 [issue #200](https://github.com/pgillet/hurray/issues/200). Applies **ADR-019**'s
