@@ -8,6 +8,15 @@ Resolves the design question deferred to `architect` by
 [issue #200](https://github.com/pgillet/hurray/issues/200). Applies **ADR-019**'s
 evolution rules to the C ABI surface; amends no earlier decision.
 
+> **Superseded in part by [ADR-040](ADR-040-c-abi-section-field-identifiers.md)
+> (2026-10-12), on naming only.** When the five optional sections joined this
+> identifier space, `HurrayLayoutField` became `HurrayDescriptorField` and the three
+> accessors below lost their `layout_` infix:
+> `hurray_descriptor_field_{u64,u64_array,i64_array}`, plus a new `..._i64` and
+> `..._f64`. Everything else in this ADR — the `uint32_t` tag space, the identifier
+> encoding, the widening rule, the capacity idiom, the two statuses, the `level`
+> parameter, the placement on `HurrayDescriptor` — is unchanged and still governs.
+
 ## Context
 
 `hurray_descriptor_decode` parses and validates a descriptor through `hurray-core`, so

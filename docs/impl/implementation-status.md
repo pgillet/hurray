@@ -122,11 +122,11 @@ is required at any conformance level.
 
 | Feature | `hurray-core` + `hurray-io` | `hurray-python` | `hurray-ffi` |
 |---|---|---|---|
-| Quantization | ✅ | ✅ | ❌ |
-| Shard | ✅ | ✅ | ❌ |
-| Statistics | ✅ | ✅ | ❌ |
-| Extension type (`0xF0`–`0xFE`) | ✅ | ✅ | ❌ |
-| Composite member | ✅ | ✅ | ❌ |
+| Quantization | ✅ | ✅ | ✅ |
+| Shard | ✅ | ✅ | ✅ |
+| Statistics | ✅ | ✅ | ✅ |
+| Extension type (`0xF0`–`0xFE`) | ✅ | ✅ | ✅ |
+| Composite member | ✅ | ✅ | ✅ |
 
 ## Streaming and File Interchange
 

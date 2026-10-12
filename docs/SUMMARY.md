@@ -129,3 +129,4 @@
     - [ADR-037: Python Buffer Handles](adr/ADR-037-python-buffer-handles.md)
     - [ADR-038: Python API Reference on the Website](adr/ADR-038-python-api-reference-on-the-website.md)
     - [ADR-039: C ABI Structured Descriptor Fields](adr/ADR-039-c-abi-structured-descriptor-fields.md)
+    - [ADR-040: C ABI Section Field Identifiers](adr/ADR-040-c-abi-section-field-identifiers.md)

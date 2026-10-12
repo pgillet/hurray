@@ -21,7 +21,9 @@ Always verify the ABI version at startup so mismatched builds are caught early.
 
 void startup_check(void) {
     uint32_t v = hurray_c_abi_version();
-    assert(v == 2 && "unexpected Hurray C ABI version");
+    /* Compare against the header you compiled against, never a literal — the
+       ABI version moves, and a stale literal fails on the wrong builds. */
+    assert(v == HURRAY_C_ABI_VERSION && "unexpected Hurray C ABI version");
 }
 ```
 
@@ -270,7 +272,7 @@ arrays:
 
 /* A scalar: 137 stored non-zeros in this CSR matrix. */
 uint64_t nnz;
-HurrayStatus s = hurray_descriptor_layout_field_u64(
+HurrayStatus s = hurray_descriptor_field_u64(
     desc, HURRAY_LAYOUT_FIELD_CSR_NNZ, 0, &nnz);
 if (s == HURRAY_ERR_FIELD_NOT_APPLICABLE) {
     /* This descriptor is not CSR. Check layout_tag before asking. */
@@ -283,11 +285,11 @@ Arrays follow the same capacity/query pattern as
 ```c
 size_t len = 0;
 /* Query-only: out_values=NULL forces BUFFER_TOO_SMALL and writes the true length */
-hurray_descriptor_layout_field_i64_array(
+hurray_descriptor_field_i64_array(
     desc, HURRAY_LAYOUT_FIELD_STRIDED_STRIDES, 0, NULL, &len);
 
 int64_t *strides = malloc(len * sizeof(int64_t));
-hurray_descriptor_layout_field_i64_array(
+hurray_descriptor_field_i64_array(
     desc, HURRAY_LAYOUT_FIELD_STRIDED_STRIDES, 0, strides, &len);
 ```
 
@@ -327,7 +329,7 @@ use hurray_core::{
 use hurray_ffi::{
     descriptor::hurray_descriptor_destroy,
     hurray_descriptor_decode,
-    layout_field::{hurray_descriptor_layout_field_u64, HURRAY_LAYOUT_FIELD_CSR_NNZ},
+    field::{hurray_descriptor_field_u64, HURRAY_LAYOUT_FIELD_CSR_NNZ},
     HurrayDescriptor, HURRAY_OK,
 };
 
@@ -368,7 +370,7 @@ assert_eq!(
 let mut nnz: u64 = 0;
 assert_eq!(
     unsafe {
-        hurray_descriptor_layout_field_u64(desc, HURRAY_LAYOUT_FIELD_CSR_NNZ, 0, &mut nnz)
+        hurray_descriptor_field_u64(desc, HURRAY_LAYOUT_FIELD_CSR_NNZ, 0, &mut nnz)
     },
     HURRAY_OK
 );
@@ -383,6 +385,207 @@ A runnable walk through a sparse, a strided and a nested tiled descriptor:
 cargo run -p hurray-ffi --example layout_fields
 ```
 
+## Reading the optional descriptor sections
+
+A descriptor may carry five sections beyond its fixed header — quantization, shard,
+statistics, extension type, composite member — each gated by a flag bit. They use the
+same identifiers and the same accessors as the layout payload; only the range in the
+high half-word differs:
+
+| Range | Section | Constants |
+|---|---|---|
+| `0x0002` | quantization | `HURRAY_QUANT_FIELD_*` |
+| `0x0003` | statistics | `HURRAY_STATS_FIELD_*` |
+| `0x0004` | shard | `HURRAY_SHARD_FIELD_*` |
+| `0x0005` | extension type | `HURRAY_EXT_TYPE_FIELD_*` |
+| `0x0006` | composite member | `HURRAY_COMPOSITE_MEMBER_FIELD_*` |
+
+**Read the quantization scheme tag first.** It plays the part `layout_tag` plays for
+the payload: it decides which scheme-specific identifiers apply. Asking for the wrong
+scheme's field is diagnosable (`HURRAY_ERR_FIELD_NOT_APPLICABLE`), but the tag is what
+tells you which to ask for.
+
+```c
+#include "hurray.h"
+
+uint64_t scheme;
+HurrayStatus s = hurray_descriptor_field_u64(
+    desc, HURRAY_QUANT_FIELD_SCHEME_TAG, 0, &scheme);
+if (s == HURRAY_ERR_FIELD_NOT_PRESENT) {
+    /* Not a quantized tensor — it stores its values directly. */
+} else if (scheme == 0x03) {
+    uint64_t block_size, scale_buffer;
+    hurray_descriptor_field_u64(
+        desc, HURRAY_QUANT_FIELD_PER_BLOCK_BLOCK_SIZE, 0, &block_size);
+    hurray_descriptor_field_u64(
+        desc, HURRAY_QUANT_FIELD_PER_BLOCK_SCALE_BUFFER, 0, &scale_buffer);
+
+    /* A symmetric scheme has no zero point at all — absence, not zero. */
+    uint64_t zp_buffer;
+    if (hurray_descriptor_field_u64(
+            desc, HURRAY_QUANT_FIELD_PER_BLOCK_ZERO_POINT_BUFFER, 0, &zp_buffer)
+        == HURRAY_ERR_FIELD_NOT_PRESENT) {
+        /* symmetric */
+    }
+}
+```
+
+Two accessors exist only for the sections. A per-tensor affine `zero_point` is signed
+and its `scale` is real, so neither can go through the `u64` accessor:
+
+```c
+/* value = (stored - zero_point) * scale */
+double  scale;
+int64_t zero_point;
+hurray_descriptor_field_f64(desc, HURRAY_QUANT_FIELD_PER_TENSOR_SCALE, 0, &scale);
+hurray_descriptor_field_i64(desc, HURRAY_QUANT_FIELD_PER_TENSOR_ZERO_POINT, 0, &zero_point);
+```
+
+A zero point is routinely negative. Reading one through the unsigned accessor is not
+merely wrong but *plausibly* wrong — `-128` would arrive as `18446744073709551488` —
+so the unsigned accessor rejects the field outright rather than widening it.
+
+**Statistics are mask-guarded, and the accessor enforces the guard.** Every statistics
+field is physically present whatever `computed_mask` says, holding whatever the writer
+left there. Rather than hand you those bytes and trust you to check the bit, a field
+whose guard bit is clear reads as `HURRAY_ERR_FIELD_NOT_PRESENT`:
+
+```c
+uint64_t nnz;
+if (hurray_descriptor_field_u64(desc, HURRAY_STATS_FIELD_NNZ, 0, &nnz) == HURRAY_OK) {
+    /* nnz was actually computed by the writer */
+}
+
+/* Or branch on the mask directly — it is always readable. */
+uint64_t mask;
+hurray_descriptor_field_u64(desc, HURRAY_STATS_FIELD_COMPUTED_MASK, 0, &mask);
+```
+
+Shard bounds are arrays, so they use the same capacity/query pattern as the strides
+above:
+
+```c
+size_t len = 0;
+hurray_descriptor_field_u64_array(desc, HURRAY_SHARD_FIELD_PARENT_SHAPE, 0, NULL, &len);
+
+uint64_t *parent = malloc(len * sizeof(uint64_t));
+hurray_descriptor_field_u64_array(desc, HURRAY_SHARD_FIELD_PARENT_SHAPE, 0, parent, &len);
+```
+
+**Rust:**
+```rust
+use hurray_core::descriptor::{Statistics, StatisticsMask};
+use hurray_core::{
+    BufferHandle, DeviceTag, ElementType, LayoutDescriptor, PerTensorAffine,
+    QuantizationDescriptor, Shape, SyncMode, TensorDescriptor, MIN_BUFFER_ALIGNMENT,
+};
+use hurray_ffi::{
+    descriptor::hurray_descriptor_destroy,
+    field::{
+        hurray_descriptor_field_f64, hurray_descriptor_field_i64, hurray_descriptor_field_u64,
+        HURRAY_QUANT_FIELD_PER_TENSOR_SCALE, HURRAY_QUANT_FIELD_PER_TENSOR_ZERO_POINT,
+        HURRAY_QUANT_FIELD_SCHEME_TAG, HURRAY_STATS_FIELD_NNZ, HURRAY_STATS_FIELD_VALUE_MEAN,
+    },
+    hurray_descriptor_decode, HurrayDescriptor, HURRAY_ERR_FIELD_NOT_PRESENT, HURRAY_OK,
+};
+
+let buffers = (0..1)
+    .map(|_| {
+        BufferHandle::new(
+            256,
+            MIN_BUFFER_ALIGNMENT,
+            DeviceTag::Cpu,
+            SyncMode::ProducerSynced,
+        )
+        .unwrap()
+    })
+    .collect();
+
+// int8 weights: value = (stored - zero_point) * scale, with only nnz computed.
+let quantization = QuantizationDescriptor::PerTensorAffine(
+    PerTensorAffine::new(0.0078125, -128).unwrap(),
+);
+let statistics = Statistics {
+    computed_mask: StatisticsMask(StatisticsMask::NNZ_VALID),
+    nnz: 4096,
+    sparsity_ratio: 0.0,
+    value_min: 0.0,
+    value_max: 0.0,
+    value_abs_max: 0.0,
+    value_mean: 0.0,
+    value_stddev: 0.0,
+    nm_n: 0,
+    nm_m: 0,
+    has_nan: false,
+    has_inf: false,
+};
+let bytes = TensorDescriptor::new(
+    1,
+    0,
+    ElementType::Int8,
+    Shape::new(vec![64, 64]).unwrap(),
+    0,
+    LayoutDescriptor::RowMajor,
+    buffers,
+    Some(quantization.encode_to_vec()),
+    None,
+    Some(statistics),
+    None,
+)
+.unwrap()
+.encode()
+.unwrap();
+
+let mut desc: *mut HurrayDescriptor = std::ptr::null_mut();
+assert_eq!(
+    unsafe { hurray_descriptor_decode(bytes.as_ptr(), bytes.len(), &mut desc) },
+    HURRAY_OK
+);
+
+// The scheme tag first: it says which identifiers apply.
+let mut scheme: u64 = 0;
+unsafe { hurray_descriptor_field_u64(desc, HURRAY_QUANT_FIELD_SCHEME_TAG, 0, &mut scheme) };
+assert_eq!(scheme, 0x01);
+
+let mut scale: f64 = 0.0;
+let mut zero_point: i64 = 0;
+unsafe {
+    hurray_descriptor_field_f64(desc, HURRAY_QUANT_FIELD_PER_TENSOR_SCALE, 0, &mut scale);
+    hurray_descriptor_field_i64(
+        desc,
+        HURRAY_QUANT_FIELD_PER_TENSOR_ZERO_POINT,
+        0,
+        &mut zero_point,
+    );
+}
+assert_eq!(scale, 0.0078125);
+assert_eq!(zero_point, -128);
+
+// nnz was computed; the mean was not, and reads as absent rather than as 0.0.
+let mut nnz: u64 = 0;
+assert_eq!(
+    unsafe { hurray_descriptor_field_u64(desc, HURRAY_STATS_FIELD_NNZ, 0, &mut nnz) },
+    HURRAY_OK
+);
+assert_eq!(nnz, 4096);
+
+let mut mean: f64 = f64::NAN;
+assert_eq!(
+    unsafe { hurray_descriptor_field_f64(desc, HURRAY_STATS_FIELD_VALUE_MEAN, 0, &mut mean) },
+    HURRAY_ERR_FIELD_NOT_PRESENT
+);
+assert!(mean.is_nan(), "a failed read leaves the output untouched");
+
+assert_eq!(unsafe { hurray_descriptor_destroy(desc) }, HURRAY_OK);
+```
+
+A runnable walk through a per-tensor quantized tensor, a per-block quantized shard with
+statistics, and a plain tensor carrying no sections at all:
+
+```bash
+cargo run -p hurray-ffi --example section_fields
+```
+
 ## Key takeaways
 
 - **No panics cross the boundary.** Every function returns `HURRAY_OK` or a
@@ -390,10 +593,14 @@ cargo run -p hurray-ffi --example layout_fields
   internally — the handle is in an undefined state and MUST NOT be reused.
 - **Opaque handles.** `HurrayBuffer`, `HurrayDescriptor`, `HurrayReader`, and
   `HurrayWriter` are opaque; never dereference or cast their pointers.
-- **Check `layout_tag` before reading payload fields.** A field identifier names
-  the layout it belongs to, so asking the wrong descriptor is diagnosable
+- **Check `layout_tag` before reading payload fields, and the quantization
+  scheme tag before reading quantization fields.** A field identifier names the
+  sub-object it belongs to, so asking the wrong descriptor is diagnosable
   (`HURRAY_ERR_FIELD_NOT_APPLICABLE`) rather than silent — but the tag is what
   tells you which identifier to use in the first place.
+- **Absence is a status, never a value.** An absent section, an unset optional
+  field, a symmetric scheme's zero point, and an uncomputed statistic all read as
+  `HURRAY_ERR_FIELD_NOT_PRESENT` with the output left untouched.
 - **`HURRAY_ERR_NULL_POINTER` for null required arguments.** Every function
   checks its required pointer arguments and returns this code immediately if
   any is null. Optional context pointers (e.g., `release_context`) MAY be null.

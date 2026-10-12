@@ -116,12 +116,17 @@ fn encode_rank3_descriptor() -> Vec<u8> {
 // ── Phase 1 — ABI version and status codes ───────────────────────────────────
 
 #[test]
-fn abi_version_is_5() {
+fn abi_version_is_6() {
     // Raised 2 -> 3 by ADR-030: the native protocol capsule now wraps a
     // HurrayBufferList, so a v2 consumer must be told rather than dereference it.
     // Raised 3 -> 4 by ADR-034: the capsule context became HurrayTensorContext, so
     // a v3 consumer must be told rather than assume there is nothing to read.
-    assert_eq!(hurray_c_abi_version(), 5);
+    // Raised 4 -> 5 by ADR-039: the layout-payload field accessors were added.
+    // Raised 5 -> 6 by ADR-040: those accessors were renamed from
+    // hurray_descriptor_layout_field_* to hurray_descriptor_field_* when the
+    // identifier space grew to cover the optional sections, so a v5 consumer
+    // must relink rather than resolve a symbol that no longer exists.
+    assert_eq!(hurray_c_abi_version(), 6);
 }
 
 #[test]

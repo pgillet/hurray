@@ -15,23 +15,36 @@ workspace share one version and are released together.
 
 ### Added
 
-- **`hurray-ffi`** — layout-payload field reads, completing Compliance Level 1 for the C
-  surface. A consumer handed a CSR descriptor could previously read `layout_tag == 0x07`
-  and nothing further — not `nnz`, not which buffer held `row_ptr` — so the C surface was
-  effectively dense-only. Fields are now named by a `HURRAY_LAYOUT_FIELD_*` identifier and
-  read through `hurray_descriptor_layout_field_u64`,
-  `hurray_descriptor_layout_field_u64_array` and
-  `hurray_descriptor_layout_field_i64_array`, covering every layout-specific field of all
-  twelve layouts. Two new status codes, `HURRAY_ERR_FIELD_NOT_PRESENT` and
-  `HURRAY_ERR_FIELD_NOT_APPLICABLE`, keep an absent optional field distinguishable from a
-  field belonging to another layout. See
-  [ADR-039](docs/adr/ADR-039-c-abi-structured-descriptor-fields.md).
+- **`hurray-ffi`** — descriptor field reads, completing Compliance Level 1 for the C
+  surface and giving it the five optional sections. A consumer handed a CSR descriptor
+  could previously read `layout_tag == 0x07` and nothing further — not `nnz`, not which
+  buffer held `row_ptr` — and one handed a quantized tensor learned nothing about the
+  scheme at all, so the C surface was effectively dense and unquantized. A field is now
+  named by a `HurrayDescriptorField` identifier whose high half-word says which
+  sub-object it addresses — layout payload, quantization, statistics, shard, extension
+  type, composite member — and read through five typed accessors:
+  `hurray_descriptor_field_u64`, `..._i64`, `..._f64`, `..._u64_array` and
+  `..._i64_array`. That covers every layout-specific field of all twelve layouts and
+  every field of all five sections. Two new status codes,
+  `HURRAY_ERR_FIELD_NOT_PRESENT` and `HURRAY_ERR_FIELD_NOT_APPLICABLE`, keep an absent
+  optional field distinguishable from a field belonging to another sub-object; a
+  statistic whose `computed_mask` guard bit is clear reads as absent, so a C caller
+  cannot read an uncomputed statistic by omitting the mask check. See
+  [ADR-039](docs/adr/ADR-039-c-abi-structured-descriptor-fields.md) and
+  [ADR-040](docs/adr/ADR-040-c-abi-section-field-identifiers.md).
 
 ### Changed
 
-- `HURRAY_C_ABI_VERSION` is `5`. The addition is source- and binary-additive — no existing
-  signature changed — but the native-protocol capsule check is exact equality, so a
-  capsule produced by a version-4 build is refused by this one and vice versa.
+- `HURRAY_C_ABI_VERSION` is `6`. No signature changed, but the identifier type and the
+  accessors are named for the descriptor rather than for the layout now that one
+  identifier space covers both — `HurrayLayoutField` is `HurrayDescriptorField`, and the
+  `hurray_descriptor_layout_field_*` functions dropped their `layout_` infix. The
+  native-protocol capsule check is exact equality, so a capsule produced by an earlier
+  build is refused by this one and vice versa.
+- `website/check-coverage-matrix.py` now counts a `#define`d `HURRAY_*` constant as
+  exported C surface, not only a declared function. The five section rows share their
+  accessors with every other sub-object, so their identifier constants are the only
+  header evidence specific to each one.
 
 ### Fixed
 

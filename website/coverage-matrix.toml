@@ -18,7 +18,8 @@
 #   capability      the row's `capability` round-trip passed in the Rust probe
 #   python-class    every name in the row's `python_class` is a class in `hurray`
 #   python-attr     every dotted path in the row's `python_attrs` exists in `hurray`
-#   c-symbol        every name in the row's `c_symbols` is exported by `hurray.h`
+#   c-symbol        every name in the row's `c_symbols` is exported by `hurray.h` —
+#                   a declared `hurray_*` function or a `#define`d `HURRAY_*` constant
 #
 # … or a declaration, `<status>` or `<status>:<note>`, where `<note>` keys into [notes]:
 #
@@ -29,9 +30,12 @@
 #   n/a         the feature is not this layer's to implement; the note must say why
 #   spec-only   specified and implemented nowhere; the note must point at the spec
 #
-# A `c_symbols` entry may name a symbol that does not exist yet, provided it follows the
-# existing `hurray_<object>_<property>` convention: the cell then flips to supported by
-# itself on the day that symbol is exported, which a hand-written "no" never would.
+# A `c_symbols` entry may name a symbol that does not exist yet: the cell then flips to
+# supported by itself on the day that symbol is exported, which a hand-written "no" never
+# would. Name the surface that is specific to the row — for a descriptor section read
+# through the shared ADR-040 accessors, that is its `HURRAY_<SECTION>_FIELD_*` identifiers
+# as well as the accessors, since the accessors alone are evidence for every section at
+# once.
 
 # ── Columns ──────────────────────────────────────────────────────────────────────────
 
@@ -67,7 +71,7 @@ detect.rust = "capability"
 detect.python = "python-attr"
 detect.ffi = "c-symbol"
 rows = [
-  { id = "level-1", name = "Level 1 — Reader", capability = "descriptor_decode", python_attrs = ["Descriptor.decode"], c_symbols = ["hurray_descriptor_decode", "hurray_descriptor_shape", "hurray_descriptor_layout_field_u64", "hurray_descriptor_layout_field_u64_array", "hurray_descriptor_layout_field_i64_array"] },
+  { id = "level-1", name = "Level 1 — Reader", capability = "descriptor_decode", python_attrs = ["Descriptor.decode"], c_symbols = ["hurray_descriptor_decode", "hurray_descriptor_shape", "hurray_descriptor_field_u64", "hurray_descriptor_field_u64_array", "hurray_descriptor_field_i64_array"] },
   { id = "level-2", name = "Level 2 — Writer", capability = "descriptor_encode", python_attrs = ["Descriptor.encode"], c_symbols = ["hurray_descriptor_encode"] },
   { id = "level-3", name = "Level 3 — Network transport", rust = "spec-only:transport", python = "spec-only:transport", ffi = "spec-only:transport" },
 ]
@@ -180,11 +184,11 @@ detect.rust = "capability"
 detect.python = "python-attr"
 detect.ffi = "c-symbol"
 rows = [
-  { id = "quantization", name = "Quantization", capability = "section_quantization", python_attrs = ["Descriptor.quantization", "decode_quantization"], c_symbols = ["hurray_descriptor_quantization"] },
-  { id = "shard", name = "Shard", capability = "section_shard", python_attrs = ["Descriptor.shard"], c_symbols = ["hurray_descriptor_shard"] },
-  { id = "statistics", name = "Statistics", capability = "section_statistics", python_attrs = ["Descriptor.statistics"], c_symbols = ["hurray_descriptor_statistics"] },
-  { id = "extension_type", name = "Extension type (`0xF0`–`0xFE`)", capability = "section_extension_type", python_attrs = ["Descriptor.extension_type"], c_symbols = ["hurray_descriptor_extension_type"] },
-  { id = "composite_member", name = "Composite member", capability = "section_composite_member", python_attrs = ["Composite.member_roles"], c_symbols = ["hurray_descriptor_composite_member"] },
+  { id = "quantization", name = "Quantization", capability = "section_quantization", python_attrs = ["Descriptor.quantization", "decode_quantization"], c_symbols = ["hurray_descriptor_field_u64", "hurray_descriptor_field_i64", "hurray_descriptor_field_f64", "HURRAY_QUANT_FIELD_SCHEME_TAG", "HURRAY_QUANT_FIELD_PER_TENSOR_SCALE", "HURRAY_QUANT_FIELD_PER_BLOCK_BLOCK_SIZE"] },
+  { id = "shard", name = "Shard", capability = "section_shard", python_attrs = ["Descriptor.shard"], c_symbols = ["hurray_descriptor_field_u64_array", "HURRAY_SHARD_FIELD_PARENT_SHAPE", "HURRAY_SHARD_FIELD_SHARD_OFFSET"] },
+  { id = "statistics", name = "Statistics", capability = "section_statistics", python_attrs = ["Descriptor.statistics"], c_symbols = ["hurray_descriptor_field_u64", "hurray_descriptor_field_f64", "HURRAY_STATS_FIELD_COMPUTED_MASK", "HURRAY_STATS_FIELD_NNZ", "HURRAY_STATS_FIELD_VALUE_ABS_MAX"] },
+  { id = "extension_type", name = "Extension type (`0xF0`–`0xFE`)", capability = "section_extension_type", python_attrs = ["Descriptor.extension_type"], c_symbols = ["hurray_descriptor_field_u64", "HURRAY_EXT_TYPE_FIELD_BIT_WIDTH", "HURRAY_EXT_TYPE_FIELD_PACKING_FACTOR", "HURRAY_EXT_TYPE_FIELD_EXPONENT_BITS"] },
+  { id = "composite_member", name = "Composite member", capability = "section_composite_member", python_attrs = ["Composite.member_roles"], c_symbols = ["hurray_descriptor_field_u64", "HURRAY_COMPOSITE_MEMBER_FIELD_ROLE"] },
 ]
 
 # ── Interchange ──────────────────────────────────────────────────────────────────────

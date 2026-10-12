@@ -14,10 +14,9 @@ use hurray_core::{
     MIN_BUFFER_ALIGNMENT,
 };
 use hurray_ffi::{
-    descriptor::hurray_descriptor_destroy, hurray_descriptor_decode, layout_field::*,
-    HurrayDescriptor, HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_ERR_FIELD_NOT_APPLICABLE,
-    HURRAY_ERR_FIELD_NOT_PRESENT, HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_NULL_POINTER,
-    HURRAY_OK,
+    descriptor::hurray_descriptor_destroy, field::*, hurray_descriptor_decode, HurrayDescriptor,
+    HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_ERR_FIELD_NOT_APPLICABLE, HURRAY_ERR_FIELD_NOT_PRESENT,
+    HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_NULL_POINTER, HURRAY_OK,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -64,34 +63,28 @@ fn decode(bytes: &[u8]) -> *mut HurrayDescriptor {
 }
 
 /// Reads a scalar field, asserting success.
-fn scalar(handle: *mut HurrayDescriptor, field: HurrayLayoutField) -> u64 {
+fn scalar(handle: *mut HurrayDescriptor, field: HurrayDescriptorField) -> u64 {
     scalar_at(handle, field, 0)
 }
 
-fn scalar_at(handle: *mut HurrayDescriptor, field: HurrayLayoutField, level: u32) -> u64 {
+fn scalar_at(handle: *mut HurrayDescriptor, field: HurrayDescriptorField, level: u32) -> u64 {
     let mut value: u64 = 0;
-    let status = unsafe { hurray_descriptor_layout_field_u64(handle, field, level, &mut value) };
+    let status = unsafe { hurray_descriptor_field_u64(handle, field, level, &mut value) };
     assert_eq!(status, HURRAY_OK, "field {field:#x} failed with {status}");
     value
 }
 
 /// Reads an unsigned array field with a two-step capacity query, as a C caller would.
-fn u64_array(handle: *mut HurrayDescriptor, field: HurrayLayoutField, level: u32) -> Vec<u64> {
+fn u64_array(handle: *mut HurrayDescriptor, field: HurrayDescriptorField, level: u32) -> Vec<u64> {
     let mut len: usize = 0;
     let status = unsafe {
-        hurray_descriptor_layout_field_u64_array(
-            handle,
-            field,
-            level,
-            std::ptr::null_mut(),
-            &mut len,
-        )
+        hurray_descriptor_field_u64_array(handle, field, level, std::ptr::null_mut(), &mut len)
     };
     assert_eq!(status, HURRAY_ERR_BUFFER_TOO_SMALL);
 
     let mut out = vec![0u64; len];
     let status = unsafe {
-        hurray_descriptor_layout_field_u64_array(handle, field, level, out.as_mut_ptr(), &mut len)
+        hurray_descriptor_field_u64_array(handle, field, level, out.as_mut_ptr(), &mut len)
     };
     assert_eq!(status, HURRAY_OK);
     assert_eq!(len, out.len());
@@ -99,22 +92,16 @@ fn u64_array(handle: *mut HurrayDescriptor, field: HurrayLayoutField, level: u32
 }
 
 /// Reads a signed array field with a two-step capacity query.
-fn i64_array(handle: *mut HurrayDescriptor, field: HurrayLayoutField, level: u32) -> Vec<i64> {
+fn i64_array(handle: *mut HurrayDescriptor, field: HurrayDescriptorField, level: u32) -> Vec<i64> {
     let mut len: usize = 0;
     let status = unsafe {
-        hurray_descriptor_layout_field_i64_array(
-            handle,
-            field,
-            level,
-            std::ptr::null_mut(),
-            &mut len,
-        )
+        hurray_descriptor_field_i64_array(handle, field, level, std::ptr::null_mut(), &mut len)
     };
     assert_eq!(status, HURRAY_ERR_BUFFER_TOO_SMALL);
 
     let mut out = vec![0i64; len];
     let status = unsafe {
-        hurray_descriptor_layout_field_i64_array(handle, field, level, out.as_mut_ptr(), &mut len)
+        hurray_descriptor_field_i64_array(handle, field, level, out.as_mut_ptr(), &mut len)
     };
     assert_eq!(status, HURRAY_OK);
     assert_eq!(len, out.len());
@@ -274,7 +261,7 @@ fn absent_tiled_strides_report_not_present() {
 
     let mut len: usize = 0;
     let status = unsafe {
-        hurray_descriptor_layout_field_i64_array(
+        hurray_descriptor_field_i64_array(
             h,
             HURRAY_LAYOUT_FIELD_TILED_OUTER_STRIDES,
             0,
@@ -314,9 +301,8 @@ fn level_past_nesting_depth_is_out_of_bounds() {
     let bytes = encode(flat_tiled(), vec![8, 8], 1);
     let h = decode(&bytes);
     let mut value: u64 = 0;
-    let status = unsafe {
-        hurray_descriptor_layout_field_u64(h, HURRAY_LAYOUT_FIELD_TILED_DEPTH, 1, &mut value)
-    };
+    let status =
+        unsafe { hurray_descriptor_field_u64(h, HURRAY_LAYOUT_FIELD_TILED_DEPTH, 1, &mut value) };
     assert_eq!(status, HURRAY_ERR_INDEX_OUT_OF_BOUNDS);
     destroy(h);
 }
@@ -326,9 +312,8 @@ fn nonzero_level_on_a_layout_that_does_not_nest_is_rejected() {
     let bytes = encode(LayoutDescriptor::Csr(CsrLayout::new(5)), vec![4, 4], 3);
     let h = decode(&bytes);
     let mut value: u64 = 0;
-    let status = unsafe {
-        hurray_descriptor_layout_field_u64(h, HURRAY_LAYOUT_FIELD_CSR_NNZ, 1, &mut value)
-    };
+    let status =
+        unsafe { hurray_descriptor_field_u64(h, HURRAY_LAYOUT_FIELD_CSR_NNZ, 1, &mut value) };
     assert_eq!(status, HURRAY_ERR_INDEX_OUT_OF_BOUNDS);
     destroy(h);
 }
@@ -381,7 +366,7 @@ fn absent_layer_index_reports_not_present() {
 
     let mut value: u64 = 0;
     let status = unsafe {
-        hurray_descriptor_layout_field_u64(
+        hurray_descriptor_field_u64(
             h,
             HURRAY_LAYOUT_FIELD_BLOCK_PAGED_LAYER_INDEX,
             0,
@@ -425,9 +410,8 @@ fn field_from_another_layout_is_not_applicable() {
     let h = decode(&bytes);
     let mut value: u64 = 0;
     // CSC's nnz, asked of a CSR descriptor.
-    let status = unsafe {
-        hurray_descriptor_layout_field_u64(h, HURRAY_LAYOUT_FIELD_CSC_NNZ, 0, &mut value)
-    };
+    let status =
+        unsafe { hurray_descriptor_field_u64(h, HURRAY_LAYOUT_FIELD_CSC_NNZ, 0, &mut value) };
     assert_eq!(status, HURRAY_ERR_FIELD_NOT_APPLICABLE);
     destroy(h);
 }
@@ -437,9 +421,8 @@ fn row_major_has_no_payload_fields() {
     let bytes = encode(LayoutDescriptor::RowMajor, vec![2, 3], 1);
     let h = decode(&bytes);
     let mut value: u64 = 0;
-    let status = unsafe {
-        hurray_descriptor_layout_field_u64(h, HURRAY_LAYOUT_FIELD_CSR_NNZ, 0, &mut value)
-    };
+    let status =
+        unsafe { hurray_descriptor_field_u64(h, HURRAY_LAYOUT_FIELD_CSR_NNZ, 0, &mut value) };
     assert_eq!(status, HURRAY_ERR_FIELD_NOT_APPLICABLE);
     destroy(h);
 }
@@ -449,8 +432,10 @@ fn unallocated_field_identifier_is_not_applicable() {
     let bytes = encode(LayoutDescriptor::Csr(CsrLayout::new(5)), vec![4, 4], 3);
     let h = decode(&bytes);
     let mut value: u64 = 0;
-    for field in [0u32, 0x0001_07FF, 0x0002_0000, u32::MAX] {
-        let status = unsafe { hurray_descriptor_layout_field_u64(h, field, 0, &mut value) };
+    // 0x0007 is an unallocated sub-object range; 0x0002_FF00 is the quantization
+    // range with a discriminant byte that is not a scheme tag.
+    for field in [0u32, 0x0001_07FF, 0x0002_FF00, 0x0007_0000, u32::MAX] {
+        let status = unsafe { hurray_descriptor_field_u64(h, field, 0, &mut value) };
         assert_eq!(
             status, HURRAY_ERR_FIELD_NOT_APPLICABLE,
             "field {field:#x} should be rejected"
@@ -465,7 +450,7 @@ fn a_scalar_field_is_not_readable_as_an_array() {
     let h = decode(&bytes);
     let mut len: usize = 0;
     let status = unsafe {
-        hurray_descriptor_layout_field_u64_array(
+        hurray_descriptor_field_u64_array(
             h,
             HURRAY_LAYOUT_FIELD_CSR_NNZ,
             0,
@@ -484,7 +469,7 @@ fn an_array_field_is_not_readable_as_a_scalar() {
     let h = decode(&bytes);
     let mut value: u64 = 0;
     let status = unsafe {
-        hurray_descriptor_layout_field_u64(h, HURRAY_LAYOUT_FIELD_STRIDED_STRIDES, 0, &mut value)
+        hurray_descriptor_field_u64(h, HURRAY_LAYOUT_FIELD_STRIDED_STRIDES, 0, &mut value)
     };
     assert_eq!(status, HURRAY_ERR_FIELD_NOT_APPLICABLE);
     destroy(h);
@@ -499,7 +484,7 @@ fn insufficient_capacity_reports_the_true_length() {
     let mut out = [0i64; 1];
     let mut len: usize = 1; // capacity of 1, true length is 3
     let status = unsafe {
-        hurray_descriptor_layout_field_i64_array(
+        hurray_descriptor_field_i64_array(
             h,
             HURRAY_LAYOUT_FIELD_STRIDED_STRIDES,
             0,
@@ -520,7 +505,7 @@ fn null_arguments_are_rejected() {
     let mut value: u64 = 0;
     assert_eq!(
         unsafe {
-            hurray_descriptor_layout_field_u64(
+            hurray_descriptor_field_u64(
                 std::ptr::null(),
                 HURRAY_LAYOUT_FIELD_CSR_NNZ,
                 0,
@@ -531,19 +516,14 @@ fn null_arguments_are_rejected() {
     );
     assert_eq!(
         unsafe {
-            hurray_descriptor_layout_field_u64(
-                h,
-                HURRAY_LAYOUT_FIELD_CSR_NNZ,
-                0,
-                std::ptr::null_mut(),
-            )
+            hurray_descriptor_field_u64(h, HURRAY_LAYOUT_FIELD_CSR_NNZ, 0, std::ptr::null_mut())
         },
         HURRAY_ERR_NULL_POINTER
     );
     // out_len is required even in capacity-query mode, where out_values may be null.
     assert_eq!(
         unsafe {
-            hurray_descriptor_layout_field_u64_array(
+            hurray_descriptor_field_u64_array(
                 h,
                 HURRAY_LAYOUT_FIELD_CSF_MODE_ORDER,
                 0,
