@@ -19,7 +19,7 @@ foundation for all non-Python language bindings.
 
 The C ABI carries a single `uint32` version identifier exposed via a constant
 `HURRAY_C_ABI_VERSION` and a runtime accessor `hurray_c_abi_version()`. The
-current version is `5`:
+current version is `6`:
 
 | Version | Changes |
 |---------|---------|
@@ -27,7 +27,8 @@ current version is `5`:
 | `2` | Per-mode buffer handoff sync payloads (`SYNC_PRODUCER_SYNCED`, `SYNC_EVENT`, `SYNC_CONSUMER_STREAM`) and the event-release callback. See [Buffer Handoff Synchronisation](#buffer-handoff-synchronisation). |
 | `3` | `HurrayBufferList` for multi-buffer tensors, and the native protocol capsule now wraps a list rather than a single `HurrayBuffer` (ADR-030). See [Buffer Lists](#buffer-lists). |
 | `4` | `HurrayTensorContext`, so a consumer in any language can read a capsule's descriptor and ABI version (ADR-034). See [Tensor Context](#tensor-context). |
-| `5` | Layout-payload field reads, so a consumer can interpret every Tier 1 layout it can decode (ADR-039). See [Layout Payload Fields](#layout-payload-fields). |
+| `5` | Layout-payload field reads, so a consumer can interpret every Tier 1 layout it can decode (ADR-039). See [Descriptor Field Reads](#descriptor-field-reads). |
+| `6` | The field identifier space grew to cover all five optional descriptor sections, which renamed the three ADR-039 accessors and added two (ADR-040). See [Descriptor Field Reads](#descriptor-field-reads). |
 
 A consumer of the C ABI MUST query `hurray_c_abi_version()` before invoking any
 function whose contract changed in a later version. A consumer compiled against
@@ -130,47 +131,77 @@ HurrayStatus hurray_tensor_context_destroy(struct HurrayTensorContext **ctx);
 - Destroying a null handle is a no-op returning `HURRAY_OK`, so cleanup paths may call
   it unconditionally. Destroy nulls the caller's pointer.
 
-## Layout Payload Fields
+## Descriptor Field Reads
 
-Decoding a descriptor yields its layout tag; the payload behind that tag is read
-separately. An implementation MUST expose every layout-specific field of the Tier 1
-layouts (`0x01`–`0x09`), because Compliance Level 1 requires a reader to correctly
-interpret those fields and a consumer that cannot read them cannot address an element.
+Decoding a descriptor yields its fixed header — rank, element type tag, layout tag,
+byte offset, buffer table. Everything with internal structure behind that header is
+read separately: the layout payload, and the five optional sections (quantization,
+shard, statistics, extension type, composite member).
 
-Fields are named by a `HurrayLayoutField` identifier and read through three typed
-accessors (ADR-039):
+An implementation MUST expose every layout-specific field of the Tier 1 layouts
+(`0x01`–`0x09`), because Compliance Level 1 requires a reader to correctly interpret
+those fields and a consumer that cannot read them cannot address an element. The
+optional sections are not required at any conformance level, but an implementation that
+decodes one SHOULD expose its fields: a section a caller cannot read is a section the
+producer wrote for nothing.
+
+Fields are named by a `HurrayDescriptorField` identifier and read through five typed
+accessors (ADR-039, ADR-040):
 
 | Accessor | Reads |
 |---|---|
-| `hurray_descriptor_layout_field_u64` | every scalar field |
-| `hurray_descriptor_layout_field_u64_array` | `tile_shape`, `morton_bits`, `mode_order` |
-| `hurray_descriptor_layout_field_i64_array` | `strides`, `outer_strides`, `inner_strides` |
+| `hurray_descriptor_field_u64` | every unsigned or boolean scalar |
+| `hurray_descriptor_field_i64` | signed scalars: per-tensor affine `zero_point` |
+| `hurray_descriptor_field_f64` | real scalars: per-tensor affine `scale`, the `float64` statistics |
+| `hurray_descriptor_field_u64_array` | `tile_shape`, `morton_bits`, `mode_order`, `parent_shape`, `shard_offset` |
+| `hurray_descriptor_field_i64_array` | `strides`, `outer_strides`, `inner_strides` |
 
 ### Field Identifiers
 
-`HurrayLayoutField` MUST be a `uint32` with named constants, and MUST NOT be a C enum:
-a caller may pass any integer, and an out-of-range value materialised as a Rust enum is
-undefined behaviour.
+`HurrayDescriptorField` MUST be a `uint32` with named constants, and MUST NOT be a C
+enum: a caller may pass any integer, and an out-of-range value materialised as a Rust
+enum is undefined behaviour.
 
-The identifier encoding is `0x0001_0000 | (layout_tag << 8) | field_index`. The
-embedded layout tag makes applicability a comparison rather than a table lookup, and
-the identifier space inherits the layout tag space's reserved and private ranges.
+The identifier encoding is:
+
+```text
+field_id = (range << 16) | (discriminant << 8) | field_index
+```
+
+| Range | Sub-object | Discriminant byte |
+|---|---|---|
+| `0x0001` | layout payload | layout tag |
+| `0x0002` | quantization | scheme tag; `0x00` addresses the section itself |
+| `0x0003` | statistics | `0x00` |
+| `0x0004` | shard | `0x00` |
+| `0x0005` | extension type | `0x00` |
+| `0x0006` | composite member | `0x00` |
+
+The embedded discriminant makes applicability a comparison rather than a table lookup,
+and the layout range inherits the layout tag space's reserved and private ranges.
 `0x0000_0000` MUST NOT be a valid identifier, so that a zeroed variable is rejected
 rather than read as the first field.
 
-`0x0001_xxxx` is the layout-field range. Each optional descriptor section takes its own
-high-half-word range when it is implemented. Allocation follows the anti-rebind rule in
+Quantization is the only sub-object with an inner sum type, so it is the only section
+that uses the discriminant byte. `0x0002_0000` MUST read the quantization scheme tag
+itself, which a caller MUST read before selecting any scheme-specific identifier. The
+remaining sections are flat and carry `0x00` in that byte.
+
+Allocation follows the anti-rebind rule in
 [ADR-019](../adr/ADR-019-format-evolvability-as-core-property.md): a retired identifier
 MUST NOT be reused for a different field.
 
 ### Field Semantics
 
-- Every scalar payload field in the format is unsigned or boolean, so all of them widen
-  losslessly into `uint64`. A boolean MUST read as `0` or `1`, and a wire tag byte MUST
-  read as its documented value.
-- Stride fields MUST be read through the signed accessor: a negative stride reverses a
-  dimension and a zero stride broadcasts one, both of which an unsigned read would
-  misreport.
+- Every scalar field in the format is unsigned or boolean but two, so almost all of
+  them widen losslessly into `uint64`. A boolean MUST read as `0` or `1`, and a wire tag
+  byte MUST read as its documented value.
+- A signed scalar MUST be read through the signed accessor, and a real scalar through
+  the real accessor. A `zero_point` is routinely negative, and an unsigned read would
+  report it as a value near `2^64`.
+- Stride fields MUST be read through the signed array accessor: a negative stride
+  reverses a dimension and a zero stride broadcasts one, both of which an unsigned read
+  would misreport.
 - Array accessors MUST use the capacity/length in-out protocol that
   `hurray_descriptor_shape` uses: `*out_len` carries the caller's capacity in and the
   true length out, and a null or insufficient buffer returns
@@ -178,12 +209,21 @@ MUST NOT be reused for a different field.
 - An absent optional field MUST return `HURRAY_ERR_FIELD_NOT_PRESENT` and MUST NOT
   write to the output: absence is a state this format expresses through a cleared flag
   bit, not a value, and reporting it as a zero would be indistinguishable from data.
-- A field identifier that does not belong to the descriptor's layout MUST return
-  `HURRAY_ERR_FIELD_NOT_APPLICABLE`. An identifier outside any allocated range MUST
-  return the same code.
+  This covers an absent section, an unset optional field, and a symmetric quantization
+  scheme's zero-point buffer index.
+- A statistics field whose guard bit in `computed_mask` is clear MUST return
+  `HURRAY_ERR_FIELD_NOT_PRESENT`. The statistics fields are physically present whatever
+  the mask says, so an implementation that returned the stored bytes would let a caller
+  read an uncomputed statistic by omitting the mask check the spec requires.
+  `0x0003_0000` MUST read the raw mask, for a caller that branches on it directly.
+- A field identifier that does not belong to the descriptor's layout or quantization
+  scheme MUST return `HURRAY_ERR_FIELD_NOT_APPLICABLE`. An identifier outside any
+  allocated range, or passed to an accessor of the wrong type, MUST return the same
+  code.
 - Every accessor takes a `level`, which selects the tile to read in a nested tiled
-  layout. `level` MUST be `0` for every layout that does not nest, and a non-zero value
-  MUST be rejected with `HURRAY_ERR_INDEX_OUT_OF_BOUNDS` rather than ignored.
+  layout. `level` MUST be `0` for every layout that does not nest and for every section
+  field, and a non-zero value MUST be rejected with
+  `HURRAY_ERR_INDEX_OUT_OF_BOUNDS` rather than ignored.
 
 ## Panic Safety
 

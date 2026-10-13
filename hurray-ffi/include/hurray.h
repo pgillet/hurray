@@ -20,9 +20,9 @@
 // ```
 // use hurray_ffi::HURRAY_C_ABI_VERSION;
 //
-// assert_eq!(HURRAY_C_ABI_VERSION, 5);
+// assert_eq!(HURRAY_C_ABI_VERSION, 6);
 // ```
-#define HURRAY_C_ABI_VERSION 5
+#define HURRAY_C_ABI_VERSION 6
 
 // Opaque handle to a buffer registered with the Hurray C ABI.
 //
@@ -132,21 +132,41 @@ typedef struct HurraySyncEventPayload {
     void *event_release_context;
 } HurraySyncEventPayload;
 
-// Identifies one field of a tensor descriptor's layout payload.
+// Identifies one field of a tensor descriptor's layout payload or of one of its
+// optional sections.
 //
 // A plain `uint32_t` rather than a `#[repr(C)]` enum: a C caller can pass any
 // integer, and an out-of-range value materialised as a Rust enum is undefined
 // behaviour. Validation happens in Rust, which is sound for every input.
 //
-// The encoding is `0x0001_0000 | (layout_tag << 8) | field_index`, so an
-// identifier carries the layout it belongs to and the applicability check is a
-// comparison rather than a table. `0x0001_xxxx` is the layout-field range;
-// each optional descriptor section takes its own range when it is implemented.
+// The encoding is
+//
+// ```text
+// field_id = (range << 16) | (discriminant << 8) | field_index
+// ```
+//
+// so an identifier carries the sub-object it belongs to and the applicability
+// check is a comparison rather than a table.
+//
+// | Range | Sub-object | Discriminant byte |
+// |---|---|---|
+// | `0x0001` | layout payload | layout tag |
+// | `0x0002` | quantization | scheme tag; `0x00` addresses the section itself |
+// | `0x0003` | statistics | `0x00` |
+// | `0x0004` | shard | `0x00` |
+// | `0x0005` | extension type | `0x00` |
+// | `0x0006` | composite member | `0x00` |
+//
+// Only quantization has an inner sum type, so it is the only section that uses
+// the discriminant byte; [`HURRAY_QUANT_FIELD_SCHEME_TAG`] reads the scheme a
+// descriptor carries, which a caller needs before it can pick applicable
+// identifiers. `0x0000_0000` is never a valid identifier, so a zeroed variable
+// is caught rather than silently read as the first field.
 //
 // Generated headers render these in decimal, so to decode one by hand: CSR
 // `nnz` is `0x0001_0700` = 67328 — range `0x0001`, layout tag `0x07`, field
 // index `0x00`.
-typedef uint32_t HurrayLayoutField;
+typedef uint32_t HurrayDescriptorField;
 
 // Callback invoked exactly once by [`hurray_tensor_context_destroy`] to release
 // whatever keeps the tensor's memory alive.
@@ -235,6 +255,145 @@ typedef void (*HurrayOwnerReleaseFn)(void*);
 
 // Hilbert (`0x40`) curve rank.
 #define HURRAY_LAYOUT_FIELD_HILBERT_RANK 81921
+
+// Quantization scheme tag of the section this descriptor carries: per-tensor
+// affine `0x01`, per-channel affine `0x02`, per-block affine `0x03`, NF4
+// `0x04`, MXFP `0x05`.
+//
+// Read this first: it tells a caller which of the scheme-specific identifiers
+// below apply. The discriminant byte is `0x00`, which is not a valid scheme
+// tag, so the slot addresses the section rather than one scheme within it.
+#define HURRAY_QUANT_FIELD_SCHEME_TAG 131072
+
+// Per-tensor affine (`0x01`) scale. Real scalar, `float32` on the wire.
+#define HURRAY_QUANT_FIELD_PER_TENSOR_SCALE 131328
+
+// Per-tensor affine (`0x01`) zero point. Signed scalar, `int32` on the wire.
+#define HURRAY_QUANT_FIELD_PER_TENSOR_ZERO_POINT 131329
+
+// Per-channel affine (`0x02`) quantization axis.
+#define HURRAY_QUANT_FIELD_PER_CHANNEL_AXIS 131584
+
+// Per-channel affine (`0x02`) buffer index holding the scale vector.
+#define HURRAY_QUANT_FIELD_PER_CHANNEL_SCALE_BUFFER 131585
+
+// Per-channel affine (`0x02`) buffer index holding the zero-point vector.
+// Absent for a symmetric scheme.
+#define HURRAY_QUANT_FIELD_PER_CHANNEL_ZERO_POINT_BUFFER 131586
+
+// Per-channel affine (`0x02`) element type tag of the scale vector.
+#define HURRAY_QUANT_FIELD_PER_CHANNEL_SCALE_TYPE 131587
+
+// Per-block affine (`0x03`) quantization axis.
+#define HURRAY_QUANT_FIELD_PER_BLOCK_AXIS 131840
+
+// Per-block affine (`0x03`) elements per quantization block.
+#define HURRAY_QUANT_FIELD_PER_BLOCK_BLOCK_SIZE 131841
+
+// Per-block affine (`0x03`) buffer index holding the scale vector.
+#define HURRAY_QUANT_FIELD_PER_BLOCK_SCALE_BUFFER 131842
+
+// Per-block affine (`0x03`) buffer index holding the zero-point vector.
+// Absent for a symmetric scheme.
+#define HURRAY_QUANT_FIELD_PER_BLOCK_ZERO_POINT_BUFFER 131843
+
+// Per-block affine (`0x03`) element type tag of the scale vector.
+#define HURRAY_QUANT_FIELD_PER_BLOCK_SCALE_TYPE 131844
+
+// NF4 (`0x04`) quantization axis.
+#define HURRAY_QUANT_FIELD_NF4_AXIS 132096
+
+// NF4 (`0x04`) elements per quantization block.
+#define HURRAY_QUANT_FIELD_NF4_BLOCK_SIZE 132097
+
+// NF4 (`0x04`) buffer index holding the scale vector.
+#define HURRAY_QUANT_FIELD_NF4_SCALE_BUFFER 132098
+
+// MXFP (`0x05`) quantization axis.
+#define HURRAY_QUANT_FIELD_MXFP_AXIS 132352
+
+// MXFP (`0x05`) elements per quantization block.
+#define HURRAY_QUANT_FIELD_MXFP_BLOCK_SIZE 132353
+
+// MXFP (`0x05`) buffer index holding the shared-exponent vector.
+#define HURRAY_QUANT_FIELD_MXFP_SCALE_BUFFER 132354
+
+// Raw `computed_mask` bitfield. Always present when the section is.
+#define HURRAY_STATS_FIELD_COMPUTED_MASK 196608
+
+// Non-zero element count. Guarded by `NNZ_VALID` (bit 0).
+#define HURRAY_STATS_FIELD_NNZ 196609
+
+// Fraction of elements that are zero. Real scalar, guarded by `SPARSITY_VALID` (bit 1).
+#define HURRAY_STATS_FIELD_SPARSITY_RATIO 196610
+
+// Smallest stored value. Real scalar, guarded by `VALUE_RANGE_VALID` (bit 2).
+#define HURRAY_STATS_FIELD_VALUE_MIN 196611
+
+// Largest stored value. Real scalar, guarded by `VALUE_RANGE_VALID` (bit 2).
+#define HURRAY_STATS_FIELD_VALUE_MAX 196612
+
+// Largest absolute stored value. Real scalar, guarded by `VALUE_RANGE_VALID` (bit 2).
+#define HURRAY_STATS_FIELD_VALUE_ABS_MAX 196613
+
+// Arithmetic mean. Real scalar, guarded by `VALUE_STATS_VALID` (bit 3).
+#define HURRAY_STATS_FIELD_VALUE_MEAN 196614
+
+// Standard deviation. Real scalar, guarded by `VALUE_STATS_VALID` (bit 3).
+#define HURRAY_STATS_FIELD_VALUE_STDDEV 196615
+
+// `N` of N:M structured sparsity. Guarded by `NM_SPARSITY_VALID` (bit 4).
+#define HURRAY_STATS_FIELD_NM_N 196616
+
+// `M` of N:M structured sparsity. Guarded by `NM_SPARSITY_VALID` (bit 4).
+#define HURRAY_STATS_FIELD_NM_M 196617
+
+// Whether any element is NaN. `0` or `1`, guarded by `NAN_INF_VALID` (bit 5).
+#define HURRAY_STATS_FIELD_HAS_NAN 196618
+
+// Whether any element is infinite. `0` or `1`, guarded by `NAN_INF_VALID` (bit 5).
+#define HURRAY_STATS_FIELD_HAS_INF 196619
+
+// Shape of the logical parent tensor. Unsigned array, length equal to the rank.
+#define HURRAY_SHARD_FIELD_PARENT_SHAPE 262144
+
+// This shard's starting index within the parent. Unsigned array, length equal
+// to the rank.
+#define HURRAY_SHARD_FIELD_SHARD_OFFSET 262145
+
+// Width of one element in bits.
+#define HURRAY_EXT_TYPE_FIELD_BIT_WIDTH 327680
+
+// Elements packed per storage byte; `1` when unpacked.
+#define HURRAY_EXT_TYPE_FIELD_PACKING_FACTOR 327681
+
+// Whether the type is floating-point. `0` or `1`.
+#define HURRAY_EXT_TYPE_FIELD_IS_FLOAT 327682
+
+// Whether the type is signed. `0` or `1`.
+#define HURRAY_EXT_TYPE_FIELD_IS_SIGNED 327683
+
+// Number of sign bits.
+#define HURRAY_EXT_TYPE_FIELD_SIGN_BITS 327684
+
+// Number of exponent bits; `0` for integer types.
+#define HURRAY_EXT_TYPE_FIELD_EXPONENT_BITS 327685
+
+// Number of mantissa bits.
+#define HURRAY_EXT_TYPE_FIELD_MANTISSA_BITS 327686
+
+// Exponent bias; `0` for integer types.
+#define HURRAY_EXT_TYPE_FIELD_EXPONENT_BIAS 327687
+
+// Whether the type encodes NaN. `0` or `1`.
+#define HURRAY_EXT_TYPE_FIELD_HAS_NAN 327688
+
+// Whether the type encodes infinity. `0` or `1`.
+#define HURRAY_EXT_TYPE_FIELD_HAS_INF 327689
+
+// This tensor's role within its enclosing composite: correction `0x00`,
+// base `0x01`.
+#define HURRAY_COMPOSITE_MEMBER_FIELD_ROLE 393216
 
 // Operation completed successfully.
 #define HURRAY_OK 0
@@ -628,7 +787,7 @@ HurrayStatus hurray_buffer_memory_class(const struct HurrayBuffer *buffer,
 // # Examples
 //
 // ```
-// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 5);
+// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 6);
 // ```
  uint32_t hurray_c_abi_version(void) ;
 
@@ -695,15 +854,64 @@ HurrayStatus hurray_descriptor_element_type_tag(const struct HurrayDescriptor *h
                                                 uint8_t *out_tag)
 ;
 
-// Reads a signed array field of the descriptor's layout payload.
+// Reads a real scalar field of the descriptor.
 //
-// Signed because strides may be negative (reversed) or zero (broadcast), which
-// an unsigned accessor would misreport. The capacity/length protocol is the one
-// [`hurray_descriptor_layout_field_u64_array`] documents.
+// Covers per-tensor affine `scale` — a `float32` on the wire, widened — and the
+// six `float64` statistics. A statistic whose `computed_mask` guard bit is
+// clear returns [`HURRAY_ERR_FIELD_NOT_PRESENT`](crate::status::HURRAY_ERR_FIELD_NOT_PRESENT) rather than the stored
+// placeholder, so a caller cannot read an uncomputed value by forgetting to
+// test the mask.
 //
 // # Errors
 //
-// As [`hurray_descriptor_layout_field_u64_array`].
+// As [`hurray_descriptor_field_u64`], with
+// [`HURRAY_ERR_FIELD_NOT_APPLICABLE`] for any field that is not a real scalar.
+//
+// # Safety
+//
+// `handle` and `out_value` MUST be valid, non-null pointers, and `handle` MUST
+// NOT have been destroyed.
+
+HurrayStatus hurray_descriptor_field_f64(const struct HurrayDescriptor *handle,
+                                         HurrayDescriptorField field,
+                                         uint32_t level,
+                                         double *out_value)
+;
+
+// Reads a signed scalar field of the descriptor.
+//
+// Only per-tensor affine `zero_point` is signed; it is an `int32` on the wire
+// and widens losslessly. Separate from [`hurray_descriptor_field_u64`] because
+// an unsigned accessor would report a negative zero point as a huge positive
+// number, which is exactly the kind of silent corruption a quantized read
+// cannot absorb.
+//
+// # Errors
+//
+// As [`hurray_descriptor_field_u64`], with
+// [`HURRAY_ERR_FIELD_NOT_APPLICABLE`] for any field that is not a signed
+// scalar.
+//
+// # Safety
+//
+// `handle` and `out_value` MUST be valid, non-null pointers, and `handle` MUST
+// NOT have been destroyed.
+
+HurrayStatus hurray_descriptor_field_i64(const struct HurrayDescriptor *handle,
+                                         HurrayDescriptorField field,
+                                         uint32_t level,
+                                         int64_t *out_value)
+;
+
+// Reads a signed array field of the descriptor.
+//
+// Signed because strides may be negative (reversed) or zero (broadcast), which
+// an unsigned accessor would misreport. The capacity/length protocol is the one
+// [`hurray_descriptor_field_u64_array`] documents.
+//
+// # Errors
+//
+// As [`hurray_descriptor_field_u64_array`].
 //
 // # Safety
 //
@@ -711,48 +919,52 @@ HurrayStatus hurray_descriptor_element_type_tag(const struct HurrayDescriptor *h
 // - If `out_values` is non-null it MUST be writable for `capacity` × 8 bytes,
 //   where `capacity` is the value at `*out_len` on entry.
 
-HurrayStatus hurray_descriptor_layout_field_i64_array(const struct HurrayDescriptor *handle,
-                                                      HurrayLayoutField field,
-                                                      uint32_t level,
-                                                      int64_t *out_values,
-                                                      uintptr_t *out_len)
+HurrayStatus hurray_descriptor_field_i64_array(const struct HurrayDescriptor *handle,
+                                               HurrayDescriptorField field,
+                                               uint32_t level,
+                                               int64_t *out_values,
+                                               uintptr_t *out_len)
 ;
 
-// Reads a scalar field of the descriptor's layout payload.
+// Reads an unsigned or boolean scalar field of the descriptor.
 //
-// Every scalar payload field in the format is unsigned or boolean, so all of
-// them widen losslessly into `uint64_t`: a boolean reads as `0` or `1`, and a
-// wire tag byte reads as its documented value.
+// Covers every scalar field that is unsigned or boolean, which is all of them
+// but two: a boolean reads as `0` or `1`, and a wire tag byte — `kv_role`,
+// `block_table_index_type`, `scale_type`, `member_role`, the quantization
+// scheme tag — reads as its documented value. The two exceptions are
+// [`hurray_descriptor_field_i64`] and [`hurray_descriptor_field_f64`].
 //
 // # Arguments
 //
 // - `handle` — Descriptor created by
 //   [`hurray_descriptor_decode`](crate::hurray_descriptor_decode).
-// - `field` — One of the `HURRAY_LAYOUT_FIELD_*` scalar constants.
-// - `level` — Tiled nesting level to read; MUST be `0` for every other layout.
+// - `field` — One of the `HURRAY_*_FIELD_*` unsigned scalar constants.
+// - `level` — Tiled nesting level to read; MUST be `0` for every other layout
+//   and for every section field.
 // - `out_value` — Non-null pointer; written only on [`HURRAY_OK`].
 //
 // # Errors
 //
 // - [`HURRAY_ERR_FIELD_NOT_APPLICABLE`] — `field` does not belong to this
-//   descriptor's layout, or is not a scalar field.
-// - [`HURRAY_ERR_FIELD_NOT_PRESENT`] — the field is optional and this
-//   descriptor does not carry it.
-// - [`HURRAY_ERR_INDEX_OUT_OF_BOUNDS`] — `level` exceeds the nesting depth, or
-//   is non-zero for a layout that does not nest.
+//   descriptor's layout or quantization scheme, or is not an unsigned scalar.
+// - [`HURRAY_ERR_FIELD_NOT_PRESENT`](crate::status::HURRAY_ERR_FIELD_NOT_PRESENT) — the field is optional and this
+//   descriptor does not carry it: an absent section, an unset optional field,
+//   or a statistic whose `computed_mask` guard bit is clear.
+// - [`HURRAY_ERR_INDEX_OUT_OF_BOUNDS`](crate::status::HURRAY_ERR_INDEX_OUT_OF_BOUNDS) — `level` exceeds the nesting depth, or
+//   is non-zero for a field that does not nest.
 //
 // # Safety
 //
 // `handle` and `out_value` MUST be valid, non-null pointers, and `handle` MUST
 // NOT have been destroyed.
 
-HurrayStatus hurray_descriptor_layout_field_u64(const struct HurrayDescriptor *handle,
-                                                HurrayLayoutField field,
-                                                uint32_t level,
-                                                uint64_t *out_value)
+HurrayStatus hurray_descriptor_field_u64(const struct HurrayDescriptor *handle,
+                                         HurrayDescriptorField field,
+                                         uint32_t level,
+                                         uint64_t *out_value)
 ;
 
-// Reads an unsigned array field of the descriptor's layout payload.
+// Reads an unsigned array field of the descriptor.
 //
 // Uses the capacity/length in-out pattern
 // [`hurray_descriptor_shape`](crate::descriptor::hurray_descriptor_shape) uses:
@@ -765,8 +977,8 @@ HurrayStatus hurray_descriptor_layout_field_u64(const struct HurrayDescriptor *h
 //
 // # Errors
 //
-// As [`hurray_descriptor_layout_field_u64`], plus
-// [`HURRAY_ERR_BUFFER_TOO_SMALL`] per the protocol above.
+// As [`hurray_descriptor_field_u64`], plus [`HURRAY_ERR_BUFFER_TOO_SMALL`] per
+// the protocol above.
 //
 // # Safety
 //
@@ -774,11 +986,11 @@ HurrayStatus hurray_descriptor_layout_field_u64(const struct HurrayDescriptor *h
 // - If `out_values` is non-null it MUST be writable for `capacity` × 8 bytes,
 //   where `capacity` is the value at `*out_len` on entry.
 
-HurrayStatus hurray_descriptor_layout_field_u64_array(const struct HurrayDescriptor *handle,
-                                                      HurrayLayoutField field,
-                                                      uint32_t level,
-                                                      uint64_t *out_values,
-                                                      uintptr_t *out_len)
+HurrayStatus hurray_descriptor_field_u64_array(const struct HurrayDescriptor *handle,
+                                               HurrayDescriptorField field,
+                                               uint32_t level,
+                                               uint64_t *out_values,
+                                               uintptr_t *out_len)
 ;
 
 // Reads the layout tag byte of the tensor descriptor.

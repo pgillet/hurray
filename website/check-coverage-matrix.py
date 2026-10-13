@@ -113,7 +113,13 @@ def probe_python() -> dict:
 
 
 def probe_c_header() -> set:
-    """Return the `hurray_*` functions the generated C header declares.
+    """Return the `hurray_*` functions and `HURRAY_*` constants the C header declares.
+
+    Constants count as exported surface because of ADR-040: a descriptor section is read
+    through accessors it shares with every other section, so the only header evidence
+    specific to one section is its `HURRAY_<SECTION>_FIELD_*` identifiers. Matching
+    functions alone would flip all five section rows the moment any one accessor
+    existed.
 
     Comments are stripped first: the header's doc comments cross-reference symbols by
     name, and a mention is not an export.
@@ -121,7 +127,9 @@ def probe_c_header() -> set:
     source = C_HEADER.read_text(encoding="utf-8")
     source = re.sub(r"/\*.*?\*/", " ", source, flags=re.DOTALL)
     source = re.sub(r"//[^\n]*", " ", source)
-    return set(re.findall(r"\b(hurray_[a-z0-9_]+)\s*\(", source))
+    functions = re.findall(r"\b(hurray_[a-z0-9_]+)\s*\(", source)
+    constants = re.findall(r"^\s*#define\s+(HURRAY_[A-Z0-9_]+)", source, flags=re.MULTILINE)
+    return set(functions) | set(constants)
 
 
 def python_attr_exists(module, path: str) -> bool:

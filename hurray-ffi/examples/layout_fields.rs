@@ -24,14 +24,13 @@ use hurray_core::{
 };
 use hurray_ffi::{
     descriptor::{hurray_descriptor_destroy, hurray_descriptor_layout_tag},
-    hurray_descriptor_decode,
-    layout_field::{
-        hurray_descriptor_layout_field_i64_array, hurray_descriptor_layout_field_u64,
-        hurray_descriptor_layout_field_u64_array, HurrayLayoutField, HURRAY_LAYOUT_FIELD_CSR_NNZ,
+    field::{
+        hurray_descriptor_field_i64_array, hurray_descriptor_field_u64,
+        hurray_descriptor_field_u64_array, HurrayDescriptorField, HURRAY_LAYOUT_FIELD_CSR_NNZ,
         HURRAY_LAYOUT_FIELD_STRIDED_STRIDES, HURRAY_LAYOUT_FIELD_TILED_DEPTH,
         HURRAY_LAYOUT_FIELD_TILED_TILE_SHAPE,
     },
-    HurrayDescriptor, HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_OK,
+    hurray_descriptor_decode, HurrayDescriptor, HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_OK,
 };
 
 /// Encodes a descriptor so this example has something to decode.
@@ -82,59 +81,51 @@ fn decode(bytes: &[u8]) -> *mut HurrayDescriptor {
 ///
 /// The two-step shape is not ceremony — the caller cannot know a field's length
 /// in advance, and the ABI never allocates on the caller's behalf.
-fn read_i64_array(handle: *mut HurrayDescriptor, field: HurrayLayoutField) -> Vec<i64> {
+fn read_i64_array(handle: *mut HurrayDescriptor, field: HurrayDescriptorField) -> Vec<i64> {
     let mut len: usize = 0;
 
     // Pass a null buffer with capacity 0 to learn the true length.
     // SAFETY: handle is live; out_values may be null in capacity-query mode.
     let status = unsafe {
-        hurray_descriptor_layout_field_i64_array(handle, field, 0, std::ptr::null_mut(), &mut len)
+        hurray_descriptor_field_i64_array(handle, field, 0, std::ptr::null_mut(), &mut len)
     };
     assert_eq!(status, HURRAY_ERR_BUFFER_TOO_SMALL);
 
     let mut values = vec![0i64; len];
     // SAFETY: values is writable for len elements, which is what *len says.
     let status = unsafe {
-        hurray_descriptor_layout_field_i64_array(handle, field, 0, values.as_mut_ptr(), &mut len)
+        hurray_descriptor_field_i64_array(handle, field, 0, values.as_mut_ptr(), &mut len)
     };
     assert_eq!(status, HURRAY_OK);
     values
 }
 
 /// The unsigned counterpart, with a `level` for nested tiled layouts.
-fn read_u64_array(handle: *mut HurrayDescriptor, field: HurrayLayoutField, level: u32) -> Vec<u64> {
+fn read_u64_array(
+    handle: *mut HurrayDescriptor,
+    field: HurrayDescriptorField,
+    level: u32,
+) -> Vec<u64> {
     let mut len: usize = 0;
     // SAFETY: handle is live; out_values may be null in capacity-query mode.
     let status = unsafe {
-        hurray_descriptor_layout_field_u64_array(
-            handle,
-            field,
-            level,
-            std::ptr::null_mut(),
-            &mut len,
-        )
+        hurray_descriptor_field_u64_array(handle, field, level, std::ptr::null_mut(), &mut len)
     };
     assert_eq!(status, HURRAY_ERR_BUFFER_TOO_SMALL);
 
     let mut values = vec![0u64; len];
     // SAFETY: values is writable for len elements.
     let status = unsafe {
-        hurray_descriptor_layout_field_u64_array(
-            handle,
-            field,
-            level,
-            values.as_mut_ptr(),
-            &mut len,
-        )
+        hurray_descriptor_field_u64_array(handle, field, level, values.as_mut_ptr(), &mut len)
     };
     assert_eq!(status, HURRAY_OK);
     values
 }
 
-fn scalar(handle: *mut HurrayDescriptor, field: HurrayLayoutField, level: u32) -> u64 {
+fn scalar(handle: *mut HurrayDescriptor, field: HurrayDescriptorField, level: u32) -> u64 {
     let mut value: u64 = 0;
     // SAFETY: handle is live and value is a writable local.
-    let status = unsafe { hurray_descriptor_layout_field_u64(handle, field, level, &mut value) };
+    let status = unsafe { hurray_descriptor_field_u64(handle, field, level, &mut value) };
     assert_eq!(status, HURRAY_OK, "field {field:#x} failed: {status}");
     value
 }
