@@ -259,6 +259,56 @@ which has no I/O to interrupt.
 Deciding this now rather than at step 5 is deliberate: it constrains the core's state
 transitions and its ownership model, which are built in step 1.
 
+#### 6a. What the atomic step costs in asyncio, and the shape it forces
+
+The atomicity requirement above is cheap in a blocking C driver and is the hardest thing
+in this ADR to honour in Python, because asyncio can deliver `CancelledError` at an
+`await` *after* the operation behind it has already moved bytes. Writing the three cases
+out is what makes the constraint visible:
+
+```python
+dst = core.need_input()            # a memoryview into the core's destination
+n = await transport.readinto(dst)  # cancellation point
+core.report_filled(n)              # synchronous, never blocks (§ 4)
+```
+
+1. Cancelled before any byte lands — nothing moved, position known, **resumable**.
+2. Cancelled after bytes landed in `dst` but before the count is reported — the bytes are
+   in the core's buffer and the core believes none arrived. Position unknown, and no
+   inspection can recover it, because `0x00` is valid tensor data. **Unusable.**
+3. The await returned and the report has not run yet — unreachable, *provided* the report
+   is a synchronous call with no await between it and the transfer. § 4's non-blocking
+   progress API is what guarantees that, so this case is closed by construction.
+
+Case 2 is reachable with exactly the primitive this design wants —
+`loop.sock_recv_into(sock, buf)` performs the `recv` in a loop callback and then resolves
+a future, and a cancellation that lands between those two events loses the count.
+
+**The apparent escape is a trap.** Using `asyncio.StreamReader.read(n)` avoids case 2
+entirely, because cancelled data stays in the StreamReader's own buffer and never reaches
+ours — but it hands back a `bytes` object that must then be copied into the core's
+destination. That is precisely the second, tensor-sized copy § 2 exists to forbid. A
+Python async driver cannot buy resumability with a copy; it would be trading the reason
+for the refactor against one of its requirements.
+
+**So the async driver MUST be readiness-driven, not transfer-await-driven.** The `await`
+covers *readiness only* (`loop.add_reader`/`add_writer`, or a protocol's
+`data_received`); the transfer and its byte-count report happen together inside one
+synchronous callback, where no cancellation can interleave. Then case 2 cannot arise and
+§ 6's resumable branch is the normal path rather than a theoretical one.
+
+**The write side is not symmetrical, and is worse.** A cancelled read with an unknown
+count damages only our own state. A cancelled write with an unknown count has already put
+an unknown number of payload bytes on the wire, and a stream cannot be un-sent: the
+reader at the far end will see a truncated item. So when the count is unknown on the write
+path, the core MUST become unusable *and* the sink MUST be treated as poisoned — a fresh
+writer over the same connection is not a recovery. `sock_sendall` is unusable here for
+that reason; the same readiness-driven shape is required.
+
+This is step 5's hardest requirement and step 1 has to leave room for it: the report API
+must be callable from inside an event-loop callback, which § 4 already requires by making
+it non-blocking.
+
 ### 7. Two drivers, because the format has two access patterns
 
 The sequential driver feeds bytes forward: stream read and write, and the file writer's
@@ -343,7 +393,10 @@ bound on a visible structure that a C caller can also walk.
 3. **The C surface**: handles, the transport vtable and its § 8 rules, stream read and
    write. ABI version bump, decided in its own pass.
 4. **Random-access driver and the file core**, then the C file surface.
-5. **Python async surface**, implementing the semantics § 6 already fixes.
+5. **Python async surface**, implementing the semantics § 6 already fixes — readiness-driven
+   per § 6a, with a test that cancels mid-tensor and asserts the reader resumes rather than
+   poisons, and one that cancels mid-write and asserts it poisons rather than silently
+   truncating.
 6. **Composites across both surfaces**, including the C sum-type answer. Full C composite
    support lands here; the core's composite handling was proven in step 1.
 
@@ -408,6 +461,11 @@ compatibility contract — blocked on a question nobody is answering.
 - The C surface still has no cancellation mid-call, and this ADR does not invent one.
   Arrow's has none either and UniFFI declines to support it where the host can. § 6 gives
   Python real cancellation semantics because Python can express them.
+- The atomicity rule in § 6 constrains the *shape* of the Python async driver, not just its
+  internals: it must be readiness-driven (§ 6a). A driver written the obvious way — `await`
+  a transport method that transfers into our buffer — is either unsound under cancellation
+  or buys soundness with the copy § 2 forbids. This is the single most likely place for
+  this design to be implemented wrongly and still look correct.
 
 ## Required Documentation Amendments
 
