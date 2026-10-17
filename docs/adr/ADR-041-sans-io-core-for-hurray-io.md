@@ -97,6 +97,30 @@ Four findings bear on the decision.
 So the C surface should be blocking. That much every comparable project agrees on, and it
 was never really in doubt. The open question is what sits behind it.
 
+### What the two paths already do, which is not symmetrical
+
+The read path **allocates**: `read_buffers` creates one `BytesMut` per buffer, resizes it,
+reads into it and freezes it. The write path **borrows**: `write_tensor(&desc, buffers:
+&[&[u8]])` validates each slice's length against its handle, writes the encoded
+descriptor, then `write_all`s each caller-owned slice in turn. It never assembles a
+contiguous output buffer, and it never copies a payload.
+
+Any core that serves both has to preserve both properties, and they are different
+properties. § 2 and § 3 state them separately for that reason.
+
+### An alignment gap that exists today
+
+`buffer-protocol.md` is normative twice over: the base address of every non-empty buffer
+MUST be at least 64-byte aligned, and *a reader MAY rely on the declared alignment for
+SIMD loads*. `BytesMut` allocates through `Vec<u8>`, so what both readers hand out carries
+the allocator's alignment for a 1-byte type — 8 or 16 in practice — while the descriptor
+beside it declares 64, or 4096 for a GPU/IPC writer.
+
+That is a live conformance bug, filed as
+[#235](https://github.com/pgillet/hurray/issues/235) and fixable without this refactor. It
+is recorded here because it is the reason § 5 states alignment as a tested guarantee
+rather than assuming the current behaviour is already correct.
+
 ## Decision
 
 ### 1. `hurray-io` splits into a sans-io core and an async shell
@@ -114,18 +138,125 @@ Half of it already exists. `TensorDescriptor::decode` is pure and lives in `hurr
 `stream/frame.rs` is 71 lines that read a 10-byte prefix, take `descriptor_length`, read
 that many bytes and hand them to the core. That is a state machine, written in `async`.
 
-### 2. Zero-copy is a precondition, not a consequence
+### 2. On the read path the core supplies the destination
 
 The core MUST hand the driver an **aligned, correctly sized destination to fill**, and
-MUST NOT accept bytes the driver already holds elsewhere. `rustls_connection_read_tls`
-is the model: the caller supplies a callback that writes *into* rustls's own buffer.
+MUST NOT accept payload bytes the driver has already placed somewhere else.
+`rustls_connection_read_tls` is the model: the caller supplies a callback that writes
+*into* rustls's own buffer.
 
-This is stated as a decision rather than an implementation note because the naive
-byte-fed core — caller buffer in, library buffer out — costs a copy per tensor, and
-"zero-copy first" is a project principle. A sans-io core that copies is a net loss and
-MUST NOT be merged. § 7 makes this the gate on the whole effort.
+**What this does and does not promise.** It promises **no payload copy after the transport
+writes into the destination** — the transport's write *is* the only copy, and for a socket
+that copy is unavoidable. It is not "end-to-end zero-copy", which only an mmap or a shared
+memory handle can give and which is a separate path, not this one. Keeping those two
+claims distinct matters, because the naive design this rules out — driver buffer in, core
+buffer out — adds a *second*, tensor-sized copy on every tensor, and that is what makes it
+unmergeable rather than merely suboptimal.
 
-### 3. Two drivers, because the format has two access patterns
+The destination is owned by the core for the lifetime of the item being read, and is
+handed to the caller only when that item completes (§ 6).
+
+### 3. On the write path the core stays borrowed and scatter/gather
+
+Symmetrically, and this is not the same requirement restated: the core MUST accept
+**borrowed, non-contiguous** payload slices and MUST NOT assemble them into one output
+buffer. It emits the encoded descriptor and then yields each caller-owned slice in turn
+for the driver to write, which is exactly what `write_tensor` does today with `write_all`
+per buffer.
+
+A core that concatenated would copy every payload on the way out, which is the same defect
+as § 2's in the other direction, and it would also lose the vectored-write opportunity the
+current shape leaves open.
+
+**Borrowed payloads need a stated lifetime, because an async binding cannot assume one.**
+A Python coroutine cannot hold arbitrary borrowed memory across a suspension point, so:
+
+- The caller MUST keep every payload slice valid until the core reports that item written.
+  The core MUST expose that point explicitly — a write is complete when the core says so,
+  not when the last `write` callback returns.
+- A binding that cannot make that promise for caller memory MUST pin it for the duration:
+  `hurray-python` holds a reference to the backing object (a NumPy array, a buffer handle)
+  from the moment a write begins until the core releases it, and the release is what drops
+  the reference.
+- The core MUST NOT retain a payload pointer after reporting the item written.
+
+### 4. The progress contract is explicit, and partial progress never loses position
+
+The core's driver-facing API is a step function. One request is outstanding at a time, and
+the driver answers it before the core produces another:
+
+```text
+NeedInput  { dst: &mut [u8] }   driver fills, then reports how many bytes
+NeedOutput { src: &[u8] }       driver writes, then reports how many bytes
+Item(…)                         one tensor or composite node is complete
+Finished                        clean end, at an item boundary
+Error(…)                        see § 6 for what survives it
+```
+
+The rules that make short and zero-length progress unambiguous:
+
+- A **short read is not EOF.** Reporting `0 < n < dst.len()` is normal: the core keeps its
+  position and re-offers the remainder. Only `n == 0` means the transport reached end of
+  input — and then end *at an item boundary* is `Finished`, while end *mid-item* is an
+  error. `stream/frame.rs` already draws exactly this line ("a 0-byte read before any
+  descriptor byte is a clean EOF"), and the core MUST preserve it.
+- A **short write is not completion, and a zero-length write is not success.** Reporting
+  `n < src.len()` re-offers the remainder. Reporting `n == 0` MUST NOT be treated as
+  progress; a driver whose sink is closed MUST say so through a distinct signal, which is
+  an error if an item is in flight.
+- **The progress API never blocks and never waits.** It does not know what a transport is.
+  A driver that cannot proceed without blocking returns to its own executor, and the core
+  holds position until the driver comes back. This is the property that lets one core serve
+  both a blocking C driver and a Python event loop (§ 8, § 9).
+- Byte counts are reported for every `NeedInput` and `NeedOutput`. Nothing is inferred from
+  a callback's return value alone.
+
+### 5. Alignment is a declared guarantee with a test that can fail
+
+The destination of § 2 MUST satisfy **the alignment the buffer handle declares** — not 64
+as a constant, and not whatever the allocator happens to return. The spec requires that
+declaration to be a power of two and at least 64 for a non-empty buffer, and permits a
+reader to rely on it for SIMD loads, so the declaration is the contract.
+
+This is stated as a decision because today's implementation does not keep it (#235), and
+because `BytesMut` is the obvious thing to reach for and is wrong. An empty buffer
+(`byte_size == 0`) stays legal at any declared power of two.
+
+**The test that proves it:** read tensors whose handles declare 64, 128 and 4096 and assert
+`ptr as usize % declared == 0` for every buffer handed out, across the multi-buffer and
+composite paths. It must fail if the allocation path ever regresses to a plain `Vec`-backed
+allocation. `hurray-python/src/numpy_allocator.rs` and `tests/test_aligned_allocator.py`
+are the in-repo precedent for both the technique and the test.
+
+### 6. Cancellation, resumability, and the unusable state
+
+Cancellation interrupts the driver's transport operation. It never interrupts the core,
+which has no I/O to interrupt.
+
+- **The core is resumable across cancellation if and only if the byte position is known.**
+  A driver MUST perform a transport operation and report its byte count as one
+  uninterruptible step; cancellation is observable only at a step boundary. Then a
+  cancelled `await` leaves the core exactly where the last report left it, and the next
+  call continues.
+- **Otherwise the core enters an explicit unusable state.** If bytes moved and could not be
+  reported, the core MUST be marked unusable by name — a state its API exposes and every
+  subsequent call reports — never left to diverge silently from the transport. "Probably
+  still fine" is not a state.
+- **A partially filled destination is never observable.** It belongs to the core until the
+  item completes, so a cancelled read cannot hand anyone a half-written or partially
+  initialised buffer.
+- **Caller memory outlives the operation that uses it.** A buffer the binding owns —
+  Python's included — MUST remain valid until every outstanding native operation has
+  released it. The core releases on item completion or on entering the unusable state, and
+  the binding drops its reference then, not before.
+- **In Python:** a cancelled `await reader.next_item()` leaves the reader usable and the
+  next `await` resumes the same tensor. A reader that became unusable raises a distinct,
+  named error on next use rather than an arbitrary one.
+
+Deciding this now rather than at step 5 is deliberate: it constrains the core's state
+transitions and its ownership model, which are built in step 1.
+
+### 7. Two drivers, because the format has two access patterns
 
 The sequential driver feeds bytes forward: stream read and write, and the file writer's
 single pass. The random-access driver answers **range requests** — the core asks for bytes
@@ -136,24 +267,41 @@ Whether that is one state machine with two drivers or two machines is left to §
 Questions; what is decided here is that a sequential byte feed alone does not serve
 `FileReader`, so the core's interface admits both.
 
-### 4. The C ABI is blocking, over a caller-supplied transport vtable
+### 8. The C ABI: a blocking surface over a transport vtable, with stated rules
 
 `HurrayReader` and `HurrayWriter` become real handles. Every call is synchronous and
-returns a `HurrayStatus`. Transport is a vtable of synchronous callbacks — read, write,
-seek, size — supplied by the caller at construction.
+returns a `HurrayStatus`. Transport is a vtable of callbacks — read, write, seek, size —
+supplied by the caller at construction.
 
-Not a path and not a file descriptor: `FileReader` must seek, file descriptors are
-already a portability wart of their own
+Not a path and not a file descriptor: `FileReader` must seek, file descriptors are already
+a portability wart of their own
 ([#215](https://github.com/pgillet/hurray/issues/215)), and a vtable composes with a
 socket, a pipe, a memory span, or a caller's own object. It is the structural choice Arrow
 makes when it hands a consumer four producer callbacks.
 
-**No Tokio reaches a C consumer.** With the core sans-io there is no runtime inside the
-handle, no `block_on`, no library-owned thread pool to document, no ambiguity about which
-thread a buffer release callback fires on — and release callbacks already cross this ABI —
-and the handle's thread-affinity rule is one sentence.
+**The vtable is blocking by contract — and that contract belongs to the driver, not the
+core.** A C callback that blocks until it has bytes is correct and expected here, precisely
+because § 4's progress API is independently non-blocking.
 
-### 5. `hurray-python` keeps its synchronous API and gains an asynchronous one
+The rules the vtable needs, all of which are ABI surface and none of which may be left to
+inference:
+
+- **Partial transfers are legal.** The read callback returns the number of bytes written
+  into the destination; fewer than requested is a short read, not an error, and not EOF.
+- **Zero is not success on the write side.** The read callback returning `0` means end of
+  input. The write callback returning `0` is *not* completion — a closed or failing sink is
+  reported through a distinct status, which is an error if an item is in flight.
+- **EOF, error and closed are three statuses**, never one.
+- **No reentrancy.** A callback MUST NOT call any Hurray function on the handle that
+  invoked it. The alternative is a reentrancy and thread-safety contract on every handle,
+  bought for a use case nobody has.
+- **The context pointer belongs to the caller.** Hurray never frees it. The vtable carries
+  an optional release callback for it, symmetric with the buffer release callbacks that
+  already cross this ABI (ADR-009).
+- **One handle, one thread at a time**, which the absence of an internal runtime makes a
+  one-sentence rule rather than a threading chapter.
+
+### 9. Python keeps its synchronous API and gains an asynchronous one
 
 The existing sync surface does not change; its `py.detach(|| block_on(…))` calls become
 `py.detach(|| /* drive the core */)`. Alongside it, an `async` surface driven by Python's
@@ -161,30 +309,46 @@ own event loop — `await reader.next_item()` — with no Rust runtime involved.
 UniFFI's "the foreign bindings supply the executor" without anything being generated, and
 it is the parity rule satisfied in the one direction it never has been.
 
-### 6. Composite traversal becomes an explicit stack
+**The async surface MUST NOT drive the blocking vtable of § 8.** Python's loop drives the
+core directly through § 4's progress API and performs its own awaits for transport. One
+core, two drivers, no blocking call inside a coroutine.
+
+### 10. Composite traversal becomes an explicit stack
 
 `StreamReader::read_item` currently recurses through nested composites via
-`Box::pin(self.read_item(depth + 1))`. A state machine cannot, so the nesting becomes an
-explicit stack. This is an improvement to be collected rather than a cost to be absorbed:
+`Box::pin(self.read_item(depth + 1))`, and `StreamWriter::write_composite_unchecked`
+recurses the same way. A state machine cannot, so the nesting becomes an explicit stack.
+
+This is an improvement to be collected rather than a cost to be absorbed:
 `max_composite_depth` is currently enforced against an implicit call depth, and becomes a
 bound on a visible structure that a C caller can also walk.
 
-### 7. Sequencing, and the condition that stops it
+### 11. Sequencing, and the condition that stops it
 
-1. **Sequential stream core.** The clearest shape and the smallest file. Prove the
-   fill-my-buffer contract of § 2 keeps reads zero-copy *here*, with a test that fails if
-   a copy appears.
-2. **Rust drivers over it**, with `hurray-io`'s public API and its full test suite
-   unchanged. If that suite needs edits beyond imports, the split is wrong.
-3. **The C surface**: handles, the transport vtable, stream read and write. ABI version
-   bump, decided in its own pass.
+1. **Sequential stream core**, proving the contracts that the rest depends on:
+   § 2's destination ownership, § 3's borrowed scatter/gather output, § 4's partial-progress
+   rules (short read, zero read at a boundary and mid-item, short write, zero write),
+   § 5's alignment test, and § 6's resumability — **including at least one nested-composite
+   case.** Composite state is where suspension gets interesting, and a core validated only
+   on single tensors can be elegant there and awkward the moment a composite must survive
+   being suspended mid-member.
+2. **Rust drivers over it.** Acceptance is behavioural, not textual: unchanged public
+   signatures, unchanged observable behaviour, byte-for-byte wire compatibility on a
+   corpus, and the existing integration tests passing. New or adapted test *harnesses* are
+   legitimate and expected; what is not legitimate is a changed signature or a changed
+   byte.
+3. **The C surface**: handles, the transport vtable and its § 8 rules, stream read and
+   write. ABI version bump, decided in its own pass.
 4. **Random-access driver and the file core**, then the C file surface.
-5. **Python async surface.**
-6. **Composites across both**, last, because it needs § 6 and the C sum-type answer.
+5. **Python async surface**, implementing the semantics § 6 already fixes.
+6. **Composites across both surfaces**, including the C sum-type answer. Full C composite
+   support lands here; the core's composite handling was proven in step 1.
 
-**Stop condition:** if step 1 cannot preserve zero-copy, the effort stops there. The
-fallback is then the C-only blocking façade in § Alternatives, which this ADR rejects on
-architecture rather than on feasibility, and which step 1 leaves untouched.
+**Stop condition:** stop if the contract in §§ 2–4 **cannot** be satisfied without an
+additional payload copy — a flaw in the abstraction, demonstrated by argument and not by a
+single disappointing benchmark. A first prototype that copies once and can be improved is
+not that. The fallback is then the C-only blocking façade in § Alternatives, which this ADR
+rejects on architecture rather than on feasibility, and which step 1 leaves untouched.
 
 ## Alternatives Considered
 
@@ -194,20 +358,25 @@ unchanged. This was the first recommendation for #233 and it works — it is wha
 consumers live with. Rejected because it builds a second copy of `hurray-python`'s wall
 instead of removing the first, leaves the nested-`block_on` constraint in place for every
 future binding, and puts a Tokio runtime inside a C consumer's binary to do work that
-needs no concurrency. Retained explicitly as the fallback under § 7's stop condition.
+needs no concurrency. Retained explicitly as the fallback under § 11's stop condition.
 
 **A completion queue (gRPC core's model).** Buys genuine concurrency, at the price of a C
 consumer that must donate threads and poll in a tight loop or see no progress at all. No
 consumer has asked for concurrency; several will want a single blocking call.
 
 **Futures across the C boundary (UniFFI's model).** Requires an executor on the far side,
-and C does not come with one. Note that this is precisely what § 5 does for *Python*,
+and C does not come with one. Note that this is precisely what § 9 does for *Python*,
 where an executor is a given — the model is right for one binding and wrong for the other,
 which is itself an argument for putting the split below both.
 
 **A library-owned background runtime with completion callbacks (zenoh-c's shape).** Puts
 a thread-safety contract on every handle and makes buffer-release-callback timing the
 hardest thing in the documentation to state correctly.
+
+**A `feed(bytes)` core that returns assembled buffers.** The conventional sans-io shape,
+and the reason §§ 2–3 are written as requirements. It copies each payload twice over the
+round trip — once into the driver's buffer, once into the core's — which for a format whose
+first principle is zero-copy converts the refactor from a gain into a regression.
 
 **Leave the C ABI without I/O.** The status quo, and defensible for exactly as long as
 nobody writes a non-Python binding. It also leaves #174 — and therefore the 1.0
@@ -221,25 +390,32 @@ compatibility contract — blocked on a question nobody is answering.
   pool to read a Hurray stream.
 - Surgery on shipped, tested code: 1,879 lines across `hurray-io/src/stream/` and
   `hurray-io/src/file/`, released in 0.1.0. The public API is intended to survive
-  unchanged, which § 7 step 2 turns into a check rather than a hope.
+  unchanged, which § 11 step 2 turns into a behavioural check.
+- The invariants in §§ 2–6 are binding on *both* possible core shapes, which is what makes
+  leaving the one-versus-two-machines question open safe rather than vague.
 - `hurray-io` grows an internal API with its own tests and documentation. This only breaks
   even if the Tokio layer genuinely shrinks to a driver; if both layers end up
   substantial, the result is net new surface, which `CLAUDE.md` calls slop. Reviewers
   should hold step 2 to that standard.
+- The risk this trades into: complexity moves out of Tokio and into a cross-language memory
+  and progress protocol. §§ 2–6 exist to make that protocol specified rather than emergent,
+  and they are the part of this ADR to review hardest.
 - A future WASM, Go, or Node binding inherits a core it can drive, rather than arriving
   with its own bridge question.
-- The C surface still has no cancellation, and this ADR does not invent one. Arrow's has
-  none either and UniFFI declines to support it where the host can.
+- The C surface still has no cancellation mid-call, and this ADR does not invent one.
+  Arrow's has none either and UniFFI declines to support it where the host can. § 6 gives
+  Python real cancellation semantics because Python can express them.
 
 ## Required Documentation Amendments
 
-- `docs/impl/c-ffi.md` — the reader and writer handles, the transport vtable, the
-  blocking contract, and the thread-affinity rule.
-- `docs/impl/rust-reference.md` — the core/driver split, and the fill-my-buffer contract
-  as a requirement on an implementation rather than an internal detail.
-- `docs/impl/python-bindings.md` — the async surface and its relationship to the sync one.
-- `docs/cookbook/` — a C consumer reading a stream through the vtable, and the Python
-  async counterpart on the same page, per the parity rule.
+- `docs/impl/c-ffi.md` — the reader and writer handles, the transport vtable and every § 8
+  rule, the blocking contract, and the thread-affinity rule.
+- `docs/impl/rust-reference.md` — the core/driver split, and §§ 2–6 as requirements on an
+  implementation rather than internal details.
+- `docs/impl/python-bindings.md` — the async surface, its relationship to the sync one, and
+  § 6's cancellation and buffer-lifetime semantics.
+- `docs/cookbook/` — a C consumer reading a stream through the vtable, and the Python async
+  counterpart on the same page, per the parity rule.
 - `website/coverage-matrix.toml` — the seven streaming and file rows' `c_symbols`, and the
   `level-2` row.
 - `docs/SUMMARY.md` — add this ADR.
@@ -248,17 +424,18 @@ compatibility contract — blocked on a question nobody is answering.
 
 - **One state machine or two.** Whether the sequential and random-access drivers front one
   core or two. Settled by step 1 and step 4, not before: the sequential core's shape is
-  what makes the answer obvious.
+  what makes the answer obvious. §§ 2–6 bind either way.
+- **Who allocates the aligned destination.** The core must supply it (§ 2) at the declared
+  alignment (§ 5), but whether a binding may *provide* the allocator — so that a Python
+  read lands directly in a NumPy array, which `numpy_allocator.rs` already does elsewhere —
+  is a step 1 question with consequences for step 5.
 - **The read result versus #174.** `next_tensor` yields a descriptor plus its buffers,
   exactly the pairing #174 folds into one `HurrayTensor`. Whichever lands first constrains
   the other; this ADR deliberately does not decide it, but it does remove the reason #174
   was postponed, so #174 should be re-examined when step 3 is scheduled.
 - **Composites as a C sum type.** `StreamItem` is a tensor or a composite head with
-  members, and the C surface has no way to express a sum type. § 6's explicit stack has to
+  members, and the C surface has no way to express a sum type. § 10's explicit stack has to
   produce something C can walk.
-- **Cancellation on the Python async path.** Unexpressible in C and therefore unanswered
-  there, but an `await` that cannot be cancelled is a surprise in Python. Needs a stated
-  answer in step 5.
 - **A late `finish` failure.** The file writer's footer index is written last, so a writer
   that fails after the data leaves a file with no index. What both surfaces promise about
   that state is unstated today and should not stay that way.
