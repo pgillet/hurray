@@ -2,7 +2,10 @@
 
 ## Status
 
-Proposed (2026-10-17)
+Draft (2026-10-17)
+
+> Direction approved on review; the invariants in §§ 2–6 were tightened in response to it.
+> Becomes Accepted when the first implementation pass lands (§ 11 step 1).
 
 Resolves the bridge question `HurrayReader` and `HurrayWriter` have carried as bare
 typedefs since C ABI 1, and which **ADR-034** deferred alongside "does streaming reuse
