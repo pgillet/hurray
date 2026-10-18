@@ -28,6 +28,10 @@ name = "stream_roundtrip"
 required-features = ["tokio"]
 
 [[example]]
+name = "file_roundtrip"
+required-features = ["tokio"]
+
+[[example]]
 name = "composite_stream"
 required-features = ["tokio"]
 

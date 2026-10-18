@@ -71,6 +71,30 @@ pub enum Error {
     #[error("tensor {0:?} is not a composite head")]
     NotAComposite(String),
 
+    // ── Sans-io core (ADR-041 §§ 4, 6) ────────────────────────────────────────
+    /// The core was marked unusable: a transport moved bytes whose count was lost, so the
+    /// core's position no longer matches the transport's.
+    #[error("stream core is unusable: {0}")]
+    CoreUnusable(crate::stream::Unusable),
+
+    /// A previous call returned an error and this core cannot continue. Distinct from
+    /// [`Error::CoreUnusable`]: the position is known, the stream is simply over.
+    #[error("stream core failed earlier and cannot continue")]
+    CoreFailed,
+
+    /// A driver reported more bytes than the core offered it.
+    #[error("invalid progress report: {reported} byte(s) reported, {offered} offered")]
+    InvalidProgressReport { reported: usize, offered: usize },
+
+    /// A driver reported a zero-length write, which is never progress.
+    #[error("zero-length write is not progress")]
+    ZeroLengthWrite,
+
+    /// The sink was closed while an item was in flight, so a truncated item is on the
+    /// wire. The core and the sink are both poisoned.
+    #[error("sink closed mid-item: the item on the wire is truncated")]
+    SinkClosed,
+
     // ── File format ───────────────────────────────────────────────────────────
     /// The file header magic is not `HRRYFILE`.
     #[error("invalid file magic: expected HRRYFILE")]

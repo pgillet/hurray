@@ -4,94 +4,14 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::aligned::AlignedBuf;
 use crate::stream::frame;
+// `pub use`, not `use`: 0.1.0 published these at `stream::reader::*` as well as at
+// `stream::*`, because this module is public and defined them. They belong to the core
+// now, and the published paths keep resolving. `hurray_io::stream::*` is canonical.
+pub use crate::stream::types::{
+    StreamComposite, StreamItem, StreamReaderOptions, StreamTensor, DEFAULT_MAX_COMPOSITE_DEPTH,
+    DEFAULT_MAX_DESCRIPTOR_BYTES,
+};
 use crate::{Error, Result};
-
-/// Default maximum descriptor size: 16 MiB.
-///
-/// Limits memory allocation when reading untrusted streams.
-pub const DEFAULT_MAX_DESCRIPTOR_BYTES: u64 = 16 * 1024 * 1024;
-
-/// Default maximum composite nesting depth.
-///
-/// A composite member may itself be a composite (ADR-027 § Binding). This bounds the
-/// recursion so a maliciously deep composite on an untrusted stream cannot exhaust the
-/// stack. Matches the format's rank cap of 64 in spirit.
-pub const DEFAULT_MAX_COMPOSITE_DEPTH: usize = 64;
-
-/// Options for [`StreamReader`].
-pub struct StreamReaderOptions {
-    /// Maximum byte length of a single descriptor. Default: 16 MiB.
-    pub max_descriptor_bytes: u64,
-    /// Maximum byte length of a single buffer. Default: [`u64::MAX`] (unbounded).
-    pub max_buffer_bytes: u64,
-    /// Reject buffers whose `sync_mode` is not [`SyncMode::ProducerSynced`].
-    ///
-    /// Enable when the stream crosses machine boundaries.
-    pub enforce_cross_machine_sync: bool,
-    /// Maximum composite nesting depth for [`next_item`][StreamReader::next_item].
-    /// Default: [`DEFAULT_MAX_COMPOSITE_DEPTH`].
-    pub max_composite_depth: usize,
-}
-
-impl Default for StreamReaderOptions {
-    fn default() -> Self {
-        Self {
-            max_descriptor_bytes: DEFAULT_MAX_DESCRIPTOR_BYTES,
-            max_buffer_bytes: u64::MAX,
-            enforce_cross_machine_sync: false,
-            max_composite_depth: DEFAULT_MAX_COMPOSITE_DEPTH,
-        }
-    }
-}
-
-/// A decoded tensor: its descriptor plus zero-copy buffer views.
-///
-/// Each element in `buffers` corresponds to the [`hurray_core::BufferHandle`]
-/// at the same index in `descriptor.buffers`.
-#[derive(Debug)]
-pub struct StreamTensor {
-    /// The decoded tensor descriptor.
-    pub descriptor: TensorDescriptor,
-    /// Raw buffer bytes, one [`Bytes`] per buffer handle.
-    pub buffers: Vec<Bytes>,
-}
-
-/// One decoded item from the stream: either a plain tensor or a composite.
-///
-/// Returned by [`next_item`][StreamReader::next_item]. A composite's members are
-/// themselves [`StreamItem`]s, so nested composites (ADR-027 § Binding) are represented
-/// as a tree.
-#[derive(Debug)]
-pub enum StreamItem {
-    /// A single (non-composite) tensor.
-    Tensor(StreamTensor),
-    /// A composite: a data-less head plus its ordered members.
-    Composite(StreamComposite),
-}
-
-impl StreamItem {
-    /// The item's governing descriptor: the tensor's descriptor, or the composite head.
-    pub fn descriptor(&self) -> &TensorDescriptor {
-        match self {
-            StreamItem::Tensor(t) => &t.descriptor,
-            StreamItem::Composite(c) => &c.head,
-        }
-    }
-}
-
-/// A decoded composite tensor: its data-less head plus its ordered members.
-///
-/// Membership and ordering are exactly as they appeared on the wire (head precedes its
-/// members; ADR-027 § Binding). The head, `member_count`, and per-rule constraints
-/// (partition coverage, overlay ordering) have already been validated via
-/// [`CompositeValidator`].
-#[derive(Debug)]
-pub struct StreamComposite {
-    /// The composite head descriptor (owns no data buffers).
-    pub head: TensorDescriptor,
-    /// The members, in wire order. Each may itself be a composite (nesting).
-    pub members: Vec<StreamItem>,
-}
 
 /// Reads tensors from an async source in the Hurray streaming wire format.
 ///

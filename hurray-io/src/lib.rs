@@ -19,7 +19,8 @@ mod aligned;
 #[cfg(feature = "tokio")]
 pub mod file;
 
-#[cfg(feature = "tokio")]
+// The stream module carries the sans-io core, which needs no runtime; only its drivers
+// are behind the `tokio` feature (ADR-041 § 1).
 pub mod stream;
 
 pub use error::{Error, Result};
