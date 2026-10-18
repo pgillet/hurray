@@ -128,7 +128,11 @@ mod tests {
         buf.as_mut_slice().fill(0xAB);
         let addr = buf.as_ref().as_ptr() as usize;
         let frozen = buf.freeze();
-        assert_eq!(frozen.as_ptr() as usize, addr, "freeze moved the allocation");
+        assert_eq!(
+            frozen.as_ptr() as usize,
+            addr,
+            "freeze moved the allocation"
+        );
         assert_eq!(frozen.len(), 256);
         assert!(frozen.iter().all(|&b| b == 0xAB));
     }

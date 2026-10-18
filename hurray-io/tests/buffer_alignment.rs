@@ -17,8 +17,8 @@ use std::io::Cursor;
 use hurray_core::{
     buffer_size_bytes,
     layout::{CompositeLayout, CompositionRule, CooLayout},
-    BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, ShardDescriptor,
-    SyncMode, TensorDescriptor,
+    BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, ShardDescriptor, SyncMode,
+    TensorDescriptor,
 };
 use hurray_io::file::{FileCompositeNode, FileItem, FileReader, FileWriter, FileWriterOptions};
 use hurray_io::stream::{CompositeNode, StreamItem, StreamReader, StreamWriter};
@@ -70,7 +70,10 @@ fn coo_two_buffers(values_alignment: u32, indices_alignment: u32) -> TensorDescr
         0,
         LayoutDescriptor::Coo(CooLayout::new(nnz, false)),
         vec![
-            buf(buffer_size_bytes(ElementType::Float32, nnz), values_alignment),
+            buf(
+                buffer_size_bytes(ElementType::Float32, nnz),
+                values_alignment,
+            ),
             buf(nnz * 2 * 8, indices_alignment),
         ],
         None,
@@ -185,7 +188,11 @@ async fn stream_multi_buffer_honours_per_buffer_alignment() {
     let mut reader = StreamReader::new(wire.as_slice());
     for i in 0..PER_STREAM {
         let tensor = reader.next_tensor().await.unwrap().expect("a tensor");
-        assert_all_aligned(&format!("stream coo[{i}]"), &tensor.descriptor, &tensor.buffers);
+        assert_all_aligned(
+            &format!("stream coo[{i}]"),
+            &tensor.descriptor,
+            &tensor.buffers,
+        );
         assert_eq!(tensor.buffers[0].as_ref(), &values[..]);
         assert_eq!(tensor.buffers[1].as_ref(), &indices[..]);
     }
