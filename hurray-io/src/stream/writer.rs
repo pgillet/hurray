@@ -1,38 +1,8 @@
 use hurray_core::{CompositeValidator, SyncMode, TensorDescriptor};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
+use crate::stream::types::CompositeNode;
 use crate::{Error, Result};
-
-/// A node to emit as part of a composite via [`StreamWriter::write_composite`]: either a
-/// plain tensor (its descriptor plus one byte-slice per buffer) or a nested composite (its
-/// head plus its own members). The recursive [`Composite`][CompositeNode::Composite] arm
-/// lets a member be a composite in its own right (ADR-027 § Binding).
-pub enum CompositeNode<'a> {
-    /// A single (non-composite) tensor: descriptor + one byte-slice per declared buffer.
-    Tensor {
-        /// The member's tensor descriptor.
-        descriptor: &'a TensorDescriptor,
-        /// One byte-slice per buffer handle in `descriptor.buffers`.
-        buffers: &'a [&'a [u8]],
-    },
-    /// A nested composite: a data-less head plus its ordered members.
-    Composite {
-        /// The nested composite's head descriptor.
-        head: &'a TensorDescriptor,
-        /// The nested composite's members, in order.
-        members: &'a [CompositeNode<'a>],
-    },
-}
-
-impl CompositeNode<'_> {
-    /// The node's governing descriptor: the tensor's descriptor, or the nested head.
-    fn descriptor(&self) -> &TensorDescriptor {
-        match self {
-            CompositeNode::Tensor { descriptor, .. } => descriptor,
-            CompositeNode::Composite { head, .. } => head,
-        }
-    }
-}
 
 /// Writes tensors to an async sink in the Hurray streaming wire format.
 ///
