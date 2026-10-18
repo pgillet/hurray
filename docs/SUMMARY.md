@@ -130,3 +130,4 @@
     - [ADR-038: Python API Reference on the Website](adr/ADR-038-python-api-reference-on-the-website.md)
     - [ADR-039: C ABI Structured Descriptor Fields](adr/ADR-039-c-abi-structured-descriptor-fields.md)
     - [ADR-040: C ABI Section Field Identifiers](adr/ADR-040-c-abi-section-field-identifiers.md)
+    - [ADR-041: Sans-io Core for hurray-io](adr/ADR-041-sans-io-core-for-hurray-io.md)
