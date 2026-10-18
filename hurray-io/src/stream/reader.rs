@@ -1,7 +1,8 @@
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use hurray_core::{CompositeValidator, LayoutDescriptor, SyncMode, TensorDescriptor};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+use crate::aligned::AlignedBuf;
 use crate::stream::frame;
 use crate::{Error, Result};
 
@@ -243,14 +244,20 @@ impl<R: AsyncRead + Unpin> StreamReader<R> {
                 });
             }
 
-            // One allocation per buffer; resize then freeze gives a Bytes with no extra copy.
-            let mut buf = BytesMut::with_capacity(byte_size as usize);
-            buf.resize(byte_size as usize, 0);
+            // Allocate at the *declared* alignment, not the allocator's default: the
+            // consumer is entitled to an aligned SIMD load against it (#235).
+            let mut dst = AlignedBuf::zeroed(byte_size, handle.alignment()).ok_or(
+                Error::UnallocatableBuffer {
+                    index: i,
+                    byte_size,
+                    alignment: handle.alignment(),
+                },
+            )?;
             self.inner
-                .read_exact(&mut buf)
+                .read_exact(dst.as_mut_slice())
                 .await
                 .map_err(frame::map_unexpected_eof)?;
-            buffers.push(buf.freeze());
+            buffers.push(dst.freeze());
         }
 
         Ok(buffers)

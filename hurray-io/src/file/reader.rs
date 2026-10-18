@@ -1,7 +1,8 @@
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use hurray_core::{CompositeValidator, LayoutDescriptor, TensorDescriptor};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncSeek, AsyncSeekExt, SeekFrom};
 
+use crate::aligned::AlignedBuf;
 use crate::file::types::{IndexEntry, KvValue};
 use crate::file::{
     file_flags, FILE_HEADER_SIZE, FILE_MAGIC, SUPPORTED_CONTAINER_VERSION_MAJOR, TRAILER_MAGIC,
@@ -270,15 +271,22 @@ impl<R: AsyncRead + AsyncSeek + Unpin> FileReader<R> {
         let mut buffers = Vec::with_capacity(n);
 
         for (i, handle) in desc.buffers.iter().enumerate() {
-            let byte_size = handle.byte_size() as usize;
-            let mut buf = BytesMut::with_capacity(byte_size);
-            buf.resize(byte_size, 0);
+            let byte_size = handle.byte_size();
+            // Allocate at the *declared* alignment, not the allocator's default: the
+            // consumer is entitled to an aligned SIMD load against it (#235).
+            let mut dst = AlignedBuf::zeroed(byte_size, handle.alignment()).ok_or(
+                Error::UnallocatableBuffer {
+                    index: i,
+                    byte_size,
+                    alignment: handle.alignment(),
+                },
+            )?;
             self.inner
-                .read_exact(&mut buf)
+                .read_exact(dst.as_mut_slice())
                 .await
                 .map_err(eof_to_unexpected)?;
-            current += byte_size as u64;
-            buffers.push(buf.freeze());
+            current += byte_size;
+            buffers.push(dst.freeze());
 
             // Between consecutive buffers, seek past the alignment padding.
             if i < n - 1 {
