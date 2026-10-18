@@ -45,6 +45,18 @@ pub enum Error {
     )]
     InvalidCrossMachineSyncMode { index: usize, actual: u8 },
 
+    /// A buffer handle's declared size and alignment do not form an allocatable layout on
+    /// this host (a `byte_size` beyond the address space, or a non-power-of-two alignment).
+    #[error(
+        "buffer[{index}]: {byte_size} bytes at alignment {alignment} is not an allocatable \
+         layout on this host"
+    )]
+    UnallocatableBuffer {
+        index: usize,
+        byte_size: u64,
+        alignment: u32,
+    },
+
     /// A composite head's members were truncated: the stream ended before the head's
     /// declared `member_count` members had been read.
     #[error("torn composite: head declares {declared} member(s), stream ended after {actual}")]
