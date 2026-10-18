@@ -4,7 +4,13 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 use crate::aligned::AlignedBuf;
 use crate::stream::frame;
-use crate::stream::types::{StreamComposite, StreamItem, StreamReaderOptions, StreamTensor};
+// `pub use`, not `use`: 0.1.0 published these at `stream::reader::*` as well as at
+// `stream::*`, because this module is public and defined them. They belong to the core
+// now, and the published paths keep resolving. `hurray_io::stream::*` is canonical.
+pub use crate::stream::types::{
+    StreamComposite, StreamItem, StreamReaderOptions, StreamTensor, DEFAULT_MAX_COMPOSITE_DEPTH,
+    DEFAULT_MAX_DESCRIPTOR_BYTES,
+};
 use crate::{Error, Result};
 
 /// Reads tensors from an async source in the Hurray streaming wire format.

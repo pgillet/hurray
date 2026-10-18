@@ -1,7 +1,8 @@
 use hurray_core::{CompositeValidator, SyncMode, TensorDescriptor};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
-use crate::stream::types::CompositeNode;
+// `pub use`: 0.1.0 published this at `stream::writer::CompositeNode` too (see reader.rs).
+pub use crate::stream::types::CompositeNode;
 use crate::{Error, Result};
 
 /// Writes tensors to an async sink in the Hurray streaming wire format.
