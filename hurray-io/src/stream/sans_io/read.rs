@@ -38,12 +38,12 @@ pub enum ReadStep {
 }
 
 /// The tensor currently being assembled.
-struct Pending {
+struct Pending<D> {
     descriptor: TensorDescriptor,
     /// Buffers already filled and frozen, in declaration order.
     buffers: Vec<bytes::Bytes>,
     /// The destination for the buffer being filled.
-    dest: Option<Box<dyn Destination>>,
+    dest: Option<D>,
 }
 
 /// Where the machine is. `Failed` and `Unusable` are distinct by design: a format error
@@ -132,9 +132,9 @@ enum State {
 /// assert_eq!(tensor.buffers[0].as_ptr() as usize % 64, 0);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub struct StreamReaderCore {
+pub struct StreamReaderCore<A: DestinationAlloc = SystemDestinations> {
     options: StreamReaderOptions,
-    destinations: Box<dyn DestinationAlloc>,
+    destinations: A,
     state: State,
     /// Descriptor bytes, prefix included, for the frame being read.
     staging: Vec<u8>,
@@ -143,7 +143,7 @@ pub struct StreamReaderCore {
     target: usize,
     /// Bytes of that target already filled.
     filled: usize,
-    pending: Option<Pending>,
+    pending: Option<Pending<A::Dest>>,
     tensor: Option<StreamTensor>,
 }
 
@@ -153,7 +153,8 @@ impl Default for StreamReaderCore {
     }
 }
 
-impl StreamReaderCore {
+// The default allocator's constructors: `StreamReaderCore` with no type argument.
+impl StreamReaderCore<SystemDestinations> {
     /// Creates a core with default options and the system allocator.
     ///
     /// # Examples
@@ -182,9 +183,11 @@ impl StreamReaderCore {
     /// assert!(!core.is_unusable());
     /// ```
     pub fn with_options(options: StreamReaderOptions) -> Self {
-        Self::with_destinations(options, Box::new(SystemDestinations))
+        Self::with_destinations(options, SystemDestinations)
     }
+}
 
+impl<A: DestinationAlloc> StreamReaderCore<A> {
     /// Creates a core whose read destinations come from `destinations`.
     ///
     /// This is the seam ADR-041 left open: a binding may supply the allocation, so a read
@@ -195,7 +198,7 @@ impl StreamReaderCore {
     ///
     /// ```
     /// use hurray_io::stream::{
-    ///     Destination, DestinationAlloc, DestinationRequest, StreamReaderCore,
+    ///     AlignedDestination, DestinationAlloc, DestinationRequest, StreamReaderCore,
     ///     StreamReaderOptions, SystemDestinations,
     /// };
     ///
@@ -205,10 +208,12 @@ impl StreamReaderCore {
     /// }
     ///
     /// impl DestinationAlloc for Counting {
+    ///     type Dest = AlignedDestination;
+    ///
     ///     fn allocate(
     ///         &mut self,
     ///         request: DestinationRequest,
-    ///     ) -> hurray_io::Result<Box<dyn Destination>> {
+    ///     ) -> hurray_io::Result<Self::Dest> {
     ///         self.seen.push((request.byte_size, request.alignment));
     ///         SystemDestinations.allocate(request)
     ///     }
@@ -216,14 +221,11 @@ impl StreamReaderCore {
     ///
     /// let core = StreamReaderCore::with_destinations(
     ///     StreamReaderOptions::default(),
-    ///     Box::new(Counting { seen: Vec::new() }),
+    ///     Counting { seen: Vec::new() },
     /// );
     /// assert!(!core.is_unusable());
     /// ```
-    pub fn with_destinations(
-        options: StreamReaderOptions,
-        destinations: Box<dyn DestinationAlloc>,
-    ) -> Self {
+    pub fn with_destinations(options: StreamReaderOptions, destinations: A) -> Self {
         Self {
             options,
             destinations,

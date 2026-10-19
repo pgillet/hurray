@@ -10,8 +10,8 @@ pub mod reader;
 pub mod writer;
 
 pub use sans_io::{
-    CompositeAssembler, Destination, DestinationAlloc, DestinationRequest, ReadStep,
-    StreamReaderCore, StreamWriterCore, SystemDestinations, Unusable, WriteOp, WriteStep,
+    AlignedDestination, CompositeAssembler, Destination, DestinationAlloc, DestinationRequest,
+    ReadStep, StreamReaderCore, StreamWriterCore, SystemDestinations, Unusable, WriteOp, WriteStep,
 };
 pub use types::{
     CompositeNode, StreamComposite, StreamItem, StreamReaderOptions, StreamTensor,

@@ -54,21 +54,24 @@ pub struct DestinationRequest {
 ///     fn as_mut_slice(&mut self) -> &mut [u8] {
 ///         &mut self.0
 ///     }
-///     fn freeze(self: Box<Self>) -> Bytes {
+///     fn freeze(self) -> Bytes {
 ///         Bytes::from(self.0)
 ///     }
 /// }
 ///
 /// let mut dest = VecDest(vec![0u8; 4]);
 /// dest.as_mut_slice().copy_from_slice(b"hurr");
-/// assert_eq!(Box::new(dest).freeze(), Bytes::from_static(b"hurr"));
+/// assert_eq!(dest.freeze(), Bytes::from_static(b"hurr"));
 /// ```
 pub trait Destination: Send {
     /// The bytes to fill, exactly `byte_size` long.
     fn as_mut_slice(&mut self) -> &mut [u8];
 
     /// Hands the filled memory out as [`Bytes`], without copying it.
-    fn freeze(self: Box<Self>) -> Bytes;
+    ///
+    /// Takes `self` by value rather than `Box<Self>`: the core names this type through
+    /// [`DestinationAlloc::Dest`], so a destination is never boxed and never erased.
+    fn freeze(self) -> Bytes;
 }
 
 /// Allocates the destinations a [`StreamReaderCore`][super::StreamReaderCore] fills.
@@ -76,7 +79,7 @@ pub trait Destination: Send {
 /// # Examples
 ///
 /// ```
-/// use hurray_io::stream::{DestinationAlloc, SystemDestinations, DestinationRequest};
+/// use hurray_io::stream::{Destination, DestinationAlloc, SystemDestinations, DestinationRequest};
 ///
 /// let mut alloc = SystemDestinations;
 /// let mut dest = alloc
@@ -85,6 +88,15 @@ pub trait Destination: Send {
 /// # Ok::<(), hurray_io::Error>(())
 /// ```
 pub trait DestinationAlloc: Send {
+    /// The memory this allocator hands out.
+    ///
+    /// An associated type rather than `Box<dyn Destination>`: the core is generic over the
+    /// allocator, so the destination's concrete type is known throughout. That costs one
+    /// type parameter and saves a heap allocation per buffer — and it keeps the core's
+    /// auto traits (`Sync`, `UnwindSafe`, `RefUnwindSafe`) intact, which a trait object
+    /// would erase from every type that contains a reader.
+    type Dest: Destination;
+
     /// Allocates one destination, zero-initialised, at the requested alignment.
     ///
     /// # Errors
@@ -92,7 +104,7 @@ pub trait DestinationAlloc: Send {
     /// [`Error::UnallocatableBuffer`] when the request cannot be satisfied — a `byte_size`
     /// beyond the address space, or an `alignment` this allocator cannot meet. A
     /// descriptor off the wire can ask for either, so this MUST NOT panic.
-    fn allocate(&mut self, request: DestinationRequest) -> Result<Box<dyn Destination>>;
+    fn allocate(&mut self, request: DestinationRequest) -> Result<Self::Dest>;
 }
 
 /// The default allocator: one host allocation per buffer at the declared alignment.
@@ -100,7 +112,7 @@ pub trait DestinationAlloc: Send {
 /// # Examples
 ///
 /// ```
-/// use hurray_io::stream::{DestinationAlloc, DestinationRequest, SystemDestinations};
+/// use hurray_io::stream::{Destination, DestinationAlloc, DestinationRequest, SystemDestinations};
 ///
 /// let mut dest = SystemDestinations
 ///     .allocate(DestinationRequest { index: 0, byte_size: 64, alignment: 64 })?;
@@ -112,7 +124,9 @@ pub trait DestinationAlloc: Send {
 pub struct SystemDestinations;
 
 impl DestinationAlloc for SystemDestinations {
-    fn allocate(&mut self, request: DestinationRequest) -> Result<Box<dyn Destination>> {
+    type Dest = AlignedDestination;
+
+    fn allocate(&mut self, request: DestinationRequest) -> Result<Self::Dest> {
         let buf = AlignedBuf::zeroed(request.byte_size, request.alignment).ok_or(
             Error::UnallocatableBuffer {
                 index: request.index,
@@ -120,16 +134,36 @@ impl DestinationAlloc for SystemDestinations {
                 alignment: request.alignment,
             },
         )?;
-        Ok(Box::new(buf))
+        Ok(AlignedDestination(buf))
     }
 }
 
-impl Destination for AlignedBuf {
+/// What [`SystemDestinations`] hands out: one host allocation at the declared alignment.
+///
+/// A named type because [`DestinationAlloc::Dest`] is part of the public API; the
+/// allocation itself stays an implementation detail.
+///
+/// # Examples
+///
+/// ```
+/// use hurray_io::stream::{Destination, DestinationAlloc, DestinationRequest, SystemDestinations};
+///
+/// let mut dest = SystemDestinations
+///     .allocate(DestinationRequest { index: 0, byte_size: 32, alignment: 128 })?;
+/// dest.as_mut_slice().fill(0xAB);
+/// let frozen = dest.freeze();
+/// assert_eq!(frozen.len(), 32);
+/// assert_eq!(frozen.as_ptr() as usize % 128, 0);
+/// # Ok::<(), hurray_io::Error>(())
+/// ```
+pub struct AlignedDestination(AlignedBuf);
+
+impl Destination for AlignedDestination {
     fn as_mut_slice(&mut self) -> &mut [u8] {
-        AlignedBuf::as_mut_slice(self)
+        self.0.as_mut_slice()
     }
 
-    fn freeze(self: Box<Self>) -> Bytes {
-        AlignedBuf::freeze(*self)
+    fn freeze(self) -> Bytes {
+        self.0.freeze()
     }
 }

@@ -26,7 +26,9 @@ mod read;
 mod write;
 
 pub use composite::CompositeAssembler;
-pub use dest::{Destination, DestinationAlloc, DestinationRequest, SystemDestinations};
+pub use dest::{
+    AlignedDestination, Destination, DestinationAlloc, DestinationRequest, SystemDestinations,
+};
 pub use read::{ReadStep, StreamReaderCore};
 pub use write::{StreamWriterCore, WriteOp, WriteStep};
 

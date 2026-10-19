@@ -11,8 +11,8 @@ use hurray_core::{
     TensorDescriptor, MIN_BUFFER_ALIGNMENT,
 };
 use hurray_io::stream::{
-    CompositeAssembler, CompositeNode, Destination, DestinationAlloc, DestinationRequest, ReadStep,
-    StreamItem, StreamReaderCore, StreamReaderOptions, StreamTensor, StreamWriterCore,
+    AlignedDestination, CompositeAssembler, CompositeNode, DestinationAlloc, DestinationRequest,
+    ReadStep, StreamItem, StreamReaderCore, StreamReaderOptions, StreamTensor, StreamWriterCore,
     SystemDestinations, Unusable, WriteStep, DEFAULT_MAX_COMPOSITE_DEPTH,
 };
 use hurray_io::Error;
@@ -155,8 +155,8 @@ fn write_composite(
 /// The core yields flat tensors; [`CompositeAssembler`] turns them back into items. The
 /// two are separate on purpose — reassembly needs no bytes — so a harness that wants
 /// structure composes them, exactly as the drivers do.
-fn read_all_with(
-    core: &mut StreamReaderCore,
+fn read_all_with<A: DestinationAlloc>(
+    core: &mut StreamReaderCore<A>,
     max_depth: usize,
     wire: &[u8],
     chunk: usize,
@@ -195,7 +195,7 @@ fn read_all(wire: &[u8], chunk: usize) -> Result<Vec<StreamItem>, Error> {
 }
 
 #[track_caller]
-fn take(core: &mut StreamReaderCore) -> StreamTensor {
+fn take<A: DestinationAlloc>(core: &mut StreamReaderCore<A>) -> StreamTensor {
     core.take_tensor().expect("the core announced a tensor")
 }
 
@@ -472,7 +472,9 @@ struct Recording {
 }
 
 impl DestinationAlloc for Recording {
-    fn allocate(&mut self, request: DestinationRequest) -> hurray_io::Result<Box<dyn Destination>> {
+    type Dest = AlignedDestination;
+
+    fn allocate(&mut self, request: DestinationRequest) -> hurray_io::Result<Self::Dest> {
         if let Ok(mut seen) = self.seen.lock() {
             seen.push(request);
         }
@@ -491,9 +493,9 @@ fn a_binding_may_supply_the_destinations() {
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let mut core = StreamReaderCore::with_destinations(
         StreamReaderOptions::default(),
-        Box::new(Recording {
+        Recording {
             seen: std::sync::Arc::clone(&seen),
-        }),
+        },
     );
     let items = read_all_with(&mut core, DEFAULT_MAX_COMPOSITE_DEPTH, &wire, usize::MAX).unwrap();
     assert_eq!(items.len(), 1);
