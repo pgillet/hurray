@@ -16,7 +16,7 @@ use hurray_core::{
     BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, SyncMode, TensorDescriptor,
     MIN_BUFFER_ALIGNMENT, PAGE_ALIGNMENT,
 };
-use hurray_io::stream::{ReadStep, StreamItem, StreamReaderCore, StreamWriterCore, WriteStep};
+use hurray_io::stream::{ReadStep, StreamReaderCore, StreamTensor, StreamWriterCore, WriteStep};
 use hurray_io::Result;
 
 /// Writes one tensor to any blocking sink. This is the entire write driver.
@@ -41,9 +41,9 @@ fn write_tensor<W: Write>(
     }
 }
 
-/// Reads every item from any blocking source. This is the entire read driver.
-fn read_items<R: Read>(source: &mut R, core: &mut StreamReaderCore) -> Result<Vec<StreamItem>> {
-    let mut items = Vec::new();
+/// Reads every tensor from any blocking source. This is the entire read driver.
+fn read_tensors<R: Read>(source: &mut R, core: &mut StreamReaderCore) -> Result<Vec<StreamTensor>> {
+    let mut tensors = Vec::new();
     loop {
         match core.step()? {
             ReadStep::Input { .. } => {
@@ -52,8 +52,8 @@ fn read_items<R: Read>(source: &mut R, core: &mut StreamReaderCore) -> Result<Ve
                 let n = source.read(core.input_dst())?;
                 core.report_filled(n)?;
             }
-            ReadStep::Item => items.extend(core.take_item()),
-            ReadStep::Finished => return Ok(items),
+            ReadStep::Tensor => tensors.extend(core.take_tensor()),
+            ReadStep::Finished => return Ok(tensors),
         }
     }
 }
@@ -95,13 +95,10 @@ fn main() -> Result<()> {
     println!("wrote {} bytes for 2 tensors", wire.len());
 
     let mut reader = StreamReaderCore::new();
-    let items = read_items(&mut wire.as_slice(), &mut reader)?;
-    println!("read {} item(s) back", items.len());
+    let tensors = read_tensors(&mut wire.as_slice(), &mut reader)?;
+    println!("read {} tensor(s) back", tensors.len());
 
-    for item in &items {
-        let StreamItem::Tensor(tensor) = item else {
-            continue;
-        };
+    for tensor in &tensors {
         let declared = tensor.descriptor.buffers[0].alignment();
         let address = tensor.buffers[0].as_ptr() as usize;
         println!(
@@ -118,6 +115,6 @@ fn main() -> Result<()> {
         );
     }
 
-    assert_eq!(items.len(), 2);
+    assert_eq!(tensors.len(), 2);
     Ok(())
 }

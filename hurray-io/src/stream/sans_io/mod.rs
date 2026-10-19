@@ -14,11 +14,18 @@
 //! Both are driven the same way: ask with `step`, transfer the bytes, report the count.
 //! Neither call blocks, which is what lets one core serve a blocking C driver and an
 //! event loop alike (§ 4).
+//!
+//! Composites are assembled a layer up, by [`CompositeAssembler`]. Rebuilding the tree
+//! needs no bytes — the tensors it works on are already decoded — so it is bookkeeping,
+//! not I/O, and keeping it out of the byte-level machine is what lets one core serve both
+//! the flat and the assembled view of the same stream.
 
+mod composite;
 mod dest;
 mod read;
 mod write;
 
+pub use composite::CompositeAssembler;
 pub use dest::{Destination, DestinationAlloc, DestinationRequest, SystemDestinations};
 pub use read::{ReadStep, StreamReaderCore};
 pub use write::{StreamWriterCore, WriteOp, WriteStep};

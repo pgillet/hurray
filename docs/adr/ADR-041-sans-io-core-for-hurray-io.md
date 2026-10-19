@@ -2,10 +2,18 @@
 
 ## Status
 
-Draft (2026-10-17)
+Accepted (2026-10-19)
 
 > Direction approved on review; the invariants in §§ 2–6 were tightened in response to it.
-> Becomes Accepted when the first implementation pass lands (§ 11 step 1).
+> Accepted once the first implementation pass landed ([#237](https://github.com/pgillet/hurray/pull/237)),
+> which answered the destination-allocator question and settled on two state machines
+> rather than one. Step 2 followed in
+> [#239](https://github.com/pgillet/hurray/pull/239), closing issue
+> [#238](https://github.com/pgillet/hurray/issues/238): the Tokio readers and writers became
+> drivers over the core, and composite reassembly moved out of the read core into a
+> synchronous `CompositeAssembler` — reassembly consumes no bytes, so it is not the byte
+> machine's work, and keeping them apart is what lets one core serve both the flat and the
+> assembled view of a stream. Steps 3–6 remain.
 
 Resolves the bridge question `HurrayReader` and `HurrayWriter` have carried as bare
 typedefs since C ABI 1, and which **ADR-034** deferred alongside "does streaming reuse

@@ -11,9 +11,9 @@ use hurray_core::{
     TensorDescriptor, MIN_BUFFER_ALIGNMENT,
 };
 use hurray_io::stream::{
-    CompositeNode, Destination, DestinationAlloc, DestinationRequest, ReadStep, StreamItem,
-    StreamReaderCore, StreamReaderOptions, StreamWriterCore, SystemDestinations, Unusable,
-    WriteStep,
+    CompositeAssembler, CompositeNode, Destination, DestinationAlloc, DestinationRequest, ReadStep,
+    StreamItem, StreamReaderCore, StreamReaderOptions, StreamTensor, StreamWriterCore,
+    SystemDestinations, Unusable, WriteStep, DEFAULT_MAX_COMPOSITE_DEPTH,
 };
 use hurray_io::Error;
 
@@ -151,11 +151,17 @@ fn write_composite(
 }
 
 /// Reads every item from `wire`, handing the core at most `chunk` bytes per request.
+///
+/// The core yields flat tensors; [`CompositeAssembler`] turns them back into items. The
+/// two are separate on purpose — reassembly needs no bytes — so a harness that wants
+/// structure composes them, exactly as the drivers do.
 fn read_all_with(
     core: &mut StreamReaderCore,
+    max_depth: usize,
     wire: &[u8],
     chunk: usize,
 ) -> Result<Vec<StreamItem>, Error> {
+    let mut assembler = CompositeAssembler::new(max_depth);
     let mut rest = wire;
     let mut items = Vec::new();
     loop {
@@ -166,14 +172,31 @@ fn read_all_with(
                 rest = &rest[n..];
                 core.report_filled(n)?;
             }
-            ReadStep::Item => items.extend(core.take_item()),
-            ReadStep::Finished => return Ok(items),
+            ReadStep::Tensor => {
+                if let Some(item) = assembler.push(take(core))? {
+                    items.push(item);
+                }
+            }
+            ReadStep::Finished => {
+                assembler.finish()?;
+                return Ok(items);
+            }
         }
     }
 }
 
 fn read_all(wire: &[u8], chunk: usize) -> Result<Vec<StreamItem>, Error> {
-    read_all_with(&mut StreamReaderCore::new(), wire, chunk)
+    read_all_with(
+        &mut StreamReaderCore::new(),
+        DEFAULT_MAX_COMPOSITE_DEPTH,
+        wire,
+        chunk,
+    )
+}
+
+#[track_caller]
+fn take(core: &mut StreamReaderCore) -> StreamTensor {
+    core.take_tensor().expect("the core announced a tensor")
 }
 
 #[track_caller]
@@ -239,7 +262,7 @@ fn an_error_leaves_the_core_failed_by_name() {
     let wire = write_tensor(&descriptor, &buffers, usize::MAX).unwrap();
 
     let mut core = StreamReaderCore::new();
-    assert!(read_all_with(&mut core, &wire[..20], 8).is_err());
+    assert!(read_all_with(&mut core, DEFAULT_MAX_COMPOSITE_DEPTH, &wire[..20], 8).is_err());
     // Not CoreUnusable: the position was known, the stream was simply truncated.
     assert!(!core.is_unusable());
     assert!(matches!(core.step(), Err(Error::CoreFailed)));
@@ -352,7 +375,7 @@ fn payload_bytes_are_never_copied_after_the_transport_writes_them() {
     let mut core = StreamReaderCore::new();
     let mut rest = &wire[..];
     let mut payload_dst: Option<usize> = None;
-    let mut item = None;
+    let mut tensor = None;
     loop {
         match core.step().unwrap() {
             ReadStep::Input { len } => {
@@ -366,12 +389,12 @@ fn payload_bytes_are_never_copied_after_the_transport_writes_them() {
                 rest = &rest[n..];
                 core.report_filled(n).unwrap();
             }
-            ReadStep::Item => item = core.take_item(),
+            ReadStep::Tensor => tensor = core.take_tensor(),
             ReadStep::Finished => break,
         }
     }
 
-    let (_, read) = expect_tensor(item.as_ref().unwrap());
+    let read = tensor.expect("one tensor").buffers;
     assert_eq!(
         read[0].as_ptr() as usize,
         payload_dst.expect("the core offered a 256-byte destination"),
@@ -401,8 +424,8 @@ fn a_partially_filled_destination_is_never_observable() {
         }
     }
     assert!(
-        core.take_item().is_none(),
-        "no item is observable until it is complete"
+        core.take_tensor().is_none(),
+        "no tensor is observable until it is complete"
     );
 }
 
@@ -472,7 +495,7 @@ fn a_binding_may_supply_the_destinations() {
             seen: std::sync::Arc::clone(&seen),
         }),
     );
-    let items = read_all_with(&mut core, &wire, usize::MAX).unwrap();
+    let items = read_all_with(&mut core, DEFAULT_MAX_COMPOSITE_DEPTH, &wire, usize::MAX).unwrap();
     assert_eq!(items.len(), 1);
 
     // The core asked for exactly what the buffer table declares — which is what makes a
@@ -521,7 +544,7 @@ fn the_core_resumes_where_a_stopped_driver_left_it() {
         }
     }
 
-    let items = read_all_with(&mut core, &wire[cut..], 9).unwrap();
+    let items = read_all_with(&mut core, DEFAULT_MAX_COMPOSITE_DEPTH, &wire[cut..], 9).unwrap();
     assert_eq!(items.len(), 1);
     let (_, read) = expect_tensor(&items[0]);
     assert_eq!(read[0].as_ref(), &payload[..]);
@@ -567,6 +590,7 @@ fn a_nested_composite_survives_being_suspended_mid_member() {
     let wire = write_composite(&outer_head, &outer_members, 1).unwrap();
 
     let mut core = StreamReaderCore::new();
+    let mut assembler = CompositeAssembler::new(DEFAULT_MAX_COMPOSITE_DEPTH);
     let mut rest = &wire[..];
     let mut depths = Vec::new();
     let mut items = Vec::new();
@@ -577,10 +601,17 @@ fn a_nested_composite_survives_being_suspended_mid_member() {
                 core.input_dst()[..n].copy_from_slice(&rest[..n]);
                 rest = &rest[n..];
                 core.report_filled(n).unwrap();
-                depths.push(core.composite_depth());
+                depths.push(assembler.depth());
             }
-            ReadStep::Item => items.extend(core.take_item()),
-            ReadStep::Finished => break,
+            ReadStep::Tensor => {
+                if let Some(item) = assembler.push(take(&mut core)).unwrap() {
+                    items.push(item);
+                }
+            }
+            ReadStep::Finished => {
+                assembler.finish().unwrap();
+                break;
+            }
         }
     }
 
@@ -680,7 +711,8 @@ fn a_cross_machine_reader_rejects_a_device_synced_buffer() {
         enforce_cross_machine_sync: true,
         ..Default::default()
     });
-    let err = read_all_with(&mut core, &wire, usize::MAX).expect_err("must be rejected");
+    let err = read_all_with(&mut core, DEFAULT_MAX_COMPOSITE_DEPTH, &wire, usize::MAX)
+        .expect_err("must be rejected");
     assert!(
         matches!(err, Error::InvalidCrossMachineSyncMode { index: 0, .. }),
         "got {err:?}"
@@ -718,7 +750,12 @@ fn the_configured_limits_are_enforced() {
         ..Default::default()
     });
     assert!(matches!(
-        read_all_with(&mut tight_buffers, &wire, usize::MAX),
+        read_all_with(
+            &mut tight_buffers,
+            DEFAULT_MAX_COMPOSITE_DEPTH,
+            &wire,
+            usize::MAX
+        ),
         Err(Error::FrameTooLarge { kind: "buffer", .. })
     ));
 
@@ -727,7 +764,12 @@ fn the_configured_limits_are_enforced() {
         ..Default::default()
     });
     assert!(matches!(
-        read_all_with(&mut tight_descriptors, &wire, usize::MAX),
+        read_all_with(
+            &mut tight_descriptors,
+            DEFAULT_MAX_COMPOSITE_DEPTH,
+            &wire,
+            usize::MAX
+        ),
         Err(Error::FrameTooLarge {
             kind: "descriptor",
             ..
@@ -754,53 +796,23 @@ fn composite_nesting_is_bounded() {
 
     // Depth 1 admits the outer head and rejects the nested one: the same bound the
     // recursive reader enforced against its call depth (§ 10).
-    let mut core = StreamReaderCore::with_options(StreamReaderOptions {
-        max_composite_depth: 1,
-        ..Default::default()
-    });
+    let mut core = StreamReaderCore::new();
     assert!(matches!(
-        read_all_with(&mut core, &wire, usize::MAX),
+        read_all_with(&mut core, 1, &wire, usize::MAX),
         Err(Error::CompositeNestingTooDeep { limit: 1 })
     ));
 
-    let mut deeper = StreamReaderCore::with_options(StreamReaderOptions {
-        max_composite_depth: 2,
-        ..Default::default()
-    });
+    let mut deeper = StreamReaderCore::new();
     assert_eq!(
-        read_all_with(&mut deeper, &wire, usize::MAX).unwrap().len(),
+        read_all_with(&mut deeper, 2, &wire, usize::MAX)
+            .unwrap()
+            .len(),
         1
     );
 }
 
 // ── the core agrees with the shipped driver, byte for byte ────────────────────
-
-#[cfg(feature = "tokio")]
-#[tokio::test]
-async fn the_core_and_the_tokio_driver_agree() {
-    use hurray_io::stream::{StreamReader, StreamWriter};
-
-    let descriptor = coo(128, 4096);
-    let values = vec![0x0Fu8; 32];
-    let indices = vec![0xF0u8; 128];
-    let buffers: [&[u8]; 2] = [&values, &indices];
-
-    // Same bytes out.
-    let mut driver_wire = Vec::<u8>::new();
-    let mut writer = StreamWriter::new(&mut driver_wire);
-    writer.write_tensor(&descriptor, &buffers).await.unwrap();
-    writer.finish().await.unwrap();
-    let core_wire = write_tensor(&descriptor, &buffers, 11).unwrap();
-    assert_eq!(
-        core_wire, driver_wire,
-        "core and driver disagree on the wire"
-    );
-
-    // Same tensor in.
-    let mut reader = StreamReader::new(driver_wire.as_slice());
-    let driver_tensor = reader.next_tensor().await.unwrap().unwrap();
-    let items = read_all(&core_wire, 11).unwrap();
-    let (core_desc, core_buffers) = expect_tensor(&items[0]);
-    assert_eq!(core_desc, &driver_tensor.descriptor);
-    assert_eq!(core_buffers, &driver_tensor.buffers[..]);
-}
+//
+// There is nothing left to assert here: the tokio drivers *are* this core now, so a
+// comparison between them would pass by construction. The wire-compatibility check moved
+// to `wire_compat.rs`, against bytes frozen before the refactor.
