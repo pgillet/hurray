@@ -1,6 +1,7 @@
-use hurray_core::{CompositeValidator, SyncMode, TensorDescriptor};
+use hurray_core::TensorDescriptor;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
+use crate::stream::sans_io::{StreamWriterCore, WriteOp, WriteStep};
 // `pub use`: 0.1.0 published this at `stream::writer::CompositeNode` too (see reader.rs).
 pub use crate::stream::types::CompositeNode;
 use crate::{Error, Result};
@@ -10,6 +11,10 @@ use crate::{Error, Result};
 /// The wire format is bare concatenation: each tensor is represented as its
 /// encoded [`TensorDescriptor`] immediately followed by each buffer's raw bytes.
 /// No outer framing, no alignment padding between tensors.
+///
+/// This is a driver, not an encoder: [`StreamWriterCore`] holds the wire format and emits
+/// the bytes, and this type only hands them to the sink (ADR-041 § 7). Payloads are never
+/// assembled or copied on the way — each slice goes to the sink as it is (§ 3).
 ///
 /// # Examples
 ///
@@ -44,27 +49,27 @@ use crate::{Error, Result};
 /// ```
 pub struct StreamWriter<W> {
     inner: W,
-    enforce_cross_machine_sync: bool,
+    core: StreamWriterCore,
 }
 
 impl<W: AsyncWrite + Unpin> StreamWriter<W> {
-    /// Creates a writer that accepts any valid [`SyncMode`].
+    /// Creates a writer that accepts any valid [`SyncMode`][hurray_core::SyncMode].
     pub fn new(inner: W) -> Self {
         Self {
             inner,
-            enforce_cross_machine_sync: false,
+            core: StreamWriterCore::new(),
         }
     }
 
     /// Creates a writer that rejects buffers whose `sync_mode` is not
-    /// [`SyncMode::ProducerSynced`].
+    /// [`ProducerSynced`][hurray_core::SyncMode::ProducerSynced].
     ///
     /// Use this when the stream crosses machine boundaries where GPU and
     /// semaphore-based sync primitives are not transferable.
     pub fn cross_machine(inner: W) -> Self {
         Self {
             inner,
-            enforce_cross_machine_sync: true,
+            core: StreamWriterCore::cross_machine(),
         }
     }
 
@@ -76,53 +81,25 @@ impl<W: AsyncWrite + Unpin> StreamWriter<W> {
     /// - [`Error::BufferSizeMismatch`] — a buffer's byte length ≠ its handle's `byte_size`
     /// - [`Error::InvalidCrossMachineSyncMode`] — cross-machine mode and a buffer has a
     ///   non-`ProducerSynced` sync mode
+    /// - [`Error::SinkClosed`] — the sink accepted zero bytes mid-item
+    /// - [`Error::CoreUnusable`] — an earlier write left this writer's sink poisoned
     /// - [`Error::Core`] — descriptor encoding failed
     /// - [`Error::Io`] — underlying write error
     pub async fn write_tensor(&mut self, desc: &TensorDescriptor, buffers: &[&[u8]]) -> Result<()> {
-        if buffers.len() != desc.buffers.len() {
-            return Err(Error::MultiBufferLengthMismatch {
-                declared: desc.buffers.len(),
-                actual: buffers.len(),
-            });
-        }
-
-        for (i, (handle, buf)) in desc.buffers.iter().zip(buffers).enumerate() {
-            let declared = handle.byte_size();
-            let actual = buf.len() as u64;
-            if declared != actual {
-                return Err(Error::BufferSizeMismatch {
-                    index: i,
-                    declared,
-                    actual,
-                });
-            }
-            if self.enforce_cross_machine_sync && handle.sync_mode() != SyncMode::ProducerSynced {
-                return Err(Error::InvalidCrossMachineSyncMode {
-                    index: i,
-                    actual: handle.sync_mode().to_byte(),
-                });
-            }
-        }
-
-        let encoded = desc.encode()?;
-        self.inner.write_all(&encoded).await?;
-
-        for buf in buffers {
-            self.inner.write_all(buf).await?;
-        }
-
-        Ok(())
+        let mut op = self.core.tensor(desc, buffers)?;
+        drain(&mut op, &mut self.inner).await
     }
 
     /// Encodes and writes a composite tensor: its head followed by every member's
     /// descriptor and data, in order (ADR-027 § Binding).
     ///
     /// The group is validated *before* any byte is written — reusing
-    /// [`CompositeValidator`] to check `member_count` and the per-rule constraints
-    /// (partition exact-cover / non-overlap, overlay base-first ordering) — so a torn or
-    /// invalid composite never reaches the wire. Members that are themselves composites are
-    /// written recursively (head precedes its members at every level), preserving the
-    /// forward, self-delimiting, back-reference-free wire contract.
+    /// [`CompositeValidator`][hurray_core::CompositeValidator] to check `member_count` and
+    /// the per-rule constraints (partition exact-cover / non-overlap, overlay base-first
+    /// ordering) — so a torn or invalid composite never reaches the wire. Members that are
+    /// themselves composites are written as part of the same operation (head precedes its
+    /// members at every level), preserving the forward, self-delimiting,
+    /// back-reference-free wire contract.
     ///
     /// # Examples
     ///
@@ -155,49 +132,16 @@ impl<W: AsyncWrite + Unpin> StreamWriter<W> {
     ///
     /// - [`Error::Core`] — the head is not a valid composite head, or validation failed
     ///   (member-count mismatch, partition coverage, overlay ordering)
-    /// - the same buffer/sync errors as [`write_tensor`][StreamWriter::write_tensor] for
-    ///   each member
+    /// - the same buffer/sync/sink errors as [`write_tensor`][StreamWriter::write_tensor]
+    ///   for each member
     /// - [`Error::Io`] — underlying write error
     pub async fn write_composite(
         &mut self,
         head: &TensorDescriptor,
         members: &[CompositeNode<'_>],
     ) -> Result<()> {
-        // Validate every level up front, so a torn/invalid composite — at any nesting
-        // depth — never reaches the wire.
-        validate_composite_node(head, members)?;
-        self.write_composite_unchecked(head, members).await
-    }
-
-    /// Writes an already-validated composite (head, then each member recursively).
-    async fn write_composite_unchecked(
-        &mut self,
-        head: &TensorDescriptor,
-        members: &[CompositeNode<'_>],
-    ) -> Result<()> {
-        // The head owns no data buffers (composite-head invariant).
-        self.write_tensor(head, &[]).await?;
-
-        for member in members {
-            match member {
-                CompositeNode::Tensor {
-                    descriptor,
-                    buffers,
-                } => {
-                    self.write_tensor(descriptor, buffers).await?;
-                }
-                CompositeNode::Composite {
-                    head: nested_head,
-                    members: nested_members,
-                } => {
-                    // Already validated by write_composite's up-front pass; box the
-                    // recursive call since an async fn cannot name its own future.
-                    Box::pin(self.write_composite_unchecked(nested_head, nested_members)).await?;
-                }
-            }
-        }
-
-        Ok(())
+        let mut op = self.core.composite(head, members)?;
+        drain(&mut op, &mut self.inner).await
     }
 
     /// Flushes the underlying sink and returns it.
@@ -207,26 +151,33 @@ impl<W: AsyncWrite + Unpin> StreamWriter<W> {
     }
 }
 
-/// Recursively validates a composite node and all nested composites, writing nothing.
+/// Writes every byte of one submitted item to `sink`.
 ///
-/// Reuses [`CompositeValidator`] at each level (member count + partition coverage / overlay
-/// ordering). Pure and synchronous, so [`StreamWriter::write_composite`] can validate the
-/// entire tree before emitting a single byte.
-fn validate_composite_node(head: &TensorDescriptor, members: &[CompositeNode<'_>]) -> Result<()> {
-    let mut validator = CompositeValidator::new(head)?;
-    for member in members {
-        validator.push_member(member.descriptor())?;
-    }
-    validator.finish()?;
+/// A free function rather than a method: the operation holds a mutable borrow of the
+/// writer's core for as long as it lives, so only disjoint *field* borrows let the sink be
+/// used at the same time.
+async fn drain<W: AsyncWrite + Unpin>(op: &mut WriteOp<'_>, sink: &mut W) -> Result<()> {
+    while let WriteStep::Output { .. } = op.step()? {
+        let n = {
+            let src = op.output_src();
+            loop {
+                match sink.write(src).await {
+                    Ok(n) => break n,
+                    // `write_all`, which this replaces, absorbed this internally.
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                    // A write that errors put no bytes on the wire, so the count is known
+                    // to be zero and neither core nor sink is poisoned (§ 6).
+                    Err(e) => return Err(Error::Io(e)),
+                }
+            }
+        };
 
-    for member in members {
-        if let CompositeNode::Composite {
-            head: nested_head,
-            members: nested_members,
-        } = member
-        {
-            validate_composite_node(nested_head, nested_members)?;
+        if n == 0 {
+            // § 4: a zero-length write is never progress. A closed sink is its own signal,
+            // not an I/O error to retry.
+            return Err(op.report_sink_closed());
         }
+        op.report_written(n)?;
     }
     Ok(())
 }

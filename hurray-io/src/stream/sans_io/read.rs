@@ -1,13 +1,16 @@
 //! The sequential read half of the sans-io stream core.
 //!
 //! One state machine, driven one step at a time: it asks for bytes, is told how many
-//! arrived, and produces items. It never reads, never waits, and holds no transport.
+//! arrived, and produces tensors. It never reads, never waits, and holds no transport.
+//!
+//! Tensors, not items: a composite head leaves here as the buffer-less tensor it is on the
+//! wire, and [`CompositeAssembler`][super::CompositeAssembler] puts the tree back together.
 
-use hurray_core::{BufferHandle, CompositeValidator, LayoutDescriptor, SyncMode, TensorDescriptor};
+use hurray_core::{BufferHandle, SyncMode, TensorDescriptor};
 
 use super::dest::{Destination, DestinationAlloc, DestinationRequest, SystemDestinations};
 use super::Unusable;
-use crate::stream::types::{StreamComposite, StreamItem, StreamReaderOptions, StreamTensor};
+use crate::stream::types::{StreamReaderOptions, StreamTensor};
 use crate::{Error, Result};
 
 /// magic(4) + version(1) + flags(1) + descriptor_length(4)
@@ -17,7 +20,7 @@ const PREFIX_LEN: usize = 10;
 ///
 /// Exactly one request is outstanding at a time, and the driver answers it — with
 /// [`report_filled`][StreamReaderCore::report_filled] or
-/// [`take_item`][StreamReaderCore::take_item] — before the core produces another
+/// [`take_tensor`][StreamReaderCore::take_tensor] — before the core produces another
 /// (ADR-041 § 4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadStep {
@@ -27,27 +30,20 @@ pub enum ReadStep {
         /// Bytes remaining for the current target. Never `0`.
         len: usize,
     },
-    /// An item is complete. Collect it with [`take_item`][StreamReaderCore::take_item].
-    Item,
-    /// End of input, reached cleanly at an item boundary.
+    /// A tensor is complete. Collect it with
+    /// [`take_tensor`][StreamReaderCore::take_tensor].
+    Tensor,
+    /// End of input, reached cleanly at a tensor boundary.
     Finished,
 }
 
 /// The tensor currently being assembled.
-struct Pending {
+struct Pending<D> {
     descriptor: TensorDescriptor,
     /// Buffers already filled and frozen, in declaration order.
     buffers: Vec<bytes::Bytes>,
     /// The destination for the buffer being filled.
-    dest: Option<Box<dyn Destination>>,
-}
-
-/// A composite head whose members have not all arrived.
-struct PendingComposite {
-    head: TensorDescriptor,
-    member_count: u32,
-    members: Vec<StreamItem>,
-    validator: CompositeValidator,
+    dest: Option<D>,
 }
 
 /// Where the machine is. `Failed` and `Unusable` are distinct by design: a format error
@@ -61,9 +57,9 @@ enum State {
     Descriptor,
     /// Filling buffer `index` of the pending tensor.
     Buffer { index: usize },
-    /// An item is waiting to be taken.
-    ItemReady,
-    /// End of input at an item boundary.
+    /// A tensor is waiting to be taken.
+    TensorReady,
+    /// End of input at a tensor boundary.
     Finished,
     /// A previous call returned an error; the stream cannot continue.
     Failed,
@@ -88,7 +84,7 @@ enum State {
 ///     BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, SyncMode,
 ///     TensorDescriptor, MIN_BUFFER_ALIGNMENT,
 /// };
-/// use hurray_io::stream::{ReadStep, StreamItem, StreamReaderCore, StreamWriterCore, WriteStep};
+/// use hurray_io::stream::{ReadStep, StreamReaderCore, StreamWriterCore, WriteStep};
 ///
 /// // A 64-byte float32 tensor, encoded with the write core.
 /// let handle =
@@ -115,7 +111,7 @@ enum State {
 /// // Read it back, handing the core 7 bytes at a time to exercise short reads.
 /// let mut core = StreamReaderCore::new();
 /// let mut rest = &wire[..];
-/// let mut items = Vec::new();
+/// let mut tensors = Vec::new();
 /// loop {
 ///     match core.step()? {
 ///         ReadStep::Input { len } => {
@@ -124,21 +120,21 @@ enum State {
 ///             rest = &rest[n..];
 ///             core.report_filled(n)?;
 ///         }
-///         ReadStep::Item => items.extend(core.take_item()),
+///         ReadStep::Tensor => tensors.extend(core.take_tensor()),
 ///         ReadStep::Finished => break,
 ///     }
 /// }
 ///
-/// assert_eq!(items.len(), 1);
-/// let StreamItem::Tensor(tensor) = &items[0] else { panic!("expected a tensor") };
+/// assert_eq!(tensors.len(), 1);
+/// let tensor = &tensors[0];
 /// assert_eq!(tensor.buffers[0].as_ref(), &payload[..]);
 /// // The destination carried the declared alignment, so a SIMD load is safe on it.
 /// assert_eq!(tensor.buffers[0].as_ptr() as usize % 64, 0);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-pub struct StreamReaderCore {
+pub struct StreamReaderCore<A: DestinationAlloc = SystemDestinations> {
     options: StreamReaderOptions,
-    destinations: Box<dyn DestinationAlloc>,
+    destinations: A,
     state: State,
     /// Descriptor bytes, prefix included, for the frame being read.
     staging: Vec<u8>,
@@ -147,11 +143,8 @@ pub struct StreamReaderCore {
     target: usize,
     /// Bytes of that target already filled.
     filled: usize,
-    pending: Option<Pending>,
-    /// Composite heads awaiting members, outermost first: ADR-041 § 10's explicit stack,
-    /// in place of the recursion a state machine cannot have.
-    stack: Vec<PendingComposite>,
-    item: Option<StreamItem>,
+    pending: Option<Pending<A::Dest>>,
+    tensor: Option<StreamTensor>,
 }
 
 impl Default for StreamReaderCore {
@@ -160,7 +153,8 @@ impl Default for StreamReaderCore {
     }
 }
 
-impl StreamReaderCore {
+// The default allocator's constructors: `StreamReaderCore` with no type argument.
+impl StreamReaderCore<SystemDestinations> {
     /// Creates a core with default options and the system allocator.
     ///
     /// # Examples
@@ -171,6 +165,11 @@ impl StreamReaderCore {
     }
 
     /// Creates a core with custom options.
+    ///
+    /// `max_descriptor_bytes`, `max_buffer_bytes` and `enforce_cross_machine_sync` apply
+    /// here; `max_composite_depth` does not, because this core does not assemble
+    /// composites — it bounds
+    /// [`CompositeAssembler`][super::CompositeAssembler] instead.
     ///
     /// # Examples
     ///
@@ -184,9 +183,11 @@ impl StreamReaderCore {
     /// assert!(!core.is_unusable());
     /// ```
     pub fn with_options(options: StreamReaderOptions) -> Self {
-        Self::with_destinations(options, Box::new(SystemDestinations))
+        Self::with_destinations(options, SystemDestinations)
     }
+}
 
+impl<A: DestinationAlloc> StreamReaderCore<A> {
     /// Creates a core whose read destinations come from `destinations`.
     ///
     /// This is the seam ADR-041 left open: a binding may supply the allocation, so a read
@@ -197,7 +198,7 @@ impl StreamReaderCore {
     ///
     /// ```
     /// use hurray_io::stream::{
-    ///     Destination, DestinationAlloc, DestinationRequest, StreamReaderCore,
+    ///     AlignedDestination, DestinationAlloc, DestinationRequest, StreamReaderCore,
     ///     StreamReaderOptions, SystemDestinations,
     /// };
     ///
@@ -207,10 +208,12 @@ impl StreamReaderCore {
     /// }
     ///
     /// impl DestinationAlloc for Counting {
+    ///     type Dest = AlignedDestination;
+    ///
     ///     fn allocate(
     ///         &mut self,
     ///         request: DestinationRequest,
-    ///     ) -> hurray_io::Result<Box<dyn Destination>> {
+    ///     ) -> hurray_io::Result<Self::Dest> {
     ///         self.seen.push((request.byte_size, request.alignment));
     ///         SystemDestinations.allocate(request)
     ///     }
@@ -218,14 +221,11 @@ impl StreamReaderCore {
     ///
     /// let core = StreamReaderCore::with_destinations(
     ///     StreamReaderOptions::default(),
-    ///     Box::new(Counting { seen: Vec::new() }),
+    ///     Counting { seen: Vec::new() },
     /// );
     /// assert!(!core.is_unusable());
     /// ```
-    pub fn with_destinations(
-        options: StreamReaderOptions,
-        destinations: Box<dyn DestinationAlloc>,
-    ) -> Self {
+    pub fn with_destinations(options: StreamReaderOptions, destinations: A) -> Self {
         Self {
             options,
             destinations,
@@ -234,8 +234,7 @@ impl StreamReaderCore {
             target: PREFIX_LEN,
             filled: 0,
             pending: None,
-            stack: Vec::new(),
-            item: None,
+            tensor: None,
         }
     }
 
@@ -251,8 +250,6 @@ impl StreamReaderCore {
     /// - [`Error::FrameTooLarge`] — a descriptor or buffer exceeds the configured limit
     /// - [`Error::InvalidCrossMachineSyncMode`] — cross-machine mode and a buffer that is
     ///   not `ProducerSynced`
-    /// - [`Error::CompositeNestingTooDeep`], [`Error::Core`] — composite depth or
-    ///   validation
     /// - [`Error::UnallocatableBuffer`] — a destination the allocator cannot provide
     /// - [`Error::CoreFailed`], [`Error::CoreUnusable`] — a previous call ended this core
     ///
@@ -265,7 +262,7 @@ impl StreamReaderCore {
                 State::Unusable(reason) => return Err(Error::CoreUnusable(reason)),
                 State::Failed => return Err(Error::CoreFailed),
                 State::Finished => return Ok(ReadStep::Finished),
-                State::ItemReady => return Ok(ReadStep::Item),
+                State::TensorReady => return Ok(ReadStep::Tensor),
                 State::Prefix => match self.remaining() {
                     0 => self.begin_descriptor()?,
                     len => return Ok(ReadStep::Input { len }),
@@ -317,7 +314,6 @@ impl StreamReaderCore {
     /// # Errors
     ///
     /// - [`Error::UnexpectedEof`] — end of input mid-item
-    /// - [`Error::TornComposite`] — end of input before a head's members were all read
     /// - [`Error::InvalidProgressReport`] — more bytes reported than were offered, which
     ///   also makes the core unusable: the position is lost
     ///
@@ -328,7 +324,7 @@ impl StreamReaderCore {
         match self.state {
             State::Unusable(reason) => return Err(Error::CoreUnusable(reason)),
             State::Failed => return Err(Error::CoreFailed),
-            State::Finished | State::ItemReady => {
+            State::Finished | State::TensorReady => {
                 return Err(Error::InvalidProgressReport {
                     reported: n,
                     offered: 0,
@@ -338,16 +334,9 @@ impl StreamReaderCore {
         }
 
         if n == 0 {
-            // § 4: only a zero-length read is end of input, and only at an item boundary
-            // is it the clean one. frame.rs drew this same line.
+            // § 4: only a zero-length read is end of input, and only at a tensor
+            // boundary is it the clean one.
             if matches!(self.state, State::Prefix) && self.filled == 0 {
-                if let Some(top) = self.stack.last() {
-                    let torn = Error::TornComposite {
-                        declared: top.member_count,
-                        actual: top.members.len() as u32,
-                    };
-                    return Err(self.fail(torn));
-                }
                 self.state = State::Finished;
                 return Ok(());
             }
@@ -368,21 +357,26 @@ impl StreamReaderCore {
         Ok(())
     }
 
-    /// Takes the completed item announced by [`ReadStep::Item`].
+    /// Takes the completed tensor announced by [`ReadStep::Tensor`].
     ///
-    /// Returns `None` when no item is ready. The item is handed over only once it is
-    /// complete, so a partially filled destination is never observable (ADR-041 § 6).
+    /// Returns `None` when no tensor is ready. The tensor is handed over only once every
+    /// one of its buffers is full, so a partially filled destination is never observable
+    /// (ADR-041 § 6).
+    ///
+    /// A composite head arrives here like any other tensor, carrying no buffers; putting
+    /// the tree back together is [`CompositeAssembler`][crate::stream::CompositeAssembler]'s
+    /// job, not the core's.
     ///
     /// # Examples
     ///
     /// See the type-level example.
-    pub fn take_item(&mut self) -> Option<StreamItem> {
-        if !matches!(self.state, State::ItemReady) {
+    pub fn take_tensor(&mut self) -> Option<StreamTensor> {
+        if !matches!(self.state, State::TensorReady) {
             return None;
         }
-        let item = self.item.take();
+        let tensor = self.tensor.take();
         self.reset_to_prefix();
-        item
+        tensor
     }
 
     /// Marks the core unusable: a transport moved bytes whose count was lost.
@@ -413,21 +407,6 @@ impl StreamReaderCore {
     /// See [`mark_unusable`][Self::mark_unusable].
     pub fn is_unusable(&self) -> bool {
         matches!(self.state, State::Unusable(_))
-    }
-
-    /// How many composite heads are currently open: the depth of ADR-041 § 10's stack.
-    ///
-    /// `0` at an item boundary and between plain tensors.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use hurray_io::stream::StreamReaderCore;
-    ///
-    /// assert_eq!(StreamReaderCore::new().composite_depth(), 0);
-    /// ```
-    pub fn composite_depth(&self) -> usize {
-        self.stack.len()
     }
 
     // ── transitions ───────────────────────────────────────────────────────────
@@ -481,37 +460,16 @@ impl StreamReaderCore {
         Ok(())
     }
 
-    /// Descriptor complete: decode it, then either open a composite or start its buffers.
+    /// Descriptor complete: decode it and start filling its buffers.
     fn decode_descriptor(&mut self) -> Result<()> {
         let descriptor = match TensorDescriptor::decode(&self.staging) {
             Ok(descriptor) => descriptor,
             Err(e) => return Err(self.fail(e.into())),
         };
 
-        if let LayoutDescriptor::Composite(layout) = &descriptor.layout {
-            let member_count = layout.member_count;
-            // A composite's own depth is the number of heads already open, which is what
-            // the recursive reader counted as its call depth.
-            if self.stack.len() >= self.options.max_composite_depth {
-                let error = Error::CompositeNestingTooDeep {
-                    limit: self.options.max_composite_depth,
-                };
-                return Err(self.fail(error));
-            }
-            let validator = match CompositeValidator::new(&descriptor) {
-                Ok(validator) => validator,
-                Err(e) => return Err(self.fail(e.into())),
-            };
-            self.stack.push(PendingComposite {
-                head: descriptor,
-                member_count,
-                members: Vec::new(),
-                validator,
-            });
-            self.reset_to_prefix();
-            return Ok(());
-        }
-
+        // A composite head needs no special case here: it is the one descriptor that
+        // declares no buffers, so it completes immediately and is handed over like any
+        // other tensor.
         let buffer_count = descriptor.buffers.len();
         self.pending = Some(Pending {
             descriptor,
@@ -601,54 +559,18 @@ impl StreamReaderCore {
         }
     }
 
-    /// Turns the pending tensor into an item and hands it up the composite stack.
+    /// Hands the pending tensor to the caller.
     fn complete_tensor(&mut self) -> Result<()> {
         let pending = match self.pending.take() {
             Some(pending) => pending,
             None => return Err(self.fail(Error::CoreFailed)),
         };
-        let item = StreamItem::Tensor(StreamTensor {
+        self.tensor = Some(StreamTensor {
             descriptor: pending.descriptor,
             buffers: pending.buffers,
         });
-        self.complete_item(item)
-    }
-
-    /// Delivers `item`: to the open composite head if there is one — closing it, and its
-    /// parents, as each fills — or to the caller as a top-level item.
-    fn complete_item(&mut self, item: StreamItem) -> Result<()> {
-        let mut item = item;
-        loop {
-            let Some(top) = self.stack.last_mut() else {
-                self.item = Some(item);
-                self.state = State::ItemReady;
-                return Ok(());
-            };
-
-            // Validate members as they arrive, exactly as the recursive reader did.
-            if let Err(e) = top.validator.push_member(item.descriptor()) {
-                return Err(self.fail(e.into()));
-            }
-            top.members.push(item);
-            let filled = top.members.len() as u32 >= top.member_count;
-            if !filled {
-                self.reset_to_prefix();
-                return Ok(());
-            }
-
-            let Some(done) = self.stack.pop() else {
-                return Err(self.fail(Error::CoreFailed));
-            };
-            if let Err(e) = done.validator.finish() {
-                return Err(self.fail(e.into()));
-            }
-            // The closed composite is itself an item: a member of its parent, or the one
-            // the caller gets. Loop rather than recurse (§ 10).
-            item = StreamItem::Composite(StreamComposite {
-                head: done.head,
-                members: done.members,
-            });
-        }
+        self.state = State::TensorReady;
+        Ok(())
     }
 
     /// Rewinds to the start of the next frame.

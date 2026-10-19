@@ -5,15 +5,13 @@ mod types;
 
 // Only the drivers need Tokio; the core and the types it works on do not (ADR-041 § 1).
 #[cfg(feature = "tokio")]
-mod frame;
-#[cfg(feature = "tokio")]
 pub mod reader;
 #[cfg(feature = "tokio")]
 pub mod writer;
 
 pub use sans_io::{
-    Destination, DestinationAlloc, DestinationRequest, ReadStep, StreamReaderCore,
-    StreamWriterCore, SystemDestinations, Unusable, WriteOp, WriteStep,
+    AlignedDestination, CompositeAssembler, Destination, DestinationAlloc, DestinationRequest,
+    ReadStep, StreamReaderCore, StreamWriterCore, SystemDestinations, Unusable, WriteOp, WriteStep,
 };
 pub use types::{
     CompositeNode, StreamComposite, StreamItem, StreamReaderOptions, StreamTensor,

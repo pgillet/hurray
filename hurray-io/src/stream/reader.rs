@@ -1,9 +1,6 @@
-use bytes::Bytes;
-use hurray_core::{CompositeValidator, LayoutDescriptor, SyncMode, TensorDescriptor};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::aligned::AlignedBuf;
-use crate::stream::frame;
+use crate::stream::sans_io::{CompositeAssembler, ReadStep, StreamReaderCore};
 // `pub use`, not `use`: 0.1.0 published these at `stream::reader::*` as well as at
 // `stream::*`, because this module is public and defined them. They belong to the core
 // now, and the published paths keep resolving. `hurray_io::stream::*` is canonical.
@@ -17,6 +14,10 @@ use crate::{Error, Result};
 ///
 /// Call [`next_tensor`][StreamReader::next_tensor] in a loop until it returns
 /// `Ok(None)` (clean EOF).
+///
+/// This is a driver, not a decoder: [`StreamReaderCore`] holds the wire format and the
+/// read position, and this type only moves bytes into the destination the core asks for
+/// (ADR-041 § 7).
 ///
 /// # Examples
 ///
@@ -38,16 +39,18 @@ use crate::{Error, Result};
 /// ```
 pub struct StreamReader<R> {
     inner: R,
-    options: StreamReaderOptions,
+    core: StreamReaderCore,
+    // Held across calls, not created per call: between successful `next_item` calls it is
+    // provably empty (a call returns only once a *top-level* item closes), so this changes
+    // nothing observable today — but a half-assembled tree is exactly what has to survive
+    // a suspension when the readiness-driven driver arrives (ADR-041 § 6a).
+    assembler: CompositeAssembler,
 }
 
 impl<R: AsyncRead + Unpin> StreamReader<R> {
     /// Creates a reader with default options.
     pub fn new(inner: R) -> Self {
-        Self {
-            inner,
-            options: StreamReaderOptions::default(),
-        }
+        Self::with_options(inner, StreamReaderOptions::default())
     }
 
     /// Creates a reader that enforces `ProducerSynced` on every buffer.
@@ -55,23 +58,31 @@ impl<R: AsyncRead + Unpin> StreamReader<R> {
     /// Use when the stream was produced by a remote machine and GPU/semaphore
     /// sync primitives are not meaningful locally.
     pub fn cross_machine(inner: R) -> Self {
-        Self {
+        Self::with_options(
             inner,
-            options: StreamReaderOptions {
+            StreamReaderOptions {
                 enforce_cross_machine_sync: true,
                 ..Default::default()
             },
-        }
+        )
     }
 
     /// Creates a reader with custom options.
     pub fn with_options(inner: R, options: StreamReaderOptions) -> Self {
-        Self { inner, options }
+        Self {
+            inner,
+            assembler: CompositeAssembler::new(options.max_composite_depth),
+            core: StreamReaderCore::with_options(options),
+        }
     }
 
     /// Reads the next tensor from the stream.
     ///
     /// Returns `Ok(None)` on a clean EOF (no bytes remaining before a descriptor starts).
+    ///
+    /// Oblivious to composition: a composite head comes back like any other tensor, with
+    /// no buffers, followed by its members in wire order. Use
+    /// [`next_item`][StreamReader::next_item] to have them assembled.
     ///
     /// # Errors
     ///
@@ -79,22 +90,18 @@ impl<R: AsyncRead + Unpin> StreamReader<R> {
     /// - [`Error::InvalidHeader`] — malformed descriptor prefix
     /// - [`Error::FrameTooLarge`] — descriptor or buffer exceeds configured limit
     /// - [`Error::InvalidCrossMachineSyncMode`] — cross-machine mode and a non-`ProducerSynced` buffer
+    /// - [`Error::UnallocatableBuffer`] — a buffer's declared size and alignment cannot be allocated
     /// - [`Error::Core`] — descriptor decode failed
     /// - [`Error::Io`] — underlying read error
     pub async fn next_tensor(&mut self) -> Result<Option<StreamTensor>> {
-        let desc = match frame::read_descriptor(&mut self.inner, self.options.max_descriptor_bytes)
-            .await?
-        {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-
-        let buffers = self.read_buffers(&desc).await?;
-
-        Ok(Some(StreamTensor {
-            descriptor: desc,
-            buffers,
-        }))
+        loop {
+            match self.core.step()? {
+                ReadStep::Input { .. } => self.fill().await?,
+                // `take_tensor` yields `Some` exactly when `step` reported `Tensor`.
+                ReadStep::Tensor => return Ok(Some(self.take_tensor()?)),
+                ReadStep::Finished => return Ok(None),
+            }
+        }
     }
 
     /// Reads the next item, assembling composites (head + members) into a
@@ -102,7 +109,8 @@ impl<R: AsyncRead + Unpin> StreamReader<R> {
     ///
     /// When the next descriptor on the wire is a composite head (`layout_tag = 0x0B`), this
     /// reads its declared `member_count` members — each of which may itself be a composite
-    /// (recursion) — validates the group with [`CompositeValidator`] (member count, plus
+    /// (nesting) — validates the group with
+    /// [`CompositeValidator`][hurray_core::CompositeValidator] (member count, plus
     /// partition coverage / overlay ordering), and returns them together. Otherwise it
     /// behaves like [`next_tensor`][StreamReader::next_tensor], returning a
     /// [`StreamItem::Tensor`]. Returns `Ok(None)` on a clean EOF.
@@ -136,104 +144,47 @@ impl<R: AsyncRead + Unpin> StreamReader<R> {
     /// - [`Error::Core`] — composite validation failed (e.g. partition does not cover the
     ///   index space, overlay ordering, member-count mismatch)
     pub async fn next_item(&mut self) -> Result<Option<StreamItem>> {
-        self.read_item(0).await
-    }
-
-    /// Reads and freezes every buffer declared by `desc`, enforcing the buffer-size limit
-    /// and (in cross-machine mode) the sync-mode requirement.
-    async fn read_buffers(&mut self, desc: &TensorDescriptor) -> Result<Vec<Bytes>> {
-        let mut buffers = Vec::with_capacity(desc.buffers.len());
-
-        for (i, handle) in desc.buffers.iter().enumerate() {
-            if self.options.enforce_cross_machine_sync
-                && handle.sync_mode() != SyncMode::ProducerSynced
-            {
-                return Err(Error::InvalidCrossMachineSyncMode {
-                    index: i,
-                    actual: handle.sync_mode().to_byte(),
-                });
-            }
-
-            let byte_size = handle.byte_size();
-
-            if byte_size > self.options.max_buffer_bytes {
-                return Err(Error::FrameTooLarge {
-                    kind: "buffer",
-                    value: byte_size,
-                    limit: self.options.max_buffer_bytes,
-                });
-            }
-
-            // Allocate at the *declared* alignment, not the allocator's default: the
-            // consumer is entitled to an aligned SIMD load against it (#235).
-            let mut dst = AlignedBuf::zeroed(byte_size, handle.alignment()).ok_or(
-                Error::UnallocatableBuffer {
-                    index: i,
-                    byte_size,
-                    alignment: handle.alignment(),
-                },
-            )?;
-            self.inner
-                .read_exact(dst.as_mut_slice())
-                .await
-                .map_err(frame::map_unexpected_eof)?;
-            buffers.push(dst.freeze());
-        }
-
-        Ok(buffers)
-    }
-
-    /// Reads one item at composite-nesting `depth`, recursing into members.
-    async fn read_item(&mut self, depth: usize) -> Result<Option<StreamItem>> {
-        let desc = match frame::read_descriptor(&mut self.inner, self.options.max_descriptor_bytes)
-            .await?
-        {
-            Some(d) => d,
-            None => return Ok(None),
-        };
-
-        let member_count = match &desc.layout {
-            LayoutDescriptor::Composite(c) => c.member_count,
-            // Not a composite head: read its buffers and return a plain tensor.
-            _ => {
-                let buffers = self.read_buffers(&desc).await?;
-                return Ok(Some(StreamItem::Tensor(StreamTensor {
-                    descriptor: desc,
-                    buffers,
-                })));
-            }
-        };
-
-        if depth >= self.options.max_composite_depth {
-            return Err(Error::CompositeNestingTooDeep {
-                limit: self.options.max_composite_depth,
-            });
-        }
-
-        // Validate the group as its members arrive, reusing the core validator: member
-        // count, and per-rule constraints (partition coverage, overlay base-first ordering).
-        let mut validator = CompositeValidator::new(&desc)?;
-        let mut members = Vec::with_capacity(member_count as usize);
-        for i in 0..member_count {
-            // Box the recursive call: an async fn cannot name its own future inline.
-            let item = match Box::pin(self.read_item(depth + 1)).await? {
-                Some(item) => item,
-                None => {
-                    return Err(Error::TornComposite {
-                        declared: member_count,
-                        actual: i,
-                    })
+        loop {
+            match self.core.step()? {
+                ReadStep::Input { .. } => self.fill().await?,
+                ReadStep::Tensor => {
+                    let tensor = self.take_tensor()?;
+                    if let Some(item) = self.assembler.push(tensor)? {
+                        return Ok(Some(item));
+                    }
                 }
-            };
-            validator.push_member(item.descriptor())?;
-            members.push(item);
+                ReadStep::Finished => {
+                    self.assembler.finish()?;
+                    return Ok(None);
+                }
+            }
         }
-        validator.finish()?;
+    }
 
-        Ok(Some(StreamItem::Composite(StreamComposite {
-            head: desc,
-            members,
-        })))
+    /// Answers one [`ReadStep::Input`]: read into the core's destination, report the count.
+    ///
+    /// The transfer and the report are one step with nothing suspended between them, which
+    /// is the shape ADR-041 § 6a requires of every driver.
+    async fn fill(&mut self) -> Result<()> {
+        let n = loop {
+            // Disjoint field borrows: the destination comes from `core`, the bytes from
+            // `inner`.
+            match self.inner.read(self.core.input_dst()).await {
+                Ok(n) => break n,
+                // `read_exact`, which this replaces, absorbed this internally.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                // A read that errors moved no bytes, so the count is known to be zero and
+                // the core's position survives — no need to declare it lost (§ 6).
+                Err(e) => return Err(Error::Io(e)),
+            }
+        };
+        // `n == 0` is end of input: the core decides whether that is clean or torn.
+        self.core.report_filled(n)
+    }
+
+    /// Collects the tensor the core just announced.
+    fn take_tensor(&mut self) -> Result<StreamTensor> {
+        self.core.take_tensor().ok_or(Error::CoreFailed)
     }
 
     /// Returns the underlying reader.

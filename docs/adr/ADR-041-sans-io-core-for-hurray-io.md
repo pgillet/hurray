@@ -2,10 +2,18 @@
 
 ## Status
 
-Draft (2026-10-17)
+Accepted (2026-10-19)
 
 > Direction approved on review; the invariants in §§ 2–6 were tightened in response to it.
-> Becomes Accepted when the first implementation pass lands (§ 11 step 1).
+> Accepted once the first implementation pass landed ([#237](https://github.com/pgillet/hurray/pull/237)),
+> which answered the destination-allocator question and settled on two state machines
+> rather than one. Step 2 followed in
+> [#239](https://github.com/pgillet/hurray/pull/239), closing issue
+> [#238](https://github.com/pgillet/hurray/issues/238): the Tokio readers and writers became
+> drivers over the core, and composite reassembly moved out of the read core into a
+> synchronous `CompositeAssembler` — reassembly consumes no bytes, so it is not the byte
+> machine's work, and keeping them apart is what lets one core serve both the flat and the
+> assembled view of a stream. Steps 3–6 remain.
 
 Resolves the bridge question `HurrayReader` and `HurrayWriter` have carried as bare
 typedefs since C ABI 1, and which **ADR-034** deferred alongside "does streaming reuse
@@ -486,10 +494,18 @@ compatibility contract — blocked on a question nobody is answering.
 - **One state machine or two.** Whether the sequential and random-access drivers front one
   core or two. Settled by step 1 and step 4, not before: the sequential core's shape is
   what makes the answer obvious. §§ 2–6 bind either way.
-- **Who allocates the aligned destination.** The core must supply it (§ 2) at the declared
-  alignment (§ 5), but whether a binding may *provide* the allocator — so that a Python
-  read lands directly in a NumPy array, which `numpy_allocator.rs` already does elsewhere —
-  is a step 1 question with consequences for step 5.
+- ~~**Who allocates the aligned destination.**~~ **Answered: a binding may.** The core
+  supplies the destination (§ 2) at the declared alignment (§ 5), and `DestinationAlloc` is
+  the seam a binding implements so a Python read can land directly in a NumPy array, as
+  `numpy_allocator.rs` already does elsewhere. Step 1 made it a `Box<dyn DestinationAlloc>`
+  handing out `Box<dyn Destination>`; step 2 made it an associated type on a core generic
+  over the allocator instead. The reason is not taste: a boxed trait object erased `Sync`,
+  `UnwindSafe` and `RefUnwindSafe` from the core and so from every published type
+  containing it, which `cargo semver-checks` caught against 0.1.0's `StreamReader`. The
+  generic form keeps those traits, drops a heap allocation per buffer, and lets `freeze`
+  take `self` by value. Type erasure is no longer available by default, which costs
+  nothing yet: a C allocator is a concrete struct holding the caller's vtable, so step 3
+  instantiates the core over that rather than erasing it.
 - **The read result versus #174.** `next_tensor` yields a descriptor plus its buffers,
   exactly the pairing #174 folds into one `HurrayTensor`. Whichever lands first constrains
   the other; this ADR deliberately does not decide it, but it does remove the reason #174
