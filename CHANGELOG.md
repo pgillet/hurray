@@ -15,6 +15,26 @@ workspace share one version and are released together.
 
 ### Added
 
+- **`hurray-io`** — a **random-access core for the file container**, so the `HRRYFILE`
+  format can be read and written with no runtime linked (ADR-041 §§ 1, 7). Where the
+  stream core is fed forwards, `FileReaderCore` is asked by *range*: it names the bytes
+  `[offset, offset + len)` it needs — the trailer at `file_size - 40`, the index located
+  from it, then one descriptor or buffer at a time — and the driver seeks there and reports
+  how many arrived. `FileWriterCore` emits one forward pass, accumulating the footer index
+  as tensors go out, and offers each payload **in place**: borrowed, one stretch at a time,
+  never assembled, and never retained once the item is written. Padding is emitted from a
+  shared zero page rather than materialised, so a 2 MiB `data_buffer_alignment` costs no
+  2 MiB buffer. Each buffer a read returns is allocated at the alignment its handle
+  *declares*, and the memory handed out is the memory the transport filled — the same
+  `DestinationAlloc` seam the stream core uses, so a binding can still supply its own
+  allocation. `flatten_composite` validates a composite tree and returns the order its
+  tensors go on disk, which is what replaces the writer's recursion with an explicit stack.
+  Runnable as `cargo run --example sans_io_file`; see
+  [Random Access Without a Runtime](docs/cookbook/random-access-without-a-runtime.md).
+- **`hurray-io`** — `hurray_io::file` is no longer gated on the `tokio` feature. Only
+  `file::reader` and `file::writer` are, mirroring `stream`, so the container format,
+  `KvValue`, `IndexEntry` and both cores are available to a consumer with no async runtime
+  — which is what the C file surface will be built on.
 - **`hurray-ffi`** — blocking stream read and write over a caller-supplied **transport
   vtable**, so a C consumer can finally obtain a tensor rather than only decode one handed
   to it (ADR-041 § 8). `HurrayReader` and `HurrayWriter` stop being empty forward
@@ -66,6 +86,22 @@ workspace share one version and are released together.
 
 ### Changed
 
+- `FileReader` and `FileWriter` are **drivers** over the new cores, with unchanged public
+  signatures and byte-for-byte identical output. Between them they lost 600 lines of
+  format logic: no descriptor decode, no offset arithmetic, no padding, no alignment, no
+  index or KV parsing remains in either. A corpus of four `.hrry` files written by the
+  pre-refactor writer is checked in and only ever read, so the compatibility test cannot
+  become an assertion that the code agrees with itself.
+- A file write that the sink refuses mid-item is now `Error::SinkClosed` rather than an
+  `io::Error` of kind `WriteZero`, matching what the stream writer began reporting in the
+  previous pass: a zero-length write is never progress, and a closed sink is a distinct
+  signal rather than an error to retry. Both file drivers now drive the transport with
+  `read`/`write` rather than `read_exact`/`write_all`, because a bulk helper that fails
+  cannot report how many bytes it moved — and that count is the position.
+- `FileReader::read_composite` and `FileWriter::write_composite` walk nesting with an
+  explicit stack instead of `Box::pin` recursion (ADR-041 § 10). A non-composite name
+  passed to `read_composite` is now refused as soon as its descriptor decodes, before its
+  buffers are read; the error is unchanged.
 - The workspace version is **0.2.0**. `HurrayReader` and `HurrayWriter` were publicly
   constructible unit structs in 0.1.0 and are now opaque handles, which the `0.x`
   convention makes a minor bump.
@@ -90,6 +126,14 @@ workspace share one version and are released together.
 
 ### Fixed
 
+- `FileReader` no longer panics on a file whose header declares a `data_buffer_alignment`
+  of `0` — or any non-power-of-two. The value reached the padding arithmetic as a divisor,
+  so a crafted multi-buffer file could divide by zero inside a parser; it is now rejected
+  as `Error::InvalidHeader`, which `file-format.md` already required of the field.
+- `FileReader::open` no longer trusts an index or KV section's own entry count when
+  reserving memory for it, and checks the trailer's `index_offset + index_length` for
+  overflow. A crafted footer claiming 2^40 entries in a 1 KiB file asked for an allocation
+  that size, and the sum could wrap.
 - ADR-038 was on disk but absent from the documentation navigation, so it never appeared
   on the published site.
 

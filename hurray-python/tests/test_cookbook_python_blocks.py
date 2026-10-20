@@ -63,6 +63,7 @@ RUN: dict[str, frozenset[str]] = {
     "layer-6-file-format.md": frozenset(),
     "multi-buffer-tensors.md": frozenset(),
     "quantized-inference.md": frozenset(),
+    "random-access-without-a-runtime.md": frozenset(),
     "quickstart.md": frozenset(),
     "streaming-from-c.md": frozenset(),
 }

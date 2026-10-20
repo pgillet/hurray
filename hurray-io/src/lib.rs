@@ -16,7 +16,6 @@ pub mod error;
 // the async drivers, and the sans-io core (ADR-041 § 2) needs it too.
 mod aligned;
 
-#[cfg(feature = "tokio")]
 pub mod file;
 
 // The stream module carries the sans-io core, which needs no runtime; only its drivers

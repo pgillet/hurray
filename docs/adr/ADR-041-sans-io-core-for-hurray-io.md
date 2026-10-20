@@ -30,6 +30,27 @@ Accepted (2026-10-19)
 > them: a C writer can emit descriptors it decoded but cannot yet originate one, and the
 > encode surface that fixes it is a descriptor builder rather than the single
 > `hurray_descriptor_encode` symbol the row names.
+>
+> Step 4's first half followed ([#242](https://github.com/pgillet/hurray/issues/242)): the
+> file container got its own two machines, `FileReaderCore` asked by range and
+> `FileWriterCore` emitting one forward pass, with `FileReader`/`FileWriter` reduced to
+> drivers. **It settles the one-vs-two open question for good: four cores, not one.** The
+> deciding property is that the request *vocabulary* is the core's entire interface — "the
+> next `n` bytes" and "the bytes `[a, b)`" are different interfaces, not two settings of
+> one — and the file carries no stream frame prefix, so a shared machine would have needed
+> a mode flag. What is shared is what is genuinely one contract: the `DestinationAlloc`
+> seam, because §§ 2 and 5 are one promise about payload memory.
+>
+> It also found an asymmetry § 6 did not anticipate. **A random-access core needs no
+> unusable state at all.** Every request is absolute and the position advances only on a
+> reported count, so a lost count is recovered by re-issuing the same range, and re-filling
+> the destination from the range's start is idempotent. By the same argument a failed *job*
+> leaves the core usable — only a failed *open* is terminal, there being no index to start
+> again from. § 6's unusable state is a property of a stream, not of the contract.
+>
+> The C file surface — the vtable's `seek` and `size`, the file handles, the ABI bump — is
+> step 4's second half and gets its own pass, as the C stream surface did. Steps 5 and 6
+> remain.
 
 Resolves the bridge question `HurrayReader` and `HurrayWriter` have carried as bare
 typedefs since C ABI 1, and which **ADR-034** deferred alongside "does streaming reuse
@@ -416,7 +437,10 @@ bound on a visible structure that a C caller can also walk.
    byte.
 3. **The C surface**: handles, the transport vtable and its § 8 rules, stream read and
    write. ABI version bump, decided in its own pass.
-4. **Random-access driver and the file core**, then the C file surface.
+4. **Random-access driver and the file core**, then the C file surface. Split in two when
+   scheduled, as step 3's precedent required: the Rust core and drivers
+   ([#242](https://github.com/pgillet/hurray/issues/242)), then the C file surface with
+   its own ABI bump.
 5. **Python async surface**, implementing the semantics § 6 already fixes — readiness-driven
    per § 6a, with a test that cancels mid-tensor and asserts the reader resumes rather than
    poisons, and one that cancels mid-write and asserts it poisons rather than silently
@@ -507,9 +531,14 @@ compatibility contract — blocked on a question nobody is answering.
 
 ## Open Questions Deferred
 
-- **One state machine or two.** Whether the sequential and random-access drivers front one
-  core or two. Settled by step 1 and step 4, not before: the sequential core's shape is
-  what makes the answer obvious. §§ 2–6 bind either way.
+- ~~**One state machine or two.**~~ **Answered: two per direction, four in all.** Step 1
+  split the stream's read and write because §§ 2 and 3 are different properties rather
+  than mirror images; step 4 split the file from the stream because the request
+  vocabulary — "the next `n` bytes" versus "the bytes `[a, b)`" — *is* the core's
+  interface, and because the file's descriptors carry no stream frame prefix. Sharing one
+  machine would have meant a mode flag, which this project does not do. §§ 2–6 bound every
+  shape, as this question assumed, and the `DestinationAlloc` seam is shared across all
+  four because §§ 2 and 5 are one promise.
 - ~~**Who allocates the aligned destination.**~~ **Answered: a binding may.** The core
   supplies the destination (§ 2) at the declared alignment (§ 5), and `DestinationAlloc` is
   the seam a binding implements so a Python read can land directly in a NumPy array, as

@@ -265,8 +265,10 @@ for received in hurray.StreamReader(wire):
 - **Composite tensors.** A composite head reads back as the buffer-less tensor it is on
   the wire; walking its members from C, and writing one, come with the C sum-type for a
   composite.
-- **File containers.** `HRRYFILE` needs random access — the trailer sits at
-  `file_size - 40` — so it needs a range-request protocol and two more vtable entries,
-  not a byte feed.
+- **File containers from C.** `HRRYFILE` needs random access — the trailer sits at
+  `file_size - 40` — so it needs a range-request protocol and two more vtable entries
+  (`seek`, `size`), not a byte feed. The range-request core itself exists: see
+  [Random Access Without a Runtime](random-access-without-a-runtime.md), which drives it
+  from blocking `std::io` today. Only the C surface over it is still to come.
 - **Building a descriptor in C.** A writer can emit descriptors it decoded; originating
   one from C needs an encode surface of its own.
