@@ -28,6 +28,12 @@ impl HurrayDescriptor {
     pub(crate) fn inner(&self) -> &TensorDescriptor {
         &self.0
     }
+
+    /// Wraps a descriptor this crate decoded itself, rather than one decoded from bytes
+    /// a C caller supplied.
+    pub(crate) fn from_descriptor(descriptor: TensorDescriptor) -> Box<Self> {
+        Box::new(Self(Box::new(descriptor)))
+    }
 }
 
 // ── Decode / destroy ──────────────────────────────────────────────────────────

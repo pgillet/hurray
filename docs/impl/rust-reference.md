@@ -47,6 +47,39 @@ The implementation is split across three crates:
 
 ## hurray-io
 
+### Core and Drivers
+
+The streaming and file logic MUST be split into a **sans-io core** — a state machine over
+bytes, holding no file, socket, or runtime — and thin **drivers** that move bytes between
+a transport and that core. The async API below is one such driver; a blocking C ABI and a
+Python event loop are others, and all of them MUST share the one core rather than each
+growing its own bridge (ADR-041 § 1).
+
+The following are requirements on any implementation of the core, not internal details:
+
+- **The core supplies the read destination** and MUST NOT accept payload bytes a driver
+  placed elsewhere. The guarantee is that no copy of a payload happens after the transport
+  writes into that destination (§ 2). This is not end-to-end zero copy, which only mmap or
+  shared memory gives; the defect it rules out is a second, tensor-sized copy.
+- **The write path is not the same requirement mirrored.** The core MUST accept borrowed,
+  non-contiguous payload slices and MUST NOT assemble them. The caller keeps each slice
+  valid until the core reports *that item written*, and the core MUST expose that point and
+  MUST NOT retain the pointer afterwards (§ 3).
+- **Progress is explicit and never blocks.** One request is outstanding at a time, and
+  every transfer reports a byte count. A short read is not end of input — only a zero-byte
+  read is, and then only at an item boundary; mid-item it is an error. A zero-length write
+  is never progress: a closed sink is a distinct signal (§ 4).
+- **Alignment is the alignment the buffer handle declares**, not the 64-byte minimum and
+  not the allocator's default, and MUST hold across multi-buffer and composite paths
+  (§ 5).
+- **Resumability requires a known position.** A transport operation and its byte-count
+  report MUST form one uninterruptible step, so cancellation is observable only at a step
+  boundary. If a count is ever lost the core MUST enter an explicitly named unusable state
+  rather than diverge silently, and a partially filled destination MUST never be
+  observable (§ 6).
+- **Composite nesting MUST be an explicit stack**, not call recursion, so a composite can
+  survive being suspended mid-member (§ 10).
+
 ### Streaming Read
 
 - MUST implement an async tensor descriptor reader that reads exactly `descriptor_length` bytes before emitting a parsed `TensorDescriptor`.

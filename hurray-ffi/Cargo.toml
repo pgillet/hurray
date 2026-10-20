@@ -14,6 +14,10 @@ categories = ["external-ffi-bindings", "encoding"]
 
 [dependencies]
 hurray-core = { workspace = true }
+# default-features = false drops tokio: ADR-041 § 8's whole point is that a C consumer
+# links no async runtime. hurray-io's sans-io core is not feature-gated.
+hurray-io = { workspace = true, default-features = false }
+bytes = { workspace = true }
 
 [lib]
 crate-type = ["cdylib", "staticlib", "rlib"]

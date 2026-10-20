@@ -64,6 +64,7 @@ RUN: dict[str, frozenset[str]] = {
     "multi-buffer-tensors.md": frozenset(),
     "quantized-inference.md": frozenset(),
     "quickstart.md": frozenset(),
+    "streaming-from-c.md": frozenset(),
 }
 
 # Pages parsed but not executed, and why. A reason is required: "it does not run" is

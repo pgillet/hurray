@@ -400,11 +400,11 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hurray"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "hurray-conformance"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hurray-core",
  "hurray-io",
@@ -415,7 +415,7 @@ dependencies = [
 
 [[package]]
 name = "hurray-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "criterion",
  "half",
@@ -426,15 +426,17 @@ dependencies = [
 
 [[package]]
 name = "hurray-ffi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
+ "bytes",
  "cbindgen",
  "hurray-core",
+ "hurray-io",
 ]
 
 [[package]]
 name = "hurray-inspect"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "half",
  "hurray-core",
@@ -443,7 +445,7 @@ dependencies = [
 
 [[package]]
 name = "hurray-io"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bytes",
  "crc32c",
@@ -455,7 +457,7 @@ dependencies = [
 
 [[package]]
 name = "hurray-python"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "half",
  "hurray-core",

@@ -20,9 +20,9 @@
 // ```
 // use hurray_ffi::HURRAY_C_ABI_VERSION;
 //
-// assert_eq!(HURRAY_C_ABI_VERSION, 6);
+// assert_eq!(HURRAY_C_ABI_VERSION, 7);
 // ```
-#define HURRAY_C_ABI_VERSION 6
+#define HURRAY_C_ABI_VERSION 7
 
 // Opaque handle to a buffer registered with the Hurray C ABI.
 //
@@ -48,13 +48,21 @@ typedef struct HurrayBufferList HurrayBufferList;
 // [`hurray_descriptor_decode`] and destroyed by [`hurray_descriptor_destroy`].
 typedef struct HurrayDescriptor HurrayDescriptor;
 
-// Opaque handle to an async streaming reader (full implementation deferred).
+// Opaque handle to a blocking stream reader.
 //
-// A reader bridges `hurray-io`'s async streaming layer into the C ABI.
-// The async-to-sync bridging strategy (e.g., blocking executor, channel
-// hand-off) is deferred; this stub allows cbindgen to emit the type
-// declaration in the generated header.
+// Not `#[repr(C)]`; the layout is an implementation detail. Created by
+// [`hurray_reader_new`] and released exactly once by [`hurray_reader_destroy`].
+//
+// One handle, one thread at a time.
 typedef struct HurrayReader HurrayReader;
+
+// Opaque handle to a tensor: its descriptor and its buffers.
+//
+// Not `#[repr(C)]`; the layout is an implementation detail. The handle **owns** both
+// halves. [`hurray_tensor_descriptor`] and [`hurray_tensor_buffers`] hand out *borrowed*
+// pointers — valid until [`hurray_tensor_destroy`], and never to be destroyed
+// individually.
+typedef struct HurrayTensor HurrayTensor;
 
 // Opaque handle to a capsule's tensor context: descriptor bytes, ABI version,
 // and an owner reference.
@@ -66,15 +74,19 @@ typedef struct HurrayReader HurrayReader;
 // layout for the life of the major version (ADR-034 § 2).
 typedef struct HurrayTensorContext HurrayTensorContext;
 
-// Opaque handle to an async streaming writer (full implementation deferred).
+// Opaque handle to a blocking stream writer.
 //
-// Symmetric to [`HurrayReader`]. Deferred pending the async bridge design.
+// Not `#[repr(C)]`; the layout is an implementation detail. Created by
+// [`hurray_writer_new`] and released exactly once by [`hurray_writer_destroy`].
+//
+// One handle, one thread at a time.
 typedef struct HurrayWriter HurrayWriter;
 
 // Integer status code returned by every Hurray C ABI function.
 //
 // Zero (`HURRAY_OK`) indicates success. All negative values indicate errors.
-// Positive values are reserved for future use.
+// Positive values report a normal, non-error outcome that is not plain success;
+// [`HURRAY_END_OF_STREAM`] is the only one so far.
 //
 // # Examples
 //
@@ -168,6 +180,86 @@ typedef struct HurraySyncEventPayload {
 // index `0x00`.
 typedef uint32_t HurrayDescriptorField;
 
+// Reads up to `len` bytes into `dst`, reporting the count through `out_filled`.
+//
+// - Returns [`HURRAY_OK`] and writes the number of bytes transferred, which MAY be fewer
+//   than `len`. A short read is normal and is not an error.
+// - Writing `0` with [`HURRAY_OK`] means **end of input**.
+// - On any other return value the callback MUST have transferred **no bytes** and MUST
+//   write `0` through `out_filled`. A transport that partially succeeds and then fails
+//   MUST report the partial count with [`HURRAY_OK`] and surface the failure on the next
+//   call — exactly what POSIX `read` does, and the one place a hand-written adapter
+//   tends to go wrong.
+//
+// A callback MUST NOT call any Hurray function on the handle that invoked it.
+typedef HurrayStatus (*HurrayTransportReadFn)(void *ctx,
+                                              uint8_t *dst,
+                                              uintptr_t len,
+                                              uintptr_t *out_filled);
+
+// Writes up to `len` bytes from `src`, reporting the count through `out_written`.
+//
+// - Returns [`HURRAY_OK`] and writes the number of bytes accepted, which MAY be fewer
+//   than `len`.
+// - Writing `0` with [`HURRAY_OK`] is **not** success: it means the sink will accept no
+//   more bytes. Hurray reports that as [`HURRAY_ERR_SINK_CLOSED`][crate::HURRAY_ERR_SINK_CLOSED]
+//   when an item is in flight.
+// - On any other return value the callback MUST have transferred **no bytes** and MUST
+//   write `0` through `out_written`, per the rule on [`HurrayTransportReadFn`].
+//
+// A callback MUST NOT call any Hurray function on the handle that invoked it.
+typedef HurrayStatus (*HurrayTransportWriteFn)(void *ctx,
+                                               const uint8_t *src,
+                                               uintptr_t len,
+                                               uintptr_t *out_written);
+
+// Releases the transport's context pointer when the handle that owns it is destroyed.
+//
+// Hurray never frees `ctx` itself — it belongs to the caller — so this callback is the
+// only place a caller's transport object is torn down. Symmetric with the buffer release
+// callbacks that already cross this ABI (ADR-009).
+typedef void (*HurrayTransportReleaseFn)(void *ctx);
+
+// A caller-supplied byte transport: a context pointer plus the callbacks that move bytes.
+//
+// Not a path and not a file descriptor. A vtable composes with a socket, a pipe, a memory
+// span, or the caller's own object, and file descriptors are a portability wart of their
+// own.
+//
+// The struct is copied on construction, so the caller MAY free the `HurrayTransport`
+// itself as soon as the handle is created; `ctx` must outlive the handle, and is released
+// through [`release`][Self::release] when the handle is destroyed.
+//
+// Thread affinity: **one handle, one thread at a time.** Hurray runs no threads of its
+// own, so this is a rule rather than a threading model.
+typedef struct HurrayTransport {
+    // Opaque caller context, passed verbatim to every callback. MAY be null.
+    void *ctx;
+    // Required by a reader; MAY be null for a write-only transport.
+    HurrayTransportReadFn read;
+    // Required by a writer; MAY be null for a read-only transport.
+    HurrayTransportWriteFn write;
+    // Invoked once when the owning handle is destroyed. MAY be null.
+    HurrayTransportReleaseFn release;
+} HurrayTransport;
+
+// Resource limits and transport assumptions for a reader.
+//
+// Pass null to [`hurray_reader_new`] for the defaults. The fields map one-to-one onto
+// `hurray-io`'s `StreamReaderOptions`; a reader over an untrusted socket SHOULD set both
+// limits, because a descriptor's declared sizes are attacker-controlled until they are
+// bounded.
+typedef struct HurrayReaderOptions {
+    // Maximum byte length of a single descriptor. Default: 16 MiB.
+    uint64_t max_descriptor_bytes;
+    // Maximum byte length of a single buffer. Default: unbounded.
+    uint64_t max_buffer_bytes;
+    // Reject buffers whose sync mode is not `ProducerSynced`. Set this when the stream
+    // crosses a machine boundary, where a device-local synchronization handle means
+    // nothing.
+    bool enforce_cross_machine_sync;
+} HurrayReaderOptions;
+
 // Callback invoked exactly once by [`hurray_tensor_context_destroy`] to release
 // whatever keeps the tensor's memory alive.
 //
@@ -177,6 +269,28 @@ typedef uint32_t HurrayDescriptorField;
 // Implementations MUST NOT call back into the Hurray C ABI from within this
 // callback; doing so may cause deadlocks or use-after-free.
 typedef void (*HurrayOwnerReleaseFn)(void*);
+
+// Transport assumptions for a writer.
+//
+// Pass null to [`hurray_writer_new`] for the defaults.
+typedef struct HurrayWriterOptions {
+    // Refuse to emit a buffer whose sync mode is not `ProducerSynced`. Set this when the
+    // stream crosses a machine boundary, where a device-local synchronization handle
+    // means nothing to the far end.
+    bool enforce_cross_machine_sync;
+} HurrayWriterOptions;
+
+// One borrowed payload: a pointer and a length.
+//
+// Borrowed for the duration of the [`hurray_writer_write_tensor`] call and not retained
+// afterwards. A zero-length slice MAY carry a null `ptr`.
+typedef struct HurrayIoSlice {
+    // First byte of the payload.
+    const uint8_t *ptr;
+    // Payload length in bytes. MUST equal the declared `byte_size` of the buffer handle
+    // at the same index of the descriptor's buffer table.
+    uintptr_t len;
+} HurrayIoSlice;
 
 // Strided (`0x03`) per-dimension strides, in logical elements. Signed array.
 #define HURRAY_LAYOUT_FIELD_STRIDED_STRIDES 66304
@@ -440,6 +554,45 @@ typedef void (*HurrayOwnerReleaseFn)(void*);
 
 // The requested field does not belong to this descriptor's layout.
 #define HURRAY_ERR_FIELD_NOT_APPLICABLE -13
+
+// A caller-supplied transport callback reported failure.
+//
+// The handle is left usable: a callback that returns a failing status MUST NOT have
+// moved any bytes (`hurray-ffi`'s transport contract, ADR-041 § 8), so the stream
+// position is intact and the same call MAY be retried.
+#define HURRAY_ERR_TRANSPORT -14
+
+// The sink accepted zero bytes while an item was in flight.
+//
+// Distinct from [`HURRAY_ERR_TRANSPORT`]: a truncated item is already on the wire, so
+// the writer is poisoned and no further call on it can succeed (ADR-041 § 4).
+#define HURRAY_ERR_SINK_CLOSED -15
+
+// Input ended in the middle of a descriptor or a buffer.
+//
+// Distinct from [`HURRAY_END_OF_STREAM`], which is input ending cleanly at a tensor
+// boundary.
+#define HURRAY_ERR_UNEXPECTED_EOF -16
+
+// A transport moved bytes whose count was lost, so the handle's position no longer
+// matches the transport's and nothing can recover it (ADR-041 § 6).
+//
+// Unreachable from a conforming transport vtable, which reports a count for every
+// transfer; the code exists because the state does.
+#define HURRAY_ERR_CORE_UNUSABLE -17
+
+// A descriptor, buffer, or nesting depth exceeded a configured limit.
+#define HURRAY_ERR_LIMIT_EXCEEDED -18
+
+// The byte stream is not a valid Hurray stream, or a stream that already failed was
+// used again.
+#define HURRAY_ERR_INVALID_STREAM -19
+
+// Input ended cleanly at a tensor boundary: there is no next tensor.
+//
+// Positive, because end of input is the normal way a stream finishes and callers test
+// errors with `status < 0`.
+#define HURRAY_END_OF_STREAM 1
 
 // Reads the declared alignment of a buffer handle (in bytes).
 //
@@ -787,7 +940,7 @@ HurrayStatus hurray_buffer_memory_class(const struct HurrayBuffer *buffer,
 // # Examples
 //
 // ```
-// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 6);
+// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 7);
 // ```
  uint32_t hurray_c_abi_version(void) ;
 
@@ -1034,6 +1187,84 @@ HurrayStatus hurray_descriptor_shape(const struct HurrayDescriptor *handle,
                                      uintptr_t *out_rank)
 ;
 
+// Destroys a reader, releases its transport context, and writes null through `handle`.
+//
+// Tensors already produced by [`hurray_reader_next_tensor`] are unaffected: each owns its
+// own buffers and outlives the reader.
+//
+// # Safety
+//
+// - `handle` MUST be a valid, non-null pointer to a `*mut HurrayReader` from
+//   [`hurray_reader_new`].
+// - That reader MUST NOT have been destroyed already.
+ HurrayStatus hurray_reader_destroy(struct HurrayReader **handle) ;
+
+// Creates a reader over `transport`.
+//
+// The vtable is copied, so the caller MAY free the [`HurrayTransport`] struct immediately;
+// its `ctx` must stay valid until the reader is destroyed, at which point the vtable's
+// release callback is invoked.
+//
+// # Arguments
+//
+// - `transport` — Non-null; its `read` callback MUST be non-null.
+// - `options` — MAY be null for [`HurrayReaderOptions`]' documented defaults.
+// - `out_handle` — Non-null pointer to a `*mut HurrayReader`; set on success.
+//
+// # Safety
+//
+// - `transport` MUST point to a readable [`HurrayTransport`] for the duration of the call.
+// - `options`, if non-null, MUST point to a readable [`HurrayReaderOptions`].
+// - `out_handle` MUST be a valid, non-null, writable pointer.
+
+HurrayStatus hurray_reader_new(const struct HurrayTransport *transport,
+                               const struct HurrayReaderOptions *options,
+                               struct HurrayReader **out_handle)
+;
+
+// Reads the next tensor, blocking in the transport's read callback as needed.
+//
+// Returns:
+//
+// - [`HURRAY_OK`] — `*out_tensor` is a new [`HurrayTensor`], to be released with
+//   [`hurray_tensor_destroy`][crate::hurray_tensor_destroy].
+// - [`HURRAY_END_OF_STREAM`] — input ended cleanly at a tensor boundary. `*out_tensor` is
+//   untouched. Positive, because this is how a stream ends, not a failure.
+// - [`HURRAY_ERR_UNEXPECTED_EOF`][crate::HURRAY_ERR_UNEXPECTED_EOF] — input ended inside
+//   a descriptor or a buffer.
+// - Whatever status the read callback returned, if it failed. The reader's position is
+//   intact in that case — the transport contract says a failing callback moved no bytes —
+//   so **the same call MAY be retried** and will resume mid-tensor rather than restart it.
+//
+// A composite head arrives as the buffer-less tensor it is on the wire; walking a
+// composite's members from C is not yet supported.
+//
+// Every buffer in the returned tensor points at memory the read core allocated at the
+// alignment its buffer handle *declares*, and the transport wrote into it directly — so a
+// SIMD load on it is sound, and no copy of the payload happened after that write.
+//
+// # Safety
+//
+// - `handle` MUST point to a live [`HurrayReader`].
+// - `out_tensor` MUST be a valid, non-null, writable pointer.
+
+HurrayStatus hurray_reader_next_tensor(struct HurrayReader *handle,
+                                       struct HurrayTensor **out_tensor)
+;
+
+// Borrows the tensor's buffer list.
+//
+// Element `i` of the list is buffer `i` of the descriptor's buffer table. The list is
+// **borrowed**: the caller MUST NOT call [`hurray_buffer_list_destroy`] on it.
+//
+// # Safety
+//
+// `handle` and `out_buffers` MUST be valid, non-null pointers.
+
+HurrayStatus hurray_tensor_buffers(const struct HurrayTensor *handle,
+                                   struct HurrayBufferList **out_buffers)
+;
+
 // Reads the ABI version recorded by the producing build.
 //
 // **Call this first.** It is the one accessor guaranteed to work on a context
@@ -1216,6 +1447,103 @@ HurrayStatus hurray_tensor_context_new(uint32_t abi_version,
                                        void *owner,
                                        HurrayOwnerReleaseFn owner_release,
                                        struct HurrayTensorContext **out_ctx)
+;
+
+// Borrows the tensor's descriptor handle.
+//
+// The returned handle carries every accessor in [`crate::descriptor`] and
+// [`crate::field`]. It is **borrowed**: the caller MUST NOT call
+// [`hurray_descriptor_destroy`] on it.
+//
+// # Safety
+//
+// `handle` and `out_descriptor` MUST be valid, non-null pointers.
+
+HurrayStatus hurray_tensor_descriptor(const struct HurrayTensor *handle,
+                                      struct HurrayDescriptor **out_descriptor)
+;
+
+// Destroys a tensor handle, its descriptor and every buffer it owns, then writes null
+// through `handle`.
+//
+// One call rather than two, so the teardown order is not the caller's problem.
+//
+// # Safety
+//
+// - `handle` MUST be a valid, non-null pointer to a `*mut HurrayTensor` produced by
+//   [`hurray_reader_next_tensor`][crate::hurray_reader_next_tensor].
+// - That tensor MUST NOT have been destroyed already.
+ HurrayStatus hurray_tensor_destroy(struct HurrayTensor **handle) ;
+
+// Destroys a writer, releases its transport context, and writes null through `handle`.
+//
+// There is nothing to flush: a tensor is fully on the wire, or the call that wrote it
+// failed. The transport's own close, if it has one, belongs in its release callback.
+//
+// # Safety
+//
+// - `handle` MUST be a valid, non-null pointer to a `*mut HurrayWriter` from
+//   [`hurray_writer_new`].
+// - That writer MUST NOT have been destroyed already.
+ HurrayStatus hurray_writer_destroy(struct HurrayWriter **handle) ;
+
+// Creates a writer over `transport`.
+//
+// The vtable is copied, so the caller MAY free the [`HurrayTransport`] struct immediately;
+// its `ctx` must stay valid until the writer is destroyed, at which point the vtable's
+// release callback is invoked.
+//
+// # Arguments
+//
+// - `transport` — Non-null; its `write` callback MUST be non-null.
+// - `options` — MAY be null for [`HurrayWriterOptions`]' documented defaults.
+// - `out_handle` — Non-null pointer to a `*mut HurrayWriter`; set on success.
+//
+// # Safety
+//
+// - `transport` MUST point to a readable [`HurrayTransport`] for the duration of the call.
+// - `options`, if non-null, MUST point to a readable [`HurrayWriterOptions`].
+// - `out_handle` MUST be a valid, non-null, writable pointer.
+
+HurrayStatus hurray_writer_new(const struct HurrayTransport *transport,
+                               const struct HurrayWriterOptions *options,
+                               struct HurrayWriter **out_handle)
+;
+
+// Writes one tensor — its descriptor then its payloads — blocking in the transport's
+// write callback as needed.
+//
+// `payloads` MUST have one entry per buffer in the descriptor's buffer table, in that
+// order, each with the declared `byte_size`. The whole tensor is validated before a byte
+// reaches the sink, so a mismatch is reported without putting a torn item on the wire.
+//
+// Returns:
+//
+// - [`HURRAY_OK`] — the tensor is entirely written and the payload pointers are no longer
+//   held.
+// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes mid-tensor, so a
+//   truncated item is on the wire. The writer is poisoned: every later call fails, and a
+//   fresh writer over the same connection is not a recovery.
+// - Whatever status the write callback returned, if it failed **before any byte of this
+//   tensor reached the sink**. Nothing was emitted, so the call MAY be retried. A failure
+//   after the first byte is reported as [`HURRAY_ERR_SINK_CLOSED`] instead, because at
+//   that point the damage is the same.
+//
+// Composite tensors are not yet writable from C; a composite head alone is not a valid
+// tensor and is refused.
+//
+// # Safety
+//
+// - `handle` MUST point to a live [`HurrayWriter`] and `descriptor` to a live
+//   [`HurrayDescriptor`].
+// - If `count` is non-zero, `payloads` MUST point to `count` readable [`HurrayIoSlice`]
+//   values, each describing memory readable for its own `len` bytes.
+// - All of that memory MUST stay valid and unmodified until this call returns.
+
+HurrayStatus hurray_writer_write_tensor(struct HurrayWriter *handle,
+                                        const struct HurrayDescriptor *descriptor,
+                                        const struct HurrayIoSlice *payloads,
+                                        uintptr_t count)
 ;
 
 #endif  /* HURRAY_H */
