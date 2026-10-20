@@ -80,6 +80,24 @@ The following are requirements on any implementation of the core, not internal d
 - **Composite nesting MUST be an explicit stack**, not call recursion, so a composite can
   survive being suspended mid-member (§ 10).
 
+The two access patterns the format has get two request vocabularies, and a core MUST admit
+both (§ 7):
+
+- A **sequential** core is fed forwards: it asks for *the next* `n` bytes. This serves
+  stream read and write, and the file writer's single forward pass.
+- A **random-access** core is asked by range: it names the bytes `[offset, offset + len)`
+  it needs and is told how many arrived. This serves the file reader, which seeks — the
+  trailer at `file_size - 40`, the index located from it, tensors found by name — and
+  therefore cannot be driven by a byte feed at all.
+
+A random-access core MUST NOT need the unusable state of § 6, and MUST NOT be given one:
+because every request is absolute and the read position advances only when a count is
+reported, a transfer whose count is lost is recovered by re-issuing the same range, and
+re-filling the destination from the start of that range is idempotent. For the same
+reason, a *job* that fails (a name not in the index, a descriptor that will not decode, a
+torn composite) MUST leave the core usable — only a failure during the open sequence, where
+there is no index to start again from, is terminal.
+
 ### Streaming Read
 
 - MUST implement an async tensor descriptor reader that reads exactly `descriptor_length` bytes before emitting a parsed `TensorDescriptor`.
@@ -112,6 +130,8 @@ The following are requirements on any implementation of the core, not internal d
 - A random-access reader MUST locate the trailer by seeking to `file_size - 40`, verify `trailer_magic` (ASCII `HRRY`), and use `index_offset` / `index_length` from the trailer to locate the index section.
 - When the `HAS_INDEX_CRC32C` file flag is set, the reader MUST verify the CRC-32C of the index section and reject the file on mismatch.
 - The implementation MUST support mmap-based zero-copy loading of tensor data buffers when the file's `data_buffer_alignment` matches or exceeds the host page size.
+- A reader MUST reject a `data_buffer_alignment` that is not a power of two, rather than carrying it into the padding arithmetic: `0` is a divisor there, and a crafted header MUST NOT be able to panic a parser.
+- The reader MUST NOT read a padding byte it was not asked for. Each request covers exactly one section, descriptor, or buffer; inter-buffer padding is skipped by the next request's offset, never consumed.
 
 ## Code Quality
 

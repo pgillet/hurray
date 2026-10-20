@@ -13,10 +13,24 @@ pub(crate) mod file_flags {
     pub const RESERVED_MASK: u32 = !0x07u32;
 }
 
-pub mod reader;
+mod sans_io;
 pub mod types;
+
+// Only the drivers need Tokio; the cores and the types they work on do not (ADR-041 § 1).
+#[cfg(feature = "tokio")]
+pub mod reader;
+#[cfg(feature = "tokio")]
 pub mod writer;
 
-pub use reader::{FileComposite, FileItem, FileReader, FileTensor, DEFAULT_MAX_COMPOSITE_DEPTH};
-pub use types::{FileWriterOptions, IndexEntry, KvValue};
-pub use writer::{FileCompositeNode, FileWriter};
+pub use sans_io::{
+    flatten_composite, CompositeWrite, FileReaderCore, FileStep, FileWriteOp, FileWriterCore,
+};
+pub use types::{
+    FileComposite, FileCompositeNode, FileItem, FileTensor, FileWriterOptions, IndexEntry, KvValue,
+    DEFAULT_MAX_COMPOSITE_DEPTH,
+};
+
+#[cfg(feature = "tokio")]
+pub use reader::FileReader;
+#[cfg(feature = "tokio")]
+pub use writer::FileWriter;
