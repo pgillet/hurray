@@ -19,7 +19,7 @@ foundation for all non-Python language bindings.
 
 The C ABI carries a single `uint32` version identifier exposed via a constant
 `HURRAY_C_ABI_VERSION` and a runtime accessor `hurray_c_abi_version()`. The
-current version is `6`:
+current version is `7`:
 
 | Version | Changes |
 |---------|---------|
@@ -29,6 +29,7 @@ current version is `6`:
 | `4` | `HurrayTensorContext`, so a consumer in any language can read a capsule's descriptor and ABI version (ADR-034). See [Tensor Context](#tensor-context). |
 | `5` | Layout-payload field reads, so a consumer can interpret every Tier 1 layout it can decode (ADR-039). See [Descriptor Field Reads](#descriptor-field-reads). |
 | `6` | The field identifier space grew to cover all five optional descriptor sections, which renamed the three ADR-039 accessors and added two (ADR-040). See [Descriptor Field Reads](#descriptor-field-reads). |
+| `7` | `HurrayReader` and `HurrayWriter` became real handles over a transport vtable, and `HurrayTensor` pairs a descriptor with its buffers (ADR-041). See [Streaming Over a Transport Vtable](#streaming-over-a-transport-vtable). |
 
 A consumer of the C ABI MUST query `hurray_c_abi_version()` before invoking any
 function whose contract changed in a later version. A consumer compiled against
@@ -49,8 +50,9 @@ handles**. Callers MUST NOT dereference or inspect the pointed-to memory directl
 | `HurrayBuffer*` | A buffer handle (data + metadata) |
 | `HurrayBufferList*` | An ordered, owning collection of buffer handles |
 | `HurrayTensorContext*` | A capsule's descriptor bytes, ABI version, and owner reference |
-| `HurrayReader*` | A streaming tensor reader |
-| `HurrayWriter*` | A streaming tensor writer |
+| `HurrayTensor*` | A tensor: a descriptor and its buffers, owned together |
+| `HurrayReader*` | A blocking stream reader over a caller-supplied transport |
+| `HurrayWriter*` | A blocking stream writer over a caller-supplied transport |
 
 Each handle is obtained from a `hurray_*_create` function and MUST be released by
 the corresponding `hurray_*_destroy` function. Double-free and use-after-free are
@@ -225,6 +227,86 @@ MUST NOT be reused for a different field.
   field, and a non-zero value MUST be rejected with
   `HURRAY_ERR_INDEX_OUT_OF_BOUNDS` rather than ignored.
 
+## Streaming Over a Transport Vtable
+
+A reader and a writer are **blocking** and take their bytes from callbacks the caller
+supplies at construction. The implementation MUST NOT open a path or own a file
+descriptor on the caller's behalf, and MUST NOT link an async runtime into the C library:
+a vtable composes with a socket, a pipe, a memory span, or a caller's own object, and
+file descriptors are not portable across the platforms this ABI targets.
+
+```c
+typedef HurrayStatus (*HurrayTransportReadFn)(
+    void* ctx, uint8_t* dst, size_t len, size_t* out_filled);
+typedef HurrayStatus (*HurrayTransportWriteFn)(
+    void* ctx, const uint8_t* src, size_t len, size_t* out_written);
+typedef void (*HurrayTransportReleaseFn)(void* ctx);
+
+typedef struct HurrayTransport {
+    void*                    ctx;
+    HurrayTransportReadFn    read;     /* required by a reader */
+    HurrayTransportWriteFn   write;    /* required by a writer */
+    HurrayTransportReleaseFn release;  /* optional */
+} HurrayTransport;
+```
+
+The struct is copied at construction; `ctx` MUST stay valid until the owning handle is
+destroyed, at which point `release` is invoked exactly once.
+
+### Transport Rules
+
+These are ABI surface, and none of them may be left to inference.
+
+- **Partial transfers are legal.** A callback MUST report the number of bytes it moved.
+  Fewer than requested is a short transfer: not an error, and not end of input.
+- **Zero means different things in each direction.** A read reporting `0` with
+  `HURRAY_OK` is end of input. A write reporting `0` with `HURRAY_OK` is **not**
+  completion — it means the sink will accept nothing more, and is reported as
+  `HURRAY_ERR_SINK_CLOSED` when an item is in flight.
+- **EOF, error, and closed are three distinct statuses**, never one.
+- **A failing callback MUST have moved no bytes** and MUST write `0` through its count
+  out-parameter. A transport that partially succeeds and *then* fails MUST report the
+  partial count with `HURRAY_OK` and surface the failure on the next call — what POSIX
+  `read` and `write` already do. This rule is what makes a failed call recoverable: the
+  handle's stream position still matches the transport's, so the call MAY be retried and
+  will resume rather than restart.
+- **No reentrancy.** A callback MUST NOT call any Hurray function on the handle that
+  invoked it.
+- **The context pointer belongs to the caller.** The implementation MUST NOT free it;
+  `release` is the only teardown hook.
+- **One handle, one thread at a time.** The absence of an internal runtime makes this a
+  rule rather than a threading model.
+
+### Reader and Writer Contracts
+
+| Function | Contract |
+|---|---|
+| `hurray_reader_new(transport, options, out_reader)` | `transport->read` MUST be non-null. `options` MAY be `NULL` for the documented defaults. |
+| `hurray_reader_next_tensor(reader, out_tensor)` | Returns `HURRAY_OK` with a new `HurrayTensor*`, `HURRAY_END_OF_STREAM` at a clean tensor boundary, `HURRAY_ERR_UNEXPECTED_EOF` if input ended inside a descriptor or buffer, or the read callback's own status. |
+| `hurray_reader_destroy(&reader)` | Destroys the reader, releases the transport context, writes `NULL` through the argument. Tensors already produced are unaffected. |
+| `hurray_writer_new(transport, options, out_writer)` | `transport->write` MUST be non-null. `options` MAY be `NULL`. |
+| `hurray_writer_write_tensor(writer, descriptor, payloads, count)` | `payloads` MUST have one `HurrayIoSlice` per buffer in the descriptor's buffer table, in that order, each of the declared `byte_size`. The tensor is validated before any byte reaches the sink. |
+| `hurray_writer_destroy(&writer)` | Destroys the writer and releases the transport context. There is nothing to flush. |
+
+A writer whose sink failed **after** the first byte of a tensor MUST be poisoned: a
+truncated item is on the wire, a stream cannot be un-sent, and a fresh writer over the
+same connection is not a recovery. A writer whose sink failed **before** the first byte
+MUST stay usable.
+
+Readers MUST allocate every buffer at the alignment its buffer handle *declares*, and the
+transport MUST write into that allocation directly: a consumer is entitled to rely on the
+declared alignment for SIMD loads, and no copy of a payload may happen after the transport
+writes it.
+
+A `HurrayTensor` owns its descriptor and its buffers. `hurray_tensor_descriptor` and
+`hurray_tensor_buffers` hand back **borrowed** handles, valid until
+`hurray_tensor_destroy`, which releases both halves in one call so the teardown order is
+not the caller's problem.
+
+> **Note (non-normative):** composite tensors are not reachable from this surface yet. A
+> composite head arrives as the buffer-less tensor it is on the wire, and writing one is
+> refused. File containers need random access and are a separate surface.
+
 ## Panic Safety
 
 Rust panics MUST NOT propagate across the FFI boundary. Every `extern "C"` function
@@ -258,10 +340,22 @@ typedef int32_t HurrayStatus;
 #define HURRAY_ERR_INDEX_OUT_OF_BOUNDS -11
 #define HURRAY_ERR_FIELD_NOT_PRESENT   -12
 #define HURRAY_ERR_FIELD_NOT_APPLICABLE -13
+#define HURRAY_ERR_TRANSPORT           -14
+#define HURRAY_ERR_SINK_CLOSED         -15
+#define HURRAY_ERR_UNEXPECTED_EOF      -16
+#define HURRAY_ERR_CORE_UNUSABLE       -17
+#define HURRAY_ERR_LIMIT_EXCEEDED      -18
+#define HURRAY_ERR_INVALID_STREAM      -19
+
+#define HURRAY_END_OF_STREAM             1
 ```
 
 Functions MUST return `HURRAY_ERR_NULL_POINTER` for any required pointer argument
 that is `NULL`, without invoking undefined behaviour.
+
+Positive status values report a normal outcome that is not plain success.
+`HURRAY_END_OF_STREAM` is the only one defined: a stream ending is not a failure, so
+consumers MUST test for errors with `status < 0` rather than `status != HURRAY_OK`.
 
 ## Buffer Release Callbacks
 

@@ -11,7 +11,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.87"
 license = "MIT OR Apache-2.0"
@@ -24,9 +24,12 @@ authors = ["Hurray Contributors"]
 [workspace.dependencies]
 # path + version: path is used for local workspace builds; version is what published
 # crates depend on (required by crates.io). Kept in lockstep with workspace.package.version.
-hurray-core = { path = "hurray-core", version = "0.1.0" }
-hurray-io = { path = "hurray-io", version = "0.1.0" }
-hurray-ffi = { path = "hurray-ffi", version = "0.1.0" }
+hurray-core = { path = "hurray-core", version = "0.2.0" }
+# default-features = false here, features = ["tokio"] at each consumer: hurray-ffi must
+# link no runtime (ADR-041 § 8), and a workspace default of true silently overrides a
+# member asking for false.
+hurray-io = { path = "hurray-io", version = "0.2.0", default-features = false }
+hurray-ffi = { path = "hurray-ffi", version = "0.2.0" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 half = "2"

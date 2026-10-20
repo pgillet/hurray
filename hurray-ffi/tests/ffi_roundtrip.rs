@@ -28,10 +28,13 @@ use hurray_ffi::{
         hurray_tensor_context_abi_version, hurray_tensor_context_descriptor,
         hurray_tensor_context_destroy, hurray_tensor_context_new,
     },
-    HurrayBuffer, HurrayTensorContext, HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_ERR_INTERNAL,
-    HURRAY_ERR_INTERNAL_PANIC, HURRAY_ERR_INVALID_LAYOUT, HURRAY_ERR_INVALID_MAGIC,
-    HURRAY_ERR_INVALID_SYNC_MODE, HURRAY_ERR_INVALID_TYPE, HURRAY_ERR_NULL_POINTER,
-    HURRAY_ERR_SYNC_MODE_MISMATCH, HURRAY_ERR_VERSION_MISMATCH, HURRAY_OK,
+    HurrayBuffer, HurrayTensorContext, HURRAY_END_OF_STREAM, HURRAY_ERR_BUFFER_TOO_SMALL,
+    HURRAY_ERR_CORE_UNUSABLE, HURRAY_ERR_FIELD_NOT_APPLICABLE, HURRAY_ERR_FIELD_NOT_PRESENT,
+    HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INTERNAL, HURRAY_ERR_INTERNAL_PANIC,
+    HURRAY_ERR_INVALID_LAYOUT, HURRAY_ERR_INVALID_MAGIC, HURRAY_ERR_INVALID_STREAM,
+    HURRAY_ERR_INVALID_SYNC_MODE, HURRAY_ERR_INVALID_TYPE, HURRAY_ERR_LIMIT_EXCEEDED,
+    HURRAY_ERR_NULL_POINTER, HURRAY_ERR_SINK_CLOSED, HURRAY_ERR_SYNC_MODE_MISMATCH,
+    HURRAY_ERR_TRANSPORT, HURRAY_ERR_UNEXPECTED_EOF, HURRAY_ERR_VERSION_MISMATCH, HURRAY_OK,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -116,7 +119,7 @@ fn encode_rank3_descriptor() -> Vec<u8> {
 // ── Phase 1 — ABI version and status codes ───────────────────────────────────
 
 #[test]
-fn abi_version_is_6() {
+fn abi_version_is_7() {
     // Raised 2 -> 3 by ADR-030: the native protocol capsule now wraps a
     // HurrayBufferList, so a v2 consumer must be told rather than dereference it.
     // Raised 3 -> 4 by ADR-034: the capsule context became HurrayTensorContext, so
@@ -126,7 +129,10 @@ fn abi_version_is_6() {
     // hurray_descriptor_layout_field_* to hurray_descriptor_field_* when the
     // identifier space grew to cover the optional sections, so a v5 consumer
     // must relink rather than resolve a symbol that no longer exists.
-    assert_eq!(hurray_c_abi_version(), 6);
+    // Raised 6 -> 7 by ADR-041: HurrayReader and HurrayWriter stopped being empty
+    // forward declarations and became real handles over a transport vtable, and
+    // HurrayTensor was added, so a v6 consumer's header no longer describes the library.
+    assert_eq!(hurray_c_abi_version(), 7);
 }
 
 #[test]
@@ -142,6 +148,19 @@ fn status_codes_have_expected_values() {
     assert_eq!(HURRAY_ERR_INVALID_SYNC_MODE, -8);
     assert_eq!(HURRAY_ERR_SYNC_MODE_MISMATCH, -9);
     assert_eq!(HURRAY_ERR_INTERNAL, -10);
+    assert_eq!(HURRAY_ERR_INDEX_OUT_OF_BOUNDS, -11);
+    assert_eq!(HURRAY_ERR_FIELD_NOT_PRESENT, -12);
+    assert_eq!(HURRAY_ERR_FIELD_NOT_APPLICABLE, -13);
+    assert_eq!(HURRAY_ERR_TRANSPORT, -14);
+    assert_eq!(HURRAY_ERR_SINK_CLOSED, -15);
+    assert_eq!(HURRAY_ERR_UNEXPECTED_EOF, -16);
+    assert_eq!(HURRAY_ERR_CORE_UNUSABLE, -17);
+    assert_eq!(HURRAY_ERR_LIMIT_EXCEEDED, -18);
+    assert_eq!(HURRAY_ERR_INVALID_STREAM, -19);
+
+    // The one positive status: a stream ending is not a failure, which is why `status < 0`
+    // is the error test and not `status != HURRAY_OK`.
+    assert_eq!(HURRAY_END_OF_STREAM, 1);
 }
 
 // ── Phase 2 — Buffer handle ───────────────────────────────────────────────────

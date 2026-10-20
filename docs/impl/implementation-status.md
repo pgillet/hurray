@@ -135,8 +135,8 @@ the HRRYFILE container.
 
 | Feature | `hurray-core` + `hurray-io` | `hurray-python` | `hurray-ffi` |
 |---|---|---|---|
-| Stream — write | ✅ | ✅ | ❌ |
-| Stream — read | ✅ | ✅ | ❌ |
+| Stream — write | ✅ | ✅ | ✅ |
+| Stream — read | ✅ | ✅ | ✅ |
 | Stream — composite tensors | ✅ | ✅ | ❌ |
 | File — write | ✅ | ✅ | ❌ |
 | File — read | ✅ | ✅ | ❌ |

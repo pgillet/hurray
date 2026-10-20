@@ -66,6 +66,29 @@ pub struct HurrayBuffer {
 // concurrent access — the C API has no shared-state concurrency model.
 unsafe impl Send for HurrayBuffer {}
 
+impl HurrayBuffer {
+    /// Builds a handle around memory this crate already owns.
+    ///
+    /// Bypasses [`hurray_buffer_from_ptr`]'s wire-byte parsing and validation on purpose:
+    /// the caller here holds an already-validated [`BufferHandle`] decoded from a
+    /// descriptor, and re-deriving it from bytes would be able to fail where nothing can.
+    pub(crate) fn from_parts(
+        data: *mut c_void,
+        handle: BufferHandle,
+        release: HurrayReleaseCallback,
+        release_context: *mut c_void,
+    ) -> Box<Self> {
+        Box::new(Self {
+            #[cfg(debug_assertions)]
+            sentinel: SENTINEL_LIVE,
+            data,
+            handle,
+            release,
+            release_context,
+        })
+    }
+}
+
 // ── Constructor ───────────────────────────────────────────────────────────────
 
 /// Creates a new [`HurrayBuffer`] handle from a raw data pointer and metadata.

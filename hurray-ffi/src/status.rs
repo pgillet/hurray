@@ -4,6 +4,9 @@
 //! indicates success; negative values indicate a specific error condition.
 //! Callers MUST check the return value of every function before using output
 //! pointer arguments.
+//!
+//! One positive value exists: [`HURRAY_END_OF_STREAM`]. It is not an error, which is why
+//! it is not negative, and why `status < 0` remains the error test.
 
 use hurray_core::Error;
 
@@ -12,7 +15,8 @@ use hurray_core::Error;
 /// Integer status code returned by every Hurray C ABI function.
 ///
 /// Zero (`HURRAY_OK`) indicates success. All negative values indicate errors.
-/// Positive values are reserved for future use.
+/// Positive values report a normal, non-error outcome that is not plain success;
+/// [`HURRAY_END_OF_STREAM`] is the only one so far.
 ///
 /// # Examples
 ///
@@ -72,6 +76,47 @@ pub const HURRAY_ERR_FIELD_NOT_PRESENT: HurrayStatus = -12;
 /// The requested field does not belong to this descriptor's layout.
 pub const HURRAY_ERR_FIELD_NOT_APPLICABLE: HurrayStatus = -13;
 
+/// A caller-supplied transport callback reported failure.
+///
+/// The handle is left usable: a callback that returns a failing status MUST NOT have
+/// moved any bytes (`hurray-ffi`'s transport contract, ADR-041 § 8), so the stream
+/// position is intact and the same call MAY be retried.
+pub const HURRAY_ERR_TRANSPORT: HurrayStatus = -14;
+
+/// The sink accepted zero bytes while an item was in flight.
+///
+/// Distinct from [`HURRAY_ERR_TRANSPORT`]: a truncated item is already on the wire, so
+/// the writer is poisoned and no further call on it can succeed (ADR-041 § 4).
+pub const HURRAY_ERR_SINK_CLOSED: HurrayStatus = -15;
+
+/// Input ended in the middle of a descriptor or a buffer.
+///
+/// Distinct from [`HURRAY_END_OF_STREAM`], which is input ending cleanly at a tensor
+/// boundary.
+pub const HURRAY_ERR_UNEXPECTED_EOF: HurrayStatus = -16;
+
+/// A transport moved bytes whose count was lost, so the handle's position no longer
+/// matches the transport's and nothing can recover it (ADR-041 § 6).
+///
+/// Unreachable from a conforming transport vtable, which reports a count for every
+/// transfer; the code exists because the state does.
+pub const HURRAY_ERR_CORE_UNUSABLE: HurrayStatus = -17;
+
+/// A descriptor, buffer, or nesting depth exceeded a configured limit.
+pub const HURRAY_ERR_LIMIT_EXCEEDED: HurrayStatus = -18;
+
+/// The byte stream is not a valid Hurray stream, or a stream that already failed was
+/// used again.
+pub const HURRAY_ERR_INVALID_STREAM: HurrayStatus = -19;
+
+// ── Non-error outcomes ────────────────────────────────────────────────────────
+
+/// Input ended cleanly at a tensor boundary: there is no next tensor.
+///
+/// Positive, because end of input is the normal way a stream finishes and callers test
+/// errors with `status < 0`.
+pub const HURRAY_END_OF_STREAM: HurrayStatus = 1;
+
 // ── Error mapping ─────────────────────────────────────────────────────────────
 
 /// Maps a [`hurray_core::Error`] to the closest [`HurrayStatus`] error code.
@@ -120,6 +165,41 @@ pub(crate) fn status_from_core_error(e: &Error) -> HurrayStatus {
         Error::InvalidSyncMode(_) => HURRAY_ERR_INVALID_SYNC_MODE,
 
         // Everything else (including future non_exhaustive variants)
+        _ => HURRAY_ERR_INTERNAL,
+    }
+}
+
+/// Maps a [`hurray_io::Error`] to the closest [`HurrayStatus`] error code.
+///
+/// Format errors are delegated to [`status_from_core_error`] so that a malformed
+/// descriptor reports the same code whether it arrived through
+/// [`hurray_descriptor_decode`][crate::hurray_descriptor_decode] or through a stream.
+pub(crate) fn status_from_io_error(e: &hurray_io::Error) -> HurrayStatus {
+    use hurray_io::Error as E;
+    match e {
+        E::Core(inner) => status_from_core_error(inner),
+
+        E::Io(_) => HURRAY_ERR_TRANSPORT,
+        E::UnexpectedEof => HURRAY_ERR_UNEXPECTED_EOF,
+        E::SinkClosed => HURRAY_ERR_SINK_CLOSED,
+        E::CoreUnusable(_) => HURRAY_ERR_CORE_UNUSABLE,
+
+        E::FrameTooLarge { .. } | E::CompositeNestingTooDeep { .. } => HURRAY_ERR_LIMIT_EXCEEDED,
+
+        E::InvalidHeader(_)
+        | E::MultiBufferLengthMismatch { .. }
+        | E::BufferSizeMismatch { .. }
+        | E::InvalidCrossMachineSyncMode { .. }
+        | E::UnallocatableBuffer { .. }
+        | E::TornComposite { .. }
+        | E::NotAComposite(_)
+        | E::CoreFailed => HURRAY_ERR_INVALID_STREAM,
+
+        // A driver bug, not a caller error: this crate's driver always reports a count it
+        // was offered. Reachable only if that invariant breaks, and never silently.
+        E::InvalidProgressReport { .. } | E::ZeroLengthWrite => HURRAY_ERR_INTERNAL,
+
+        // File-container variants and any future ones.
         _ => HURRAY_ERR_INTERNAL,
     }
 }

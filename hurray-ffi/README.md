@@ -4,10 +4,13 @@ The C ABI layer for **[Hurray](https://www.pascalgillet.net/hurray/)** — a zer
 streamable, language-agnostic tensor interchange format for AI/ML inference pipelines
 and scientific arrays.
 
-This crate exposes [`hurray-core`](https://crates.io/crates/hurray-core) over a stable C
-ABI — opaque handles, a function table, and buffer release callbacks — so any language that
-can call C can produce and consume Hurray tensors without going through Rust. No panics
-cross the FFI boundary.
+This crate exposes [`hurray-core`](https://crates.io/crates/hurray-core) and
+[`hurray-io`](https://crates.io/crates/hurray-io) over a stable C ABI — opaque handles, a
+function table, buffer release callbacks, and blocking stream read/write over a transport
+vtable the caller supplies — so any language that can call C can produce and consume
+Hurray tensors without going through Rust. No panics cross the FFI boundary, and no async
+runtime is linked: the stream decoding is a state machine, and the blocking happens inside
+the caller's own callbacks.
 
 ## Documentation
 

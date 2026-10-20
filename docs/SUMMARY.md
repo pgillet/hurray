@@ -59,6 +59,7 @@
 - [Layer 5: Streaming Interchange](cookbook/layer-5-streaming-interchange.md)
 - [Layer 6: File Format](cookbook/layer-6-file-format.md)
 - [Layer 7: C FFI](cookbook/layer-7-c-ffi.md)
+- [Streaming from C](cookbook/streaming-from-c.md)
 - [Block-Paged KV Cache](cookbook/block-paged-kv-cache.md)
 - [Composite Tensors](cookbook/composite-tensors.md)
 - [Streaming Composite Tensors](cookbook/composite-streaming.md)

@@ -15,6 +15,37 @@ workspace share one version and are released together.
 
 ### Added
 
+- **`hurray-ffi`** — blocking stream read and write over a caller-supplied **transport
+  vtable**, so a C consumer can finally obtain a tensor rather than only decode one handed
+  to it (ADR-041 § 8). `HurrayReader` and `HurrayWriter` stop being empty forward
+  declarations and become real handles: `hurray_reader_new` / `hurray_reader_next_tensor`
+  / `hurray_reader_destroy` and `hurray_writer_new` /
+  `hurray_writer_write_tensor` / `hurray_writer_destroy`, each over a `HurrayTransport`
+  of caller callbacks — `read`, `write`, and an optional `release` for the context pointer
+  Hurray never frees. Not a path and not a file descriptor: a vtable composes with a
+  socket, a pipe, a memory span, or the caller's own object. The callbacks block; nothing
+  inside Hurray does, because the decoding is `hurray-io`'s sans-io core and the C handles
+  are a second driver for it. **No async runtime is linked into a C consumer's binary.**
+  Payloads are passed as borrowed `HurrayIoSlice` values and are not retained after the
+  call; each buffer a reader returns is allocated at the alignment its buffer handle
+  *declares* and written into directly by the transport, so no copy of a payload happens
+  after that write. Flat tensors only — composites and file containers are not reachable
+  from this surface yet.
+- **`hurray-ffi`** — `HurrayTensor`, a handle owning a descriptor **and** its buffers
+  ([#174](https://github.com/pgillet/hurray/issues/174), the half of it a stream read
+  forces). A tensor is that pair, and a consumer holding only one half has either bytes it
+  cannot interpret or a description of bytes it does not have.
+  `hurray_tensor_descriptor` and `hurray_tensor_buffers` hand back borrowed handles, and
+  `hurray_tensor_destroy` releases both in one call whose order cannot be got wrong. The
+  native-protocol capsule still carries a `HurrayBufferList` (ADR-030 § 2), so #174 stays
+  open for that half.
+- **`hurray-ffi`** — seven status codes for the stream surface:
+  `HURRAY_ERR_TRANSPORT`, `HURRAY_ERR_SINK_CLOSED`, `HURRAY_ERR_UNEXPECTED_EOF`,
+  `HURRAY_ERR_CORE_UNUSABLE`, `HURRAY_ERR_LIMIT_EXCEEDED`, `HURRAY_ERR_INVALID_STREAM`,
+  and `HURRAY_END_OF_STREAM`. The last is the **first positive** status: a stream ending
+  is not a failure, so consumers test for errors with `status < 0` rather than
+  `status != HURRAY_OK`.
+
 - **`hurray-ffi`** — descriptor field reads, completing Compliance Level 1 for the C
   surface and giving it the five optional sections. A consumer handed a CSR descriptor
   could previously read `layout_tag == 0x07` and nothing further — not `nnz`, not which
@@ -35,9 +66,20 @@ workspace share one version and are released together.
 
 ### Changed
 
-- `HURRAY_C_ABI_VERSION` is `6`. No signature changed, but the identifier type and the
-  accessors are named for the descriptor rather than for the layout now that one
-  identifier space covers both — `HurrayLayoutField` is `HurrayDescriptorField`, and the
+- The workspace version is **0.2.0**. `HurrayReader` and `HurrayWriter` were publicly
+  constructible unit structs in 0.1.0 and are now opaque handles, which the `0.x`
+  convention makes a minor bump.
+- `HURRAY_C_ABI_VERSION` is `7`: the header no longer describes the same library, since
+  two forward declarations became real handles and `HurrayTensor` joined them. A v6
+  consumer must relink.
+- `hurray-ffi` depends on `hurray-io` with `default-features = false`. The workspace
+  dependency carries that default and the consumers that want the async drivers
+  (`hurray-python`, the conformance harness) opt in with `features = ["tokio"]` — a
+  workspace default of `true` silently overrides a member asking for `false`, which would
+  have put tokio in the C library after all.
+- The descriptor field identifier type and its accessors are named for the descriptor
+  rather than for the layout, now that one identifier space covers both —
+  `HurrayLayoutField` is `HurrayDescriptorField`, and the
   `hurray_descriptor_layout_field_*` functions dropped their `layout_` infix. The
   native-protocol capsule check is exact equality, so a capsule produced by an earlier
   build is refused by this one and vice versa.

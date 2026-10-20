@@ -205,8 +205,8 @@ detect.rust = "capability"
 detect.python = "python-attr"
 detect.ffi = "no"
 rows = [
-  { id = "stream_write", name = "Stream — write", capability = "stream_write", python_attrs = ["StreamWriter"] },
-  { id = "stream_read", name = "Stream — read", capability = "stream_read", python_attrs = ["StreamReader"] },
+  { id = "stream_write", name = "Stream — write", capability = "stream_write", python_attrs = ["StreamWriter"], ffi = "c-symbol", c_symbols = ["hurray_writer_new", "hurray_writer_write_tensor", "hurray_writer_destroy"] },
+  { id = "stream_read", name = "Stream — read", capability = "stream_read", python_attrs = ["StreamReader"], ffi = "c-symbol", c_symbols = ["hurray_reader_new", "hurray_reader_next_tensor", "hurray_reader_destroy", "hurray_tensor_buffers", "HURRAY_END_OF_STREAM"] },
   { id = "stream_composite", name = "Stream — composite tensors", capability = "stream_composite", python_attrs = ["Composite", "StreamWriter.write"] },
   { id = "file_write", name = "File — write", capability = "file_write", python_attrs = ["save"] },
   { id = "file_read", name = "File — read", capability = "file_read", python_attrs = ["load"] },

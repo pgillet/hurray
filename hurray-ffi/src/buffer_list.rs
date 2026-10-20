@@ -60,6 +60,21 @@ pub struct HurrayBufferList {
 // construction and destruction, never concurrent access.
 unsafe impl Send for HurrayBufferList {}
 
+impl HurrayBufferList {
+    /// Builds a list that already owns `buffers`, in descriptor buffer-table order.
+    ///
+    /// The push-one-at-a-time path exists so a C caller can fail halfway and keep
+    /// ownership of what it has not handed over; a list assembled inside this crate has no
+    /// such halfway state.
+    pub(crate) fn from_handles(buffers: Vec<*mut HurrayBuffer>) -> Box<Self> {
+        Box::new(Self {
+            #[cfg(debug_assertions)]
+            sentinel: SENTINEL_LIVE,
+            buffers,
+        })
+    }
+}
+
 // ── Constructor ───────────────────────────────────────────────────────────────
 
 /// Creates an empty [`HurrayBufferList`].

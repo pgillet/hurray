@@ -13,7 +13,23 @@ Accepted (2026-10-19)
 > drivers over the core, and composite reassembly moved out of the read core into a
 > synchronous `CompositeAssembler` — reassembly consumes no bytes, so it is not the byte
 > machine's work, and keeping them apart is what lets one core serve both the flat and the
-> assembled view of a stream. Steps 3–6 remain.
+> assembled view of a stream.
+>
+> Step 3 followed: `HurrayReader` and `HurrayWriter` became real handles over the § 8
+> transport vtable, driving the same core with no runtime linked, and the two stream rows
+> flipped for `hurray-ffi`. Two decisions it settled. **§ 8's rule that a failing callback
+> moved no bytes** is what makes a failed call retryable — it leaves the handle's position
+> matching the transport's, so `Unusable::LostReadCount` and `LostWriteCount` are
+> unreachable from a conforming C transport, exactly as step 2 found for the Tokio
+> drivers; a write that fails *after* its first byte is the one irrecoverable case, and is
+> reported as a closed sink because that is what it is. And
+> [#174](https://github.com/pgillet/hurray/issues/174) was re-examined here as this section
+> said it should be: a stream read yields a descriptor and its buffers, so it yields one
+> `HurrayTensor` owning both. The capsule half of #174 — ADR-030 § 2's pointer — is
+> deliberately left, so that issue stays open. Steps 4–6 remain, and the `level-2` row with
+> them: a C writer can emit descriptors it decoded but cannot yet originate one, and the
+> encode surface that fixes it is a descriptor builder rather than the single
+> `hurray_descriptor_encode` symbol the row names.
 
 Resolves the bridge question `HurrayReader` and `HurrayWriter` have carried as bare
 typedefs since C ABI 1, and which **ADR-034** deferred alongside "does streaming reuse

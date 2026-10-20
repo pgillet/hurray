@@ -130,7 +130,7 @@ Verified 2026-08-20. Correct this section when it stops being true.
 |-------|---------------|-----------------|
 | `hurray-core` | Format types, tensor descriptor, buffer handle, quantization descriptors. No I/O, no async. | `thiserror`, `serde` (feature-gated), `half`, `rayon` |
 | `hurray-io` | Async streaming and file format read/write. | `hurray-core`, `tokio`, `bytes` |
-| `hurray-ffi` | C ABI: opaque handles, function table, buffer release callbacks. No panics across FFI. | `hurray-core` |
+| `hurray-ffi` | C ABI: opaque handles, function table, buffer release callbacks, blocking stream I/O over a caller-supplied transport vtable. No panics across FFI, and no async runtime. | `hurray-core`, `hurray-io` (`default-features = false`) |
 | `hurray-python` | Python bindings with NumPy/PyTorch zero-copy interop via `__dlpack__`. | `hurray-ffi` or `hurray-core`, `pyo3` |
 
 ## Key Technical Decisions
