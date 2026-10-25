@@ -333,6 +333,86 @@ fn composite_members_land_at_their_declared_alignment() {
     assert_eq!(tile.buffers[0].as_ref(), &data[0][..]);
 }
 
+// ── a composite head owns no data region (#243) ───────────────────────────────
+
+/// The next descriptor-aligned offset, which is where a head's successor must begin.
+fn next_descriptor_offset(end: u64) -> u64 {
+    (end + 7) & !7
+}
+
+#[test]
+fn a_composite_head_gets_no_data_buffer_alignment_padding() {
+    let (bytes, _) = nested_composite_file();
+    let mut core = FileReaderCore::new(bytes.len() as u64);
+    let mut file = std::io::Cursor::new(bytes);
+    drive(&mut core, &mut file, usize::MAX).unwrap();
+
+    // File order, which is what adjacency is defined over.
+    let mut index = core.index().to_vec();
+    index.sort_unstable_by_key(|e| e.descriptor_offset);
+
+    for (position, entry) in index.iter().enumerate() {
+        // The heads of `nested_composite_file`, and the only `buffer_count = 0` tensors a
+        // descriptor can express (ADR-027 D-1).
+        if entry.name != "group" && entry.name != "part" {
+            continue;
+        }
+        let end = entry.descriptor_offset + u64::from(entry.descriptor_length);
+        assert_eq!(
+            (entry.data_offset, entry.data_length),
+            (end, 0),
+            "{}: a head's empty data region begins where its descriptor ends",
+            entry.name
+        );
+        let next = index
+            .get(position + 1)
+            .unwrap_or_else(|| panic!("{} has no member after it", entry.name));
+        assert_eq!(
+            next.descriptor_offset,
+            next_descriptor_offset(end),
+            "{}: its first member must follow at the 8-byte boundary, not past 4 KiB of \
+             forbidden padding",
+            entry.name
+        );
+    }
+    // Both heads were actually reached, so the loop above cannot have passed vacuously.
+    assert_eq!(index.len(), 5);
+}
+
+#[test]
+fn an_empty_tensor_still_gets_its_data_buffer_alignment_padding() {
+    // The boundary the fix must not cross: § Empty Tensors keeps one buffer of
+    // `byte_size = 0`, so it is aligned as a buffer. Only `buffer_count = 0` is exempt.
+    let descriptor = TensorDescriptor::new(
+        1,
+        0,
+        ElementType::Float32,
+        Shape::new(vec![0u64]).unwrap(),
+        0,
+        LayoutDescriptor::RowMajor,
+        vec![BufferHandle::empty(DeviceTag::Cpu)],
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let bytes = one_tensor_file("empty", &descriptor, &[&[]]);
+
+    let mut core = FileReaderCore::new(bytes.len() as u64);
+    let mut file = std::io::Cursor::new(bytes);
+    drive(&mut core, &mut file, usize::MAX).unwrap();
+
+    let entry = &core.index()[0];
+    assert_eq!(entry.data_length, 0);
+    assert_eq!(
+        entry.data_offset % 4096,
+        0,
+        "an empty tensor's buffer is still placed at data_buffer_alignment"
+    );
+    assert!(entry.data_offset > entry.descriptor_offset + u64::from(entry.descriptor_length));
+}
+
 // ── § 4 and § 6: short reads, abandoned reads, and failures that do not stick ─
 
 #[test]

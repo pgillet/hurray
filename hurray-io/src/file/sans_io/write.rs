@@ -264,13 +264,18 @@ impl FileWriterCore {
 
         let mut plan = vec![Seg::Staged];
 
-        // Padding from the descriptor's end to the first data buffer. Emitted even when
-        // the tensor declares no buffers, which `file-format.md § Composite Tensors`
-        // forbids for a composite head — see issue #243. Reproduced here deliberately:
-        // changing it changes the bytes of every existing file's composites, which is its
-        // own pass.
+        // Padding from the descriptor's end to the first data buffer. Keyed on there
+        // *being* a first data buffer: `buffer_count = 0` is reachable only for a
+        // composite head (ADR-027 D-1), which owns no buffer to align, and
+        // `file-format.md § Composite Tensors` forbids padding after one. An empty tensor
+        // still declares one buffer of `byte_size = 0`, so it keeps its padding — which
+        // is why the condition is the buffer table, not the payload size.
         let descriptor_end = descriptor_offset + u64::from(descriptor_length);
-        let data_offset = align_up(descriptor_end, self.alignment);
+        let data_offset = if buffers.is_empty() {
+            descriptor_end
+        } else {
+            align_up(descriptor_end, self.alignment)
+        };
         if data_offset > descriptor_end {
             plan.push(Seg::Zeros {
                 len: data_offset - descriptor_end,
