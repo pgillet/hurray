@@ -1491,7 +1491,15 @@ fn inspect_hrryfile_inner(data: &[u8], rows: &mut Vec<Row>, data_mode: DataMode)
                 if data_mode != DataMode::None {
                     let data_start = entry.data_offset as usize;
                     let data_end = data_start.saturating_add(entry.data_length as usize);
-                    if data_end <= data.len() && entry.data_length > 0 {
+                    // A zero-length data region is not a damaged file: a composite head
+                    // declares no buffer at all, and an empty tensor declares one of
+                    // `byte_size = 0`. Both used to be reported as out of bounds.
+                    if entry.data_length == 0 {
+                        rows.push(section_row(&format!(
+                            "TENSOR DATA {:?}: none (no data region)",
+                            entry.name
+                        )));
+                    } else if data_end <= data.len() {
                         append_data_rows(
                             rows,
                             &desc,
@@ -1937,5 +1945,106 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(all.contains("[1. 2. 3.]"), "expected numpy row in: {all}");
+    }
+
+    /// A `HRRYFILE` holding a group of one: a composite head, then its member.
+    ///
+    /// Built with `hurray-io`'s writer core rather than by hand so the header, index,
+    /// CRC-32C and trailer are the format's own, not a second implementation of it.
+    fn composite_container() -> Vec<u8> {
+        use hurray_core::layout::{CompositeLayout, CompositionRule};
+        use hurray_core::{
+            BufferHandle, DeviceTag, LayoutDescriptor, Shape, SyncMode, TensorDescriptor,
+            MIN_BUFFER_ALIGNMENT,
+        };
+        use hurray_io::file::{flatten_composite, FileCompositeNode, FileWriteOp, FileWriterCore};
+        use hurray_io::stream::WriteStep;
+
+        fn drain(mut op: FileWriteOp<'_>, sink: &mut Vec<u8>) {
+            while let WriteStep::Output { .. } = op.step().unwrap() {
+                let src = op.output_src();
+                sink.extend_from_slice(src);
+                let n = src.len();
+                op.report_written(n).unwrap();
+            }
+        }
+
+        let head = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            Shape::new(vec![2u64, 2]).unwrap(),
+            0,
+            LayoutDescriptor::Composite(CompositeLayout::new(CompositionRule::Group, 1).unwrap()),
+            vec![],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let member = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            Shape::new(vec![2u64, 2]).unwrap(),
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![BufferHandle::new(
+                16,
+                MIN_BUFFER_ALIGNMENT,
+                DeviceTag::Cpu,
+                SyncMode::ProducerSynced,
+            )
+            .unwrap()],
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let data = [0u8; 16];
+        let buffers: [&[u8]; 1] = [&data];
+        let members = [FileCompositeNode::Tensor {
+            name: "head.0",
+            descriptor: &member,
+            buffers: &buffers,
+        }];
+
+        let mut bytes = Vec::new();
+        let mut core = FileWriterCore::new();
+        drain(core.header(), &mut bytes);
+        for node in flatten_composite("head", &head, &members).unwrap() {
+            drain(
+                core.tensor(node.name, node.descriptor, node.buffers)
+                    .unwrap(),
+                &mut bytes,
+            );
+        }
+        drain(core.finish(vec![]).unwrap(), &mut bytes);
+        bytes
+    }
+
+    #[test]
+    fn inspect_hrryfile_reports_a_composite_head_as_having_no_data_region() {
+        let file = composite_container();
+        let (rows, err) = inspect(&file, DataMode::Hex);
+        assert!(err.is_none(), "{err:?}");
+
+        let all = rows
+            .iter()
+            .map(|r| r.field.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        // A head declares no buffer, so its `data_length` is 0 — which used to be
+        // reported as data lying outside the file.
+        assert!(
+            all.contains(r#"TENSOR DATA "head": none (no data region)"#),
+            "{all}"
+        );
+        assert!(!all.contains("outside file bounds"), "{all}");
+        // The member's data is still shown.
+        assert!(all.contains("TENSOR DATA (float32, shape=[2, 2]"), "{all}");
     }
 }

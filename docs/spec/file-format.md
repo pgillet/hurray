@@ -191,8 +191,8 @@ Each index entry is encoded as:
 | `name` | `uint8[name_length]` | UTF-8 tensor name bytes, no null terminator. |
 | `descriptor_offset` | `uint64` | Absolute byte offset of the tensor descriptor from the start of the file. |
 | `descriptor_length` | `uint32` | Length of the tensor descriptor in bytes. MUST equal the descriptor's own internal `descriptor_length` field; a reader MUST reject a file where they disagree. |
-| `data_offset` | `uint64` | Absolute byte offset of the first data buffer from the start of the file. |
-| `data_length` | `uint64` | Total byte length of all data buffers for this tensor (sum of all buffer `byte_size` values, plus inter-buffer padding within the tensor's data region). |
+| `data_offset` | `uint64` | Absolute byte offset of the first data buffer from the start of the file. When `buffer_count` is `0` (a composite head; see [§ Composite Tensors](#composite-tensors)) the tensor has no data buffer, and this field MUST be `descriptor_offset + descriptor_length` — the offset the empty data region begins at. |
+| `data_length` | `uint64` | Total byte length of all data buffers for this tensor (sum of all buffer `byte_size` values, plus inter-buffer padding within the tensor's data region). MUST be `0` when `buffer_count` is `0`. |
 | `flags` | `uint32` | Reserved for future use. MUST be `0x00000000`. |
 
 Index entry names MUST be unique within the index (case-sensitive, byte-exact).
@@ -226,7 +226,8 @@ rule applies to a tensor's data buffer(s); a `buffer_count = 0` head has none �
 therefore still aligned as a buffer. A writer MUST NOT insert `data_buffer_alignment`
 padding after a composite head's descriptor. The next descriptor (the head's first
 member) follows at the ordinary `8`-byte descriptor-aligned offset (§ Descriptor
-Placement).
+Placement). The head's index entry records `data_offset = descriptor_offset +
+descriptor_length` and `data_length = 0` (§ Index Section).
 
 Membership is recovered from the head's `member_count` plus **descriptor-offset order**:
 the members are the next `N` tensors, ordered by ascending `descriptor_offset`, following
@@ -355,12 +356,21 @@ A conforming streaming writer produces a valid Hurray file in a single forward p
 2. For each tensor, in any order:
    a. Record the current byte offset as `descriptor_offset`.
    b. Write the tensor descriptor.
-   c. Insert `0x00` padding to the next `data_buffer_alignment` boundary.
+   c. If the tensor declares at least one data buffer, insert `0x00` padding to the
+      next `data_buffer_alignment` boundary. A tensor with `buffer_count = 0` (a
+      composite head; see [§ Composite Tensors](#composite-tensors)) has no data
+      buffer to align, and the writer MUST NOT insert this padding. An *empty*
+      tensor (§ Empty Tensors) declares one buffer of `byte_size = 0` and is padded
+      here like any other.
    d. Record the current byte offset as `data_offset`.
-   e. Write each data buffer; insert padding between buffers and after the last
-      one to maintain `data_buffer_alignment`.
-   f. Insert `0x00` padding to the next 8-byte boundary.
-   g. Record `descriptor_length` and `data_length` for the index.
+   e. Write each data buffer, inserting `0x00` padding *between* buffers to place
+      each one at a `data_buffer_alignment` boundary. No `data_buffer_alignment`
+      padding follows the last buffer.
+   f. Insert `0x00` padding to the next 8-byte boundary, so the next descriptor
+      begins on its own boundary (§ Descriptor Placement).
+   g. Record `descriptor_length` and `data_length` for the index. `data_length`
+      spans `data_offset` through the last byte of the last data buffer and
+      excludes step f's padding; it is `0` when `buffer_count = 0`.
 3. Write the KV metadata section (if any). Record its offset and length.
 4. Write the index section. Record its offset and length.
 5. Compute CRC-32C over the index section bytes. Set `HAS_INDEX_CRC32C` in `file_flags`. Write the 40-byte trailer with `index_crc32c` populated.

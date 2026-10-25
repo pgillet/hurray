@@ -13,6 +13,13 @@
 //! `wire_compat.rs`: a frozen-corpus test that reaches into another test's helpers can
 //! have its meaning changed from outside.
 //!
+//! One exception, and the reason `nested_composite_padded_head.hrry` exists: the 0.1.0
+//! writer padded composite heads to `data_buffer_alignment`, which `file-format.md §
+//! Composite Tensors` forbids (issue #243). Fixing that moved the bytes, so
+//! `nested_composite.hrry` was regenerated — and the original 0.1.0 bytes were kept
+//! beside it, read-only, because a file written by 0.1.0 must still read today and this
+//! corpus is the only place that can show it.
+//!
 //! See `fixtures/file/README.md` for provenance.
 
 use std::io::Cursor;
@@ -381,4 +388,58 @@ async fn the_reader_still_reads_the_frozen_bytes() {
     };
     assert_eq!(tail.name, "group.1");
     assert_eq!(tail.buffers[0].as_ref(), &payload(16, 0x99)[..]);
+}
+
+/// A composite file written by 0.1.0 — padded heads and all — still reads.
+///
+/// This is the fixed bug's compatibility half (issue #243). The padding was writer-side
+/// waste, not a wire change: every offset a reader uses comes from the footer index, so
+/// the 8 KiB of forbidden padding in these bytes is skipped rather than parsed. The file
+/// is identical to `nested_composite.hrry` in every logical respect, which is what makes
+/// the assertions below shareable with it.
+#[tokio::test]
+async fn a_composite_written_before_the_head_padding_fix_still_reads() {
+    let legacy = fixture("nested_composite_padded_head.hrry");
+    let current = fixture("nested_composite.hrry");
+    // The point of keeping both: same tensors, 8 KiB apart.
+    assert_eq!(legacy.len(), current.len() + 8192);
+
+    let mut reader = FileReader::open(Cursor::new(legacy)).await.unwrap();
+    assert_eq!(
+        reader.tensor_names().collect::<Vec<_>>(),
+        ["group", "part", "part.0", "part.1", "group.1"]
+    );
+
+    // Membership keys on descriptor-offset adjacency, which the padding stretched but did
+    // not reorder — so a depth-2 walk still recovers the same tree.
+    let composite = reader.read_composite("group").await.unwrap();
+    assert_eq!(composite.members.len(), 2);
+    let FileItem::Composite(inner) = &composite.members[0] else {
+        panic!("expected the first member to be a nested composite")
+    };
+    assert_eq!(inner.name, "part");
+    assert_eq!(inner.members.len(), 2);
+    let FileItem::Tensor(tile_0) = &inner.members[0] else {
+        panic!("expected a plain tensor")
+    };
+    assert_eq!(tile_0.descriptor, partition_member(0));
+    assert_eq!(tile_0.buffers[0].as_ref(), &payload(128, 0x77)[..]);
+    let FileItem::Tensor(tile_1) = &inner.members[1] else {
+        panic!("expected a plain tensor")
+    };
+    assert_eq!(tile_1.buffers[0].as_ref(), &payload(128, 0x88)[..]);
+    let FileItem::Tensor(tail) = &composite.members[1] else {
+        panic!("expected a plain tensor")
+    };
+    assert_eq!(tail.name, "group.1");
+    assert_eq!(tail.buffers[0].as_ref(), &payload(16, 0x99)[..]);
+
+    // And by name, the path that reads the head's index entry — whose `data_offset` the
+    // old writer recorded past 4 KiB of padding.
+    let head = reader.read_tensor("group").await.unwrap();
+    assert!(head.buffers.is_empty());
+    assert_eq!(
+        head.descriptor,
+        composite_head(CompositionRule::Group, 2, vec![8, 8])
+    );
 }

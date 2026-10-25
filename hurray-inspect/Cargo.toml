@@ -20,3 +20,9 @@ path = "src/main.rs"
 hurray-core = { workspace = true }
 thiserror = { workspace = true }
 half = { workspace = true }
+
+[dev-dependencies]
+# Tests only, and only for the container writer: this crate parses `HRRYFILE` with its own
+# self-contained reader, and hand-rolling a valid header/index/CRC/trailer in a test would
+# be asserting against a second parser rather than against the format.
+hurray-io = { workspace = true }

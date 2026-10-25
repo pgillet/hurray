@@ -134,6 +134,17 @@ workspace share one version and are released together.
   reserving memory for it, and checks the trailer's `index_offset + index_length` for
   overflow. A crafted footer claiming 2^40 entries in a 1 KiB file asked for an allocation
   that size, and the sum could wrap.
+- `FileWriter` no longer pads a composite head's descriptor to `data_buffer_alignment`,
+  which `file-format.md § Composite Tensors` forbids: a head declares no data buffer, so
+  there is nothing to align. The writer padded before it looked at the buffer table, so
+  every head cost a full alignment block — 4 KiB by default, and a model with one
+  composite per layer paid that per layer. A head's index entry now records
+  `data_offset = descriptor_offset + descriptor_length` with `data_length = 0`, and its
+  first member follows at the ordinary 8-byte descriptor boundary. An *empty* tensor still
+  declares one buffer of `byte_size = 0` and is still aligned as a buffer. Files written
+  before the fix are unaffected on read — every offset comes from the footer index — and
+  `tests/fixtures/file/nested_composite_padded_head.hrry` is kept as the 0.1.0 output that
+  proves it.
 - ADR-038 was on disk but absent from the documentation navigation, so it never appeared
   on the published site.
 

@@ -440,6 +440,7 @@ version = "0.2.0"
 dependencies = [
  "half",
  "hurray-core",
+ "hurray-io",
  "thiserror",
 ]
 
