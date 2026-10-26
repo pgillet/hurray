@@ -51,6 +51,36 @@ workspace share one version and are released together.
   *declares* and written into directly by the transport, so no copy of a payload happens
   after that write. Flat tensors only — composites and file containers are not reachable
   from this surface yet.
+- **`hurray-ffi`** — blocking **`HRRYFILE` read and write** over the same transport
+  vtable, so a C consumer can load one tensor out of a model file by name with no runtime
+  linked (ADR-041 §§ 7, 8). `HurrayFileReader` opens a container — header, trailer, footer
+  index, KV section — and then answers `hurray_file_reader_tensor_count` /
+  `..._tensor_name` from the index without reading tensor data at all;
+  `hurray_file_reader_read_descriptor` decodes one descriptor so a loader can decide
+  whether it wants the tensor, and `hurray_file_reader_read_tensor` reads exactly the
+  ranges that one tensor occupies. `HurrayFileWriter` emits one forward pass:
+  `hurray_file_writer_new` (which writes the 64-byte header),
+  `hurray_file_writer_write_tensor` per tensor, then `hurray_file_writer_finish` for the
+  KV section, index and trailer. The vtable grew two callbacks for the read side —
+  **`read_at(ctx, offset, dst, len, &filled)` and `size(ctx, &size)`** — because a
+  container is *addressed* rather than consumed: its trailer sits at `size - 40`, and
+  every request the core makes is absolute. That is also what makes a failed range read
+  retryable in a way a stream read is not: re-issuing it reads *the same bytes*. A file
+  writer needs only `write`. Flat tensors and the KV section; composites are not reachable
+  from this surface yet. Runnable as
+  `cargo run --example file_vtable -p hurray-ffi`, with C tabs on
+  [Random Access Without a Runtime](docs/cookbook/random-access-without-a-runtime.md).
+- **`hurray-ffi`** — the **KV metadata section in both directions**, through one tagged
+  `HurrayKvValue` (and `HurrayKvEntry`) used for reads and writes alike, with the
+  `HURRAY_KV_*` kinds being the section's own wire tags. An entry a reader hands back can
+  be passed straight to another file's `hurray_file_writer_finish`, so copying a model's
+  metadata from one container to another needs no transcription. All seven value kinds,
+  arrays included.
+- **`hurray-ffi`** — two status codes for the file surface: `HURRAY_ERR_NOT_FOUND` for a
+  name that is not in the index — the one file-read failure that is a question rather than
+  a defect — and `HURRAY_ERR_INVALID_FILE` for the container-format family. Bad magic and
+  an unsupported container version keep reporting `HURRAY_ERR_INVALID_MAGIC` and
+  `HURRAY_ERR_VERSION_MISMATCH`, which say more.
 - **`hurray-ffi`** — `HurrayTensor`, a handle owning a descriptor **and** its buffers
   ([#174](https://github.com/pgillet/hurray/issues/174), the half of it a stream read
   forces). A tensor is that pair, and a consumer holding only one half has either bytes it
@@ -105,9 +135,23 @@ workspace share one version and are released together.
 - The workspace version is **0.2.0**. `HurrayReader` and `HurrayWriter` were publicly
   constructible unit structs in 0.1.0 and are now opaque handles, which the `0.x`
   convention makes a minor bump.
-- `HURRAY_C_ABI_VERSION` is `7`: the header no longer describes the same library, since
-  two forward declarations became real handles and `HurrayTensor` joined them. A v6
-  consumer must relink.
+- `HURRAY_C_ABI_VERSION` is `8`: the header no longer describes the same library. Two
+  forward declarations became real handles, `HurrayTensor` joined them, and
+  `HurrayTransport` grew `read_at` and `size` — appended rather than grouped beside
+  `read`, so a caller using positional initialisation gets null for the new fields instead
+  of a release callback where a positional read belongs. A v6 or v7 consumer must relink.
+- **A failed file write ends the file**, on every surface. By the time bytes move, a
+  tensor has consumed its name in the footer index and staged its descriptor, so a retry
+  under the same name would describe a file other than the one on the sink. The C writer
+  therefore poisons itself whether the failure landed before or after the first byte; the
+  status still distinguishes the two (`HURRAY_ERR_SINK_CLOSED` after, the transport's own
+  status before) but the recovery is the same: write the file again from the start. This
+  is a documented contract rather than a behaviour change — the underlying sharp edge is
+  the Rust driver's too, and is reported as
+  [#248](https://github.com/pgillet/hurray/issues/248).
+- `hurray_io::Error::InvalidHeader` now maps to `HURRAY_ERR_INVALID_FILE` rather than
+  `HURRAY_ERR_INVALID_STREAM` across the C surface. Every site that produces it is in the
+  file container, and no C entry point could reach it before this release.
 - `hurray-ffi` depends on `hurray-io` with `default-features = false`. The workspace
   dependency carries that default and the consumers that want the async drivers
   (`hurray-python`, the conformance harness) opt in with `features = ["tokio"]` — a

@@ -48,9 +48,30 @@ Accepted (2026-10-19)
 > leaves the core usable — only a failed *open* is terminal, there being no index to start
 > again from. § 6's unusable state is a property of a stream, not of the contract.
 >
-> The C file surface — the vtable's `seek` and `size`, the file handles, the ABI bump — is
-> step 4's second half and gets its own pass, as the C stream surface did. Steps 5 and 6
-> remain.
+> Step 4's second half followed ([#247](https://github.com/pgillet/hurray/issues/247)):
+> `HurrayFileReader` and `HurrayFileWriter` drive the random-access core over the same
+> vtable, with the KV section reachable in both directions, and the `file_write`,
+> `file_read` and `file_kv` rows flipped for `hurray-ffi`. ABI 7 → 8.
+>
+> **It replaced § 8's `seek` with a positional `read_at`,** and the reason is step 4a's
+> own finding: the core's request vocabulary is *absolute* ranges. A `seek`+`read` pair
+> reintroduces a cursor the core never uses, turns one range request into two callbacks
+> with two statuses, and leaves a "seek succeeded, read failed" interleave to reason
+> about. One positional call carries its own position, which makes § 8's "a failing
+> callback moved no bytes" rule say something stronger here than it does for a stream: a
+> failed range read is retryable because re-issuing it reads *the same bytes*. `size`
+> stayed, called once at open, because a container is located from its end and no amount
+> of reading discovers a file's length.
+>
+> It also found the one place where the C surface must promise **less** than the stream
+> surface does. **A failed file write ends the file.** By the time bytes move, the tensor
+> has consumed its name in the index and staged its descriptor, and the core offers no
+> rollback for either, so a retry under the same name would describe a file other than the
+> one on the sink. The writer is poisoned whether the failure landed before or after the
+> first byte. The underlying sharp edge is the Rust driver's too, and is reported as
+> [#248](https://github.com/pgillet/hurray/issues/248) rather than fixed here.
+>
+> Steps 5 and 6 remain.
 
 Resolves the bridge question `HurrayReader` and `HurrayWriter` have carried as bare
 typedefs since C ABI 1, and which **ADR-034** deferred alongside "does streaming reuse
@@ -368,11 +389,17 @@ Questions; what is decided here is that a sequential byte feed alone does not se
 ### 8. The C ABI: a blocking surface over a transport vtable, with stated rules
 
 `HurrayReader` and `HurrayWriter` become real handles. Every call is synchronous and
-returns a `HurrayStatus`. Transport is a vtable of callbacks — read, write, seek, size —
-supplied by the caller at construction.
+returns a `HurrayStatus`. Transport is a vtable of callbacks — read, write, read_at, size
+— supplied by the caller at construction.
 
-Not a path and not a file descriptor: `FileReader` must seek, file descriptors are already
-a portability wart of their own
+> **Amended by step 4b:** this section said `seek` where it now says `read_at`. Step 4a
+> established that the file core asks in *absolute* ranges, so the positional read is the
+> callback that matches the request: one call, one count, no cursor anyone must agree
+> about, and a failed call that re-reads the same bytes when re-issued. A callback is free
+> to implement it as a seek and a read of its own — that is where a cursor belongs.
+
+Not a path and not a file descriptor: a file reader must address its input, file
+descriptors are already a portability wart of their own
 ([#215](https://github.com/pgillet/hurray/issues/215)), and a vtable composes with a
 socket, a pipe, a memory span, or a caller's own object. It is the structural choice Arrow
 makes when it hands a consumer four producer callbacks.
@@ -390,6 +417,10 @@ inference:
   input. The write callback returning `0` is *not* completion — a closed or failing sink is
   reported through a distinct status, which is an error if an item is in flight.
 - **EOF, error and closed are three statuses**, never one.
+- **A range request is absolute.** `read_at` reads from the offset it is handed and keeps
+  no cursor of its own; `size` is asked once, when a file reader is created. `read_at`
+  reporting `0` is a file shorter than its own structure claims, not an end of input —
+  a container's end is known from its size, never discovered by reading.
 - **No reentrancy.** A callback MUST NOT call any Hurray function on the handle that
   invoked it. The alternative is a reentrancy and thread-safety contract on every handle,
   bought for a use case nobody has.
@@ -440,7 +471,8 @@ bound on a visible structure that a C caller can also walk.
 4. **Random-access driver and the file core**, then the C file surface. Split in two when
    scheduled, as step 3's precedent required: the Rust core and drivers
    ([#242](https://github.com/pgillet/hurray/issues/242)), then the C file surface with
-   its own ABI bump.
+   its own ABI bump ([#247](https://github.com/pgillet/hurray/issues/247)), which is where
+   `seek` became `read_at`.
 5. **Python async surface**, implementing the semantics § 6 already fixes — readiness-driven
    per § 6a, with a test that cancels mid-tensor and asserts the reader resumes rather than
    poisons, and one that cancels mid-write and asserts it poisons rather than silently

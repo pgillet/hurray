@@ -138,9 +138,9 @@ the HRRYFILE container.
 | Stream — write | ✅ | ✅ | ✅ |
 | Stream — read | ✅ | ✅ | ✅ |
 | Stream — composite tensors | ✅ | ✅ | ❌ |
-| File — write | ✅ | ✅ | ❌ |
-| File — read | ✅ | ✅ | ❌ |
-| File — KV metadata section | ✅ | ✅ | ❌ |
+| File — write | ✅ | ✅ | ✅ |
+| File — read | ✅ | ✅ | ✅ |
+| File — KV metadata section | ✅ | ✅ | ✅ |
 | File — composite tensors | ✅ | ✅ | ❌ |
 
 ## Network Transport (Level 3)

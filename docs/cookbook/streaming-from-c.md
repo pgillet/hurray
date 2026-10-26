@@ -176,6 +176,8 @@ fn vtable(pipe: &mut Pipe) -> HurrayTransport {
         read: Some(pipe_read),
         write: Some(pipe_write),
         release: None, // the context is ours; Hurray never frees it
+        // A stream needs no range reads: `read_at` and `size` stay null.
+        ..HurrayTransport::default()
     }
 }
 

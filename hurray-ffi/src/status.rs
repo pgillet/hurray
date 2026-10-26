@@ -109,6 +109,21 @@ pub const HURRAY_ERR_LIMIT_EXCEEDED: HurrayStatus = -18;
 /// used again.
 pub const HURRAY_ERR_INVALID_STREAM: HurrayStatus = -19;
 
+/// No tensor of that name is in the file's footer index.
+///
+/// Its own code because it is the one file-read failure that is a question, not a defect:
+/// the file is fine and the caller asked for something that is not in it.
+pub const HURRAY_ERR_NOT_FOUND: HurrayStatus = -20;
+
+/// The file is not a valid HRRYFILE container, or the file being written would not be one.
+///
+/// Covers the footer family — a CRC mismatch, an index that overruns the trailer,
+/// unknown header flag bits — and the name and KV-key rules a writer must keep. A wrong
+/// magic or an unsupported container version report
+/// [`HURRAY_ERR_INVALID_MAGIC`] and [`HURRAY_ERR_VERSION_MISMATCH`] instead, which say
+/// more.
+pub const HURRAY_ERR_INVALID_FILE: HurrayStatus = -21;
+
 // ── Non-error outcomes ────────────────────────────────────────────────────────
 
 /// Input ended cleanly at a tensor boundary: there is no next tensor.
@@ -186,8 +201,7 @@ pub(crate) fn status_from_io_error(e: &hurray_io::Error) -> HurrayStatus {
 
         E::FrameTooLarge { .. } | E::CompositeNestingTooDeep { .. } => HURRAY_ERR_LIMIT_EXCEEDED,
 
-        E::InvalidHeader(_)
-        | E::MultiBufferLengthMismatch { .. }
+        E::MultiBufferLengthMismatch { .. }
         | E::BufferSizeMismatch { .. }
         | E::InvalidCrossMachineSyncMode { .. }
         | E::UnallocatableBuffer { .. }
@@ -199,7 +213,25 @@ pub(crate) fn status_from_io_error(e: &hurray_io::Error) -> HurrayStatus {
         // was offered. Reachable only if that invariant breaks, and never silently.
         E::InvalidProgressReport { .. } | E::ZeroLengthWrite => HURRAY_ERR_INTERNAL,
 
-        // File-container variants and any future ones.
+        // The file container. Magic and version reuse the codes that already name them,
+        // rather than flattening into one "bad file" status that says less.
+        E::InvalidFileMagic | E::InvalidTrailerMagic => HURRAY_ERR_INVALID_MAGIC,
+        E::UnsupportedContainerVersion { .. } => HURRAY_ERR_VERSION_MISMATCH,
+        E::TensorNotFound(_) => HURRAY_ERR_NOT_FOUND,
+        // `InvalidHeader` is the container's own variant — every site that produces it is
+        // under `file/` — so it belongs here rather than with the stream codes.
+        E::InvalidHeader(_)
+        | E::IndexCrc32cMismatch { .. }
+        | E::IndexOverrunsTrailer
+        | E::ReservedFileFlagBits { .. }
+        | E::DuplicateTensorName(_)
+        | E::TensorNameEmpty
+        | E::TensorNameTooLong { .. }
+        | E::DuplicateKvKey(_)
+        | E::KvKeyEmpty
+        | E::KvKeyTooLong { .. } => HURRAY_ERR_INVALID_FILE,
+
+        // Any future variants.
         _ => HURRAY_ERR_INTERNAL,
     }
 }

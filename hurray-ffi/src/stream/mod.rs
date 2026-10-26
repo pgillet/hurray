@@ -14,12 +14,15 @@
 //! That is what lets the blocking contract live entirely in the caller's callbacks.
 //!
 //! Scope: flat tensors. A composite head reads back as the buffer-less tensor it is on the
-//! wire, and writing a composite from C is not supported yet. File containers need the
-//! random-access half of the core and are not here either.
+//! wire, and writing a composite from C is not supported yet. File containers are
+//! [`crate::file`]'s: they are addressed rather than consumed, so they drive the
+//! random-access core over the vtable's `read_at` and `size` callbacks.
 
 mod reader;
-mod tensor;
-mod transport;
+// `pub(crate)`: the file surface in `crate::file` is a second driver over the same vtable
+// and hands out the same tensor handle, so it shares these two internals.
+pub(crate) mod tensor;
+pub(crate) mod transport;
 mod writer;
 
 pub use reader::{hurray_reader_destroy, hurray_reader_new, hurray_reader_next_tensor};
@@ -27,7 +30,8 @@ pub use reader::{HurrayReader, HurrayReaderOptions};
 pub use tensor::HurrayTensor;
 pub use tensor::{hurray_tensor_buffers, hurray_tensor_descriptor, hurray_tensor_destroy};
 pub use transport::{
-    HurrayTransport, HurrayTransportReadFn, HurrayTransportReleaseFn, HurrayTransportWriteFn,
+    HurrayTransport, HurrayTransportReadAtFn, HurrayTransportReadFn, HurrayTransportReleaseFn,
+    HurrayTransportSizeFn, HurrayTransportWriteFn,
 };
 pub use writer::{hurray_writer_destroy, hurray_writer_new, hurray_writer_write_tensor};
 pub use writer::{HurrayIoSlice, HurrayWriter, HurrayWriterOptions};
