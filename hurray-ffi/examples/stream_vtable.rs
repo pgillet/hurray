@@ -89,6 +89,7 @@ fn vtable(pipe: &mut Pipe) -> HurrayTransport {
         // Hurray never frees the context; `pipe` is owned by main, so there is nothing to
         // release. A caller whose transport is heap-allocated passes its free function here.
         release: None,
+        ..HurrayTransport::default()
     }
 }
 

@@ -8,7 +8,13 @@
 //!
 //! One destroy call, and its internal order cannot be got wrong.
 
+use std::ffi::c_void;
+
+use bytes::Bytes;
+use hurray_core::TensorDescriptor;
+
 use crate::{
+    buffer::HurrayBuffer,
     buffer_list::{hurray_buffer_list_destroy, HurrayBufferList},
     descriptor::{hurray_descriptor_destroy, HurrayDescriptor},
     panic::{catch, null_check},
@@ -161,4 +167,47 @@ pub unsafe extern "C" fn hurray_tensor_destroy(handle: *mut *mut HurrayTensor) -
         *handle = std::ptr::null_mut();
         HURRAY_OK
     })
+}
+
+// ── Handing a decoded tensor to C ─────────────────────────────────────────────
+
+/// Releases one buffer's backing `Bytes` when its [`HurrayBuffer`] is destroyed.
+///
+/// # Safety
+///
+/// `context` MUST be the `Box<Bytes>` leaked by [`tensor_handle`] for this buffer, and
+/// MUST NOT have been released already.
+unsafe extern "C" fn release_bytes(_data: *mut c_void, context: *mut c_void) {
+    if !context.is_null() {
+        // SAFETY: context is the Box<Bytes> leaked for this buffer; hurray_buffer_destroy
+        // invokes a release callback exactly once.
+        drop(Box::from_raw(context as *mut Bytes));
+    }
+}
+
+/// Wraps a decoded tensor in the handles a C caller can hold.
+///
+/// No payload is copied: each `HurrayBuffer` points into the destination the core
+/// allocated and the transport filled, and owns a reference to it. Shared by the stream
+/// and file readers — a decoded tensor is the same thing whichever core produced it.
+pub(crate) fn tensor_handle(
+    descriptor: TensorDescriptor,
+    buffers: Vec<Bytes>,
+) -> Box<HurrayTensor> {
+    let mut handles: Vec<*mut HurrayBuffer> = Vec::with_capacity(buffers.len());
+    for (bytes, handle) in buffers.into_iter().zip(descriptor.buffers.iter().copied()) {
+        let boxed = Box::new(bytes);
+        let data = boxed.as_ptr() as *mut c_void;
+        let context = Box::into_raw(boxed) as *mut c_void;
+        handles.push(Box::into_raw(HurrayBuffer::from_parts(
+            data,
+            handle,
+            Some(release_bytes),
+            context,
+        )));
+    }
+
+    let list = Box::into_raw(HurrayBufferList::from_handles(handles));
+    let descriptor = Box::into_raw(HurrayDescriptor::from_descriptor(descriptor));
+    HurrayTensor::from_parts(descriptor, list)
 }

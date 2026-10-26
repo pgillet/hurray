@@ -137,6 +137,7 @@ fn vtable(ctx: &mut MemTransport) -> HurrayTransport {
         read: Some(mem_read),
         write: Some(mem_write),
         release: Some(mem_release),
+        ..HurrayTransport::default()
     }
 }
 
@@ -709,6 +710,7 @@ fn a_transport_without_the_callback_its_handle_needs_is_refused() {
             read: None,
             write: Some(mem_write),
             release: None,
+            ..HurrayTransport::default()
         };
         let mut reader: *mut HurrayReader = std::ptr::null_mut();
         assert_eq!(
@@ -721,6 +723,7 @@ fn a_transport_without_the_callback_its_handle_needs_is_refused() {
             read: Some(mem_read),
             write: None,
             release: None,
+            ..HurrayTransport::default()
         };
         let mut writer: *mut HurrayWriter = std::ptr::null_mut();
         assert_eq!(

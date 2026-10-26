@@ -19,7 +19,7 @@ foundation for all non-Python language bindings.
 
 The C ABI carries a single `uint32` version identifier exposed via a constant
 `HURRAY_C_ABI_VERSION` and a runtime accessor `hurray_c_abi_version()`. The
-current version is `7`:
+current version is `8`:
 
 | Version | Changes |
 |---------|---------|
@@ -30,6 +30,7 @@ current version is `7`:
 | `5` | Layout-payload field reads, so a consumer can interpret every Tier 1 layout it can decode (ADR-039). See [Descriptor Field Reads](#descriptor-field-reads). |
 | `6` | The field identifier space grew to cover all five optional descriptor sections, which renamed the three ADR-039 accessors and added two (ADR-040). See [Descriptor Field Reads](#descriptor-field-reads). |
 | `7` | `HurrayReader` and `HurrayWriter` became real handles over a transport vtable, and `HurrayTensor` pairs a descriptor with its buffers (ADR-041). See [Streaming Over a Transport Vtable](#streaming-over-a-transport-vtable). |
+| `8` | The transport vtable grew `read_at` and `size`, and `HurrayFileReader` / `HurrayFileWriter` read and write the `HRRYFILE` container (ADR-041 § 8). See [File Containers Over a Transport Vtable](#file-containers-over-a-transport-vtable). |
 
 A consumer of the C ABI MUST query `hurray_c_abi_version()` before invoking any
 function whose contract changed in a later version. A consumer compiled against
@@ -241,14 +242,24 @@ typedef HurrayStatus (*HurrayTransportReadFn)(
 typedef HurrayStatus (*HurrayTransportWriteFn)(
     void* ctx, const uint8_t* src, size_t len, size_t* out_written);
 typedef void (*HurrayTransportReleaseFn)(void* ctx);
+typedef HurrayStatus (*HurrayTransportReadAtFn)(
+    void* ctx, uint64_t offset, uint8_t* dst, size_t len, size_t* out_filled);
+typedef HurrayStatus (*HurrayTransportSizeFn)(void* ctx, uint64_t* out_size);
 
 typedef struct HurrayTransport {
     void*                    ctx;
-    HurrayTransportReadFn    read;     /* required by a reader */
-    HurrayTransportWriteFn   write;    /* required by a writer */
+    HurrayTransportReadFn    read;     /* required by a stream reader */
+    HurrayTransportWriteFn   write;    /* required by any writer */
     HurrayTransportReleaseFn release;  /* optional */
+    HurrayTransportReadAtFn  read_at;  /* required by a file reader */
+    HurrayTransportSizeFn    size;     /* required by a file reader */
 } HurrayTransport;
 ```
+
+One struct serves both surfaces, and a caller populates only the callbacks its transport
+has. `read_at` and `size` are appended rather than grouped beside `read` so that a caller
+using positional initialisation gets null for them instead of a release callback where a
+positional read is expected.
 
 The struct is copied at construction; `ctx` MUST stay valid until the owning handle is
 destroyed, at which point `release` is invoked exactly once.
@@ -270,6 +281,14 @@ These are ABI surface, and none of them may be left to inference.
   `read` and `write` already do. This rule is what makes a failed call recoverable: the
   handle's stream position still matches the transport's, so the call MAY be retried and
   will resume rather than restart.
+- **A range request is absolute.** `read_at` MUST read from the offset it is given and
+  MUST NOT rely on, or be relied upon to advance, any cursor of its own; a short range
+  read is re-requested at the offset that follows. Because the request carries its own
+  position, a failed `read_at` is always retryable — re-issuing it reads the same bytes.
+- **`size` is read once**, when a file reader is created. A container is located from its
+  end, so its size is a precondition of opening it and never something a read discovers:
+  `read_at` reporting `0` means the file is shorter than its own structure claims, which
+  is `HURRAY_ERR_UNEXPECTED_EOF` and not an end-of-input signal.
 - **No reentrancy.** A callback MUST NOT call any Hurray function on the handle that
   invoked it.
 - **The context pointer belongs to the caller.** The implementation MUST NOT free it;
@@ -306,6 +325,80 @@ not the caller's problem.
 > **Note (non-normative):** composite tensors are not reachable from this surface yet. A
 > composite head arrives as the buffer-less tensor it is on the wire, and writing one is
 > refused. File containers need random access and are a separate surface.
+
+## File Containers Over a Transport Vtable
+
+A `HRRYFILE` container is **addressed**, not consumed: its trailer sits at `size - 40`,
+its footer index is located from there, and a tensor is read by name without the bytes
+between being touched. A file reader therefore asks for absolute ranges through `read_at`
+and learns the file's length through `size`, while a file writer emits one forward pass
+through `write` alone and never seeks back.
+
+### Reader and Writer Contracts
+
+| Function | Contract |
+|---|---|
+| `hurray_file_reader_new(transport, out_reader)` | `transport->read_at` and `transport->size` MUST both be non-null. Reads the header, trailer, index and KV section. A failed open is terminal: there is no index to start from, so no handle is produced and the transport context is released. |
+| `hurray_file_reader_tensor_count(reader, out_count)` | Number of footer-index entries. Every tensor is individually addressable, composite heads and members included. |
+| `hurray_file_reader_tensor_name(reader, index, out_name, out_len)` | Borrows entry `index`'s name as UTF-8 bytes, **not** NUL-terminated, valid until the reader is destroyed. `HURRAY_ERR_INDEX_OUT_OF_BOUNDS` past the end. |
+| `hurray_file_reader_read_descriptor(reader, name, name_len, out_descriptor)` | Decodes one descriptor and reads no buffer data. The descriptor handle is **owned** by the caller. |
+| `hurray_file_reader_read_tensor(reader, name, name_len, out_tensor)` | Reads a descriptor and every buffer, as an owned `HurrayTensor*`. `HURRAY_ERR_NOT_FOUND` if the name is not in the index. |
+| `hurray_file_reader_kv_count(reader, out_count)` / `hurray_file_reader_kv_entry(reader, index, out_entry)` | The file-level KV section, in file order. An entry's pointers borrow from the reader. |
+| `hurray_file_reader_destroy(&reader)` | Destroys the reader, releases the transport context, writes `NULL`. Tensors already produced are unaffected; borrowed name and KV pointers are not. |
+| `hurray_file_writer_new(transport, options, out_writer)` | `transport->write` MUST be non-null. Writes the 64-byte header during the call. `options` MAY be `NULL` for 4096-byte data alignment and an index in write order. |
+| `hurray_file_writer_write_tensor(writer, name, name_len, descriptor, payloads, count)` | As the stream writer's, plus the name that becomes the footer-index entry: non-empty, at most 65 535 bytes, unique within the file. |
+| `hurray_file_writer_finish(writer, kv, kv_count)` | Writes the KV section, the footer index and the trailer. `kv` MAY be `NULL` with a count of `0`. Until this returns `HURRAY_OK` the bytes are not a container. Calling it twice MUST fail. |
+| `hurray_file_writer_destroy(&writer)` | Destroys the writer and releases the transport context. Any flush or close belongs to the transport's release callback. |
+
+**A failed file write ends the file.** Unlike a stream write, a file write MUST NOT be
+presented as retryable: by the time bytes move, the tensor has consumed its name in the
+index and staged its descriptor, so a second attempt under the same name would describe a
+file other than the one on the sink. The writer is poisoned whether the failure came
+before or after the first byte; the status distinguishes the two (`HURRAY_ERR_SINK_CLOSED`
+after, the callback's own status before) but the recovery is the same one: write the file
+again from the start.
+
+### KV Metadata
+
+One tagged value type serves reads and writes, so a KV section read from one file can be
+handed straight to another file's writer without being transcribed:
+
+```c
+#define HURRAY_KV_STRING   0x01
+#define HURRAY_KV_INT64    0x02
+#define HURRAY_KV_UINT64   0x03
+#define HURRAY_KV_FLOAT64  0x04
+#define HURRAY_KV_BOOL     0x05
+#define HURRAY_KV_BYTES    0x06
+#define HURRAY_KV_ARRAY    0x07
+
+typedef struct HurrayKvValue {
+    uint8_t  kind;
+    bool     bool_value;
+    int64_t  i64_value;
+    uint64_t u64_value;
+    double   f64_value;
+    const uint8_t* data;       /* STRING (UTF-8, no NUL) or BYTES */
+    size_t         data_len;
+    const struct HurrayKvValue* items;  /* ARRAY */
+    size_t                      item_count;
+} HurrayKvValue;
+
+typedef struct HurrayKvEntry {
+    const uint8_t* key;        /* UTF-8, non-empty, no NUL terminator */
+    size_t         key_len;
+    HurrayKvValue  value;
+} HurrayKvEntry;
+```
+
+The `kind` values are the KV section's own wire tags, not a second numbering. Fields the
+tag does not select MUST be zero on a read and are ignored on a write. An array's elements
+MUST be scalars — the format forbids an array of arrays, and a nested one MUST be refused
+with `HURRAY_ERR_INVALID_FILE` rather than flattened.
+
+> **Note (non-normative):** composite tensors are not reachable from this surface yet. A
+> composite head reads back as the buffer-less tensor it is in the file, and writing one is
+> refused.
 
 ## Panic Safety
 
@@ -346,6 +439,8 @@ typedef int32_t HurrayStatus;
 #define HURRAY_ERR_CORE_UNUSABLE       -17
 #define HURRAY_ERR_LIMIT_EXCEEDED      -18
 #define HURRAY_ERR_INVALID_STREAM      -19
+#define HURRAY_ERR_NOT_FOUND           -20
+#define HURRAY_ERR_INVALID_FILE        -21
 
 #define HURRAY_END_OF_STREAM             1
 ```

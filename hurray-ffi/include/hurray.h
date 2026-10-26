@@ -20,9 +20,30 @@
 // ```
 // use hurray_ffi::HURRAY_C_ABI_VERSION;
 //
-// assert_eq!(HURRAY_C_ABI_VERSION, 7);
+// assert_eq!(HURRAY_C_ABI_VERSION, 8);
 // ```
-#define HURRAY_C_ABI_VERSION 7
+#define HURRAY_C_ABI_VERSION 8
+
+// UTF-8 string: `data` and `data_len`. Not NUL-terminated.
+#define HURRAY_KV_STRING 1
+
+// Signed 64-bit integer: `i64_value`.
+#define HURRAY_KV_INT64 2
+
+// Unsigned 64-bit integer: `u64_value`.
+#define HURRAY_KV_UINT64 3
+
+// IEEE 754 binary64: `f64_value`.
+#define HURRAY_KV_FLOAT64 4
+
+// Boolean: `bool_value`.
+#define HURRAY_KV_BOOL 5
+
+// Opaque bytes: `data` and `data_len`.
+#define HURRAY_KV_BYTES 6
+
+// Homogeneous array of scalars: `items` and `item_count`.
+#define HURRAY_KV_ARRAY 7
 
 // Opaque handle to a buffer registered with the Hurray C ABI.
 //
@@ -47,6 +68,23 @@ typedef struct HurrayBufferList HurrayBufferList;
 // detail. Callers MUST treat it as a black-box opaque pointer created by
 // [`hurray_descriptor_decode`] and destroyed by [`hurray_descriptor_destroy`].
 typedef struct HurrayDescriptor HurrayDescriptor;
+
+// Opaque handle to a blocking file reader.
+//
+// Not `#[repr(C)]`; the layout is an implementation detail. Created by
+// [`hurray_file_reader_new`] and released exactly once by [`hurray_file_reader_destroy`].
+//
+// One handle, one thread at a time.
+typedef struct HurrayFileReader HurrayFileReader;
+
+// Opaque handle to a blocking file writer.
+//
+// Not `#[repr(C)]`; the layout is an implementation detail. Created by
+// [`hurray_file_writer_new`] and released exactly once by
+// [`hurray_file_writer_destroy`].
+//
+// One handle, one thread at a time.
+typedef struct HurrayFileWriter HurrayFileWriter;
 
 // Opaque handle to a blocking stream reader.
 //
@@ -180,6 +218,48 @@ typedef struct HurraySyncEventPayload {
 // index `0x00`.
 typedef uint32_t HurrayDescriptorField;
 
+// One typed KV value: a `kind` tag and the fields that tag selects.
+//
+// A flat tagged struct rather than a union, because every binding generator downstream
+// of this header reads a struct correctly and few read a union well. Fields the tag does
+// not select are zero on a read and ignored on a write.
+//
+// Arrays nest one level and no further — the format forbids an array of arrays — so an
+// `items` element is always a scalar.
+typedef struct HurrayKvValue {
+    // Which `HURRAY_KV_*` kind this value is.
+    uint8_t kind;
+    // Set when `kind` is [`HURRAY_KV_BOOL`].
+    bool bool_value;
+    // Set when `kind` is [`HURRAY_KV_INT64`].
+    int64_t i64_value;
+    // Set when `kind` is [`HURRAY_KV_UINT64`].
+    uint64_t u64_value;
+    // Set when `kind` is [`HURRAY_KV_FLOAT64`].
+    double f64_value;
+    // First byte of a [`HURRAY_KV_STRING`] or [`HURRAY_KV_BYTES`] payload, else null.
+    const uint8_t *data;
+    // Byte length of `data`. A string is UTF-8 and carries no NUL terminator.
+    uintptr_t data_len;
+    // First element of a [`HURRAY_KV_ARRAY`], else null.
+    const struct HurrayKvValue *items;
+    // Number of elements at `items`.
+    uintptr_t item_count;
+} HurrayKvValue;
+
+// One KV pair: a borrowed key and its value.
+//
+// The key is UTF-8 and MUST NOT be empty; it carries no NUL terminator, so `key_len` is
+// not optional.
+typedef struct HurrayKvEntry {
+    // First byte of the key.
+    const uint8_t *key;
+    // Key length in bytes.
+    uintptr_t key_len;
+    // The value this key maps to.
+    struct HurrayKvValue value;
+} HurrayKvEntry;
+
 // Reads up to `len` bytes into `dst`, reporting the count through `out_filled`.
 //
 // - Returns [`HURRAY_OK`] and writes the number of bytes transferred, which MAY be fewer
@@ -220,6 +300,42 @@ typedef HurrayStatus (*HurrayTransportWriteFn)(void *ctx,
 // callbacks that already cross this ABI (ADR-009).
 typedef void (*HurrayTransportReleaseFn)(void *ctx);
 
+// Reads up to `len` bytes from absolute offset `offset` into `dst`, reporting the count
+// through `out_filled`.
+//
+// Required by a file reader, which addresses its input rather than consuming it: the
+// trailer sits at `size - 40`, the index is located from it, and tensors are found by
+// name. Every request is absolute, so this callback keeps no cursor — `pread`,
+// `ReadFile` with an `OVERLAPPED` offset, or a seek-and-read pair the callback does
+// itself.
+//
+// - Returns [`HURRAY_OK`] and writes the number of bytes transferred, which MAY be fewer
+//   than `len`. A short read is normal: the remainder of the range is requested again.
+// - Writing `0` with [`HURRAY_OK`] means the file is shorter than its own index claims,
+//   which Hurray reports as
+//   [`HURRAY_ERR_UNEXPECTED_EOF`][crate::HURRAY_ERR_UNEXPECTED_EOF]. It does not signal
+//   the end of the input: a file's end is known from its size, never discovered by
+//   reading.
+// - On any other return value the callback MUST have transferred **no bytes** and MUST
+//   write `0` through `out_filled`, per the rule on [`HurrayTransportReadFn`]. Because
+//   the range is absolute, such a call is retryable: re-issuing it reads the same bytes.
+//
+// A callback MUST NOT call any Hurray function on the handle that invoked it.
+typedef HurrayStatus (*HurrayTransportReadAtFn)(void *ctx,
+                                                uint64_t offset,
+                                                uint8_t *dst,
+                                                uintptr_t len,
+                                                uintptr_t *out_filled);
+
+// Reports the total size of the input in bytes.
+//
+// Called exactly once, when a file reader is created — the container is located from its
+// end, so the size is a precondition of opening it rather than something a read
+// discovers. `fstat`, `GetFileSizeEx`, or the length of a memory span.
+//
+// Returns [`HURRAY_OK`] and writes the size, or any other value to fail the open.
+typedef HurrayStatus (*HurrayTransportSizeFn)(void *ctx, uint64_t *out_size);
+
 // A caller-supplied byte transport: a context pointer plus the callbacks that move bytes.
 //
 // Not a path and not a file descriptor. A vtable composes with a socket, a pipe, a memory
@@ -241,7 +357,37 @@ typedef struct HurrayTransport {
     HurrayTransportWriteFn write;
     // Invoked once when the owning handle is destroyed. MAY be null.
     HurrayTransportReleaseFn release;
+    // Required by a file reader; MAY be null for a stream or write-only transport.
+    HurrayTransportReadAtFn read_at;
+    // Required by a file reader; MAY be null for a stream or write-only transport.
+    HurrayTransportSizeFn size;
 } HurrayTransport;
+
+// Container options for a file writer.
+//
+// Pass null to [`hurray_file_writer_new`] for the defaults: 4096-byte data buffer
+// alignment, index in write order.
+typedef struct HurrayFileWriterOptions {
+    // Alignment applied to every data buffer in the file. MUST be a power of two in
+    // `[4096, 2097152]`. Default: 4096, which is page-aligned on every common OS and so
+    // lets a consumer mmap a buffer directly.
+    uint32_t data_buffer_alignment;
+    // Sort the footer index by tensor name instead of leaving it in write order, so a
+    // reader can binary-search it. Default: false.
+    bool sorted_index;
+} HurrayFileWriterOptions;
+
+// One borrowed payload: a pointer and a length.
+//
+// Borrowed for the duration of the [`hurray_writer_write_tensor`] call and not retained
+// afterwards. A zero-length slice MAY carry a null `ptr`.
+typedef struct HurrayIoSlice {
+    // First byte of the payload.
+    const uint8_t *ptr;
+    // Payload length in bytes. MUST equal the declared `byte_size` of the buffer handle
+    // at the same index of the descriptor's buffer table.
+    uintptr_t len;
+} HurrayIoSlice;
 
 // Resource limits and transport assumptions for a reader.
 //
@@ -279,18 +425,6 @@ typedef struct HurrayWriterOptions {
     // means nothing to the far end.
     bool enforce_cross_machine_sync;
 } HurrayWriterOptions;
-
-// One borrowed payload: a pointer and a length.
-//
-// Borrowed for the duration of the [`hurray_writer_write_tensor`] call and not retained
-// afterwards. A zero-length slice MAY carry a null `ptr`.
-typedef struct HurrayIoSlice {
-    // First byte of the payload.
-    const uint8_t *ptr;
-    // Payload length in bytes. MUST equal the declared `byte_size` of the buffer handle
-    // at the same index of the descriptor's buffer table.
-    uintptr_t len;
-} HurrayIoSlice;
 
 // Strided (`0x03`) per-dimension strides, in logical elements. Signed array.
 #define HURRAY_LAYOUT_FIELD_STRIDED_STRIDES 66304
@@ -587,6 +721,21 @@ typedef struct HurrayIoSlice {
 // The byte stream is not a valid Hurray stream, or a stream that already failed was
 // used again.
 #define HURRAY_ERR_INVALID_STREAM -19
+
+// No tensor of that name is in the file's footer index.
+//
+// Its own code because it is the one file-read failure that is a question, not a defect:
+// the file is fine and the caller asked for something that is not in it.
+#define HURRAY_ERR_NOT_FOUND -20
+
+// The file is not a valid HRRYFILE container, or the file being written would not be one.
+//
+// Covers the footer family — a CRC mismatch, an index that overruns the trailer,
+// unknown header flag bits — and the name and KV-key rules a writer must keep. A wrong
+// magic or an unsupported container version report
+// [`HURRAY_ERR_INVALID_MAGIC`] and [`HURRAY_ERR_VERSION_MISMATCH`] instead, which say
+// more.
+#define HURRAY_ERR_INVALID_FILE -21
 
 // Input ended cleanly at a tensor boundary: there is no next tensor.
 //
@@ -940,7 +1089,7 @@ HurrayStatus hurray_buffer_memory_class(const struct HurrayBuffer *buffer,
 // # Examples
 //
 // ```
-// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 7);
+// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 8);
 // ```
  uint32_t hurray_c_abi_version(void) ;
 
@@ -1185,6 +1334,270 @@ HurrayStatus hurray_descriptor_layout_tag(const struct HurrayDescriptor *handle,
 HurrayStatus hurray_descriptor_shape(const struct HurrayDescriptor *handle,
                                      uint64_t *out_dims,
                                      uintptr_t *out_rank)
+;
+
+// Destroys a reader, releases its transport context, and writes null through `handle`.
+//
+// Tensors already produced by [`hurray_file_reader_read_tensor`] are unaffected: each
+// owns its own buffers and outlives the reader. Name and KV pointers are *not* — they
+// borrow from the handle and die with it.
+//
+// # Safety
+//
+// - `handle` MUST be a valid, non-null pointer to a `*mut HurrayFileReader` from
+//   [`hurray_file_reader_new`].
+// - That reader MUST NOT have been destroyed already.
+ HurrayStatus hurray_file_reader_destroy(struct HurrayFileReader **handle) ;
+
+// Writes the number of entries in the file's KV metadata section.
+//
+// # Safety
+//
+// `handle` and `out_count` MUST be valid, non-null pointers.
+
+HurrayStatus hurray_file_reader_kv_count(const struct HurrayFileReader *handle,
+                                         uint64_t *out_count)
+;
+
+// Copies KV entry `index` — its key and its typed value — into `out_entry`.
+//
+// The pointers inside the entry borrow from the reader: valid until
+// [`hurray_file_reader_destroy`], never to be freed. The entry can be handed straight to
+// [`hurray_file_writer_finish`][crate::file::hurray_file_writer_finish], which is how a
+// KV section is copied from one file into another without being transcribed.
+//
+// Returns [`HURRAY_ERR_INDEX_OUT_OF_BOUNDS`][crate::HURRAY_ERR_INDEX_OUT_OF_BOUNDS] if
+// `index` is past the end.
+//
+// # Safety
+//
+// `handle` MUST point to a live [`HurrayFileReader`], and `out_entry` MUST be a valid,
+// non-null pointer writable for one [`HurrayKvEntry`].
+
+HurrayStatus hurray_file_reader_kv_entry(const struct HurrayFileReader *handle,
+                                         uint64_t index,
+                                         struct HurrayKvEntry *out_entry)
+;
+
+// Opens a Hurray file over `transport`: header, trailer, footer index and KV section.
+//
+// The transport's `read_at` and `size` callbacks are both required — the container is
+// located from its end, so its size is a precondition of opening it. The vtable is
+// copied, so the caller MAY free the [`HurrayTransport`] struct immediately; its `ctx`
+// must stay valid until the reader is destroyed, at which point the vtable's release
+// callback is invoked.
+//
+// Returns:
+//
+// - [`HURRAY_OK`] — `*out_handle` is a new reader.
+// - [`HURRAY_ERR_INVALID_MAGIC`][crate::HURRAY_ERR_INVALID_MAGIC] — not a `HRRYFILE`.
+// - [`HURRAY_ERR_VERSION_MISMATCH`][crate::HURRAY_ERR_VERSION_MISMATCH] — a container
+//   version this build does not read.
+// - [`HURRAY_ERR_INVALID_FILE`][crate::HURRAY_ERR_INVALID_FILE] — the footer does not
+//   check out: a CRC mismatch, an index overrunning the trailer, unknown header flags.
+// - [`HURRAY_ERR_UNEXPECTED_EOF`][crate::HURRAY_ERR_UNEXPECTED_EOF] — the file is
+//   shorter than its own structure claims.
+// - Whatever status a callback returned, if it failed. A failed open is terminal: there
+//   is no index to start from, so create a new reader rather than retrying this one.
+//
+// # Safety
+//
+// - `transport` MUST point to a readable [`HurrayTransport`] for the duration of the call.
+// - `out_handle` MUST be a valid, non-null, writable pointer.
+
+HurrayStatus hurray_file_reader_new(const struct HurrayTransport *transport,
+                                    struct HurrayFileReader **out_handle)
+;
+
+// Reads the descriptor of the tensor named `name`, without reading a byte of its data.
+//
+// What a loader inspects before deciding whether it wants the tensor at all: element
+// type, shape, layout, quantization.
+//
+// `*out_descriptor` is **owned** by the caller and released with
+// [`hurray_descriptor_destroy`][crate::descriptor::hurray_descriptor_destroy].
+//
+// Returns [`HURRAY_ERR_NOT_FOUND`][crate::HURRAY_ERR_NOT_FOUND] if the name is not in
+// the index. A failed read leaves the reader usable: the request was for an absolute
+// range, so nothing about the reader's position is lost.
+//
+// # Safety
+//
+// - `handle` MUST point to a live [`HurrayFileReader`].
+// - `name` MUST be readable for `name_len` bytes.
+// - `out_descriptor` MUST be a valid, non-null, writable pointer.
+
+HurrayStatus hurray_file_reader_read_descriptor(struct HurrayFileReader *handle,
+                                                const uint8_t *name,
+                                                uintptr_t name_len,
+                                                struct HurrayDescriptor **out_descriptor)
+;
+
+// Reads the tensor named `name`: its descriptor and every data buffer.
+//
+// `*out_tensor` is **owned** by the caller and released with
+// [`hurray_tensor_destroy`][crate::hurray_tensor_destroy], which frees both halves.
+//
+// Every buffer points at memory the core allocated at the alignment its buffer handle
+// *declares*, which the transport wrote into directly — so a SIMD load on it is sound,
+// and no copy of the payload happened after that write.
+//
+// Returns [`HURRAY_ERR_NOT_FOUND`][crate::HURRAY_ERR_NOT_FOUND] for a name that is not
+// in the index. A composite head reads back as the buffer-less tensor it is in the file;
+// walking its members from C is not supported yet.
+//
+// # Safety
+//
+// - `handle` MUST point to a live [`HurrayFileReader`].
+// - `name` MUST be readable for `name_len` bytes.
+// - `out_tensor` MUST be a valid, non-null, writable pointer.
+
+HurrayStatus hurray_file_reader_read_tensor(struct HurrayFileReader *handle,
+                                            const uint8_t *name,
+                                            uintptr_t name_len,
+                                            struct HurrayTensor **out_tensor)
+;
+
+// Writes the number of tensors in the file's footer index.
+//
+// Every tensor is individually addressable, composite heads and members included.
+//
+// # Safety
+//
+// `handle` and `out_count` MUST be valid, non-null pointers.
+
+HurrayStatus hurray_file_reader_tensor_count(const struct HurrayFileReader *handle,
+                                             uint64_t *out_count)
+;
+
+// Borrows the name of index entry `index` as UTF-8 bytes.
+//
+// The bytes are **not** NUL-terminated and are owned by the reader: valid until
+// [`hurray_file_reader_destroy`], never to be freed by the caller.
+//
+// Returns [`HURRAY_ERR_INDEX_OUT_OF_BOUNDS`][crate::HURRAY_ERR_INDEX_OUT_OF_BOUNDS] if
+// `index` is past the end.
+//
+// # Safety
+//
+// `handle`, `out_name` and `out_len` MUST be valid, non-null pointers.
+
+HurrayStatus hurray_file_reader_tensor_name(const struct HurrayFileReader *handle,
+                                            uint64_t index,
+                                            const uint8_t **out_name,
+                                            uintptr_t *out_len)
+;
+
+// Destroys a writer, releases its transport context, and writes null through `handle`.
+//
+// Destroying a writer that was never finished leaves a file with no footer, which no
+// reader can open — the bytes are not a container until
+// [`hurray_file_writer_finish`] has written its index and trailer.
+//
+// # Safety
+//
+// - `handle` MUST be a valid, non-null pointer to a `*mut HurrayFileWriter` from
+//   [`hurray_file_writer_new`].
+// - That writer MUST NOT have been destroyed already.
+ HurrayStatus hurray_file_writer_destroy(struct HurrayFileWriter **handle) ;
+
+// Writes the KV section, the footer index and the 40-byte trailer, completing the file.
+//
+// Until this returns [`HURRAY_OK`] the bytes on the sink are not a container: the index
+// a reader opens from is written here. Calling it twice fails.
+//
+// `kv` MAY be null with a `kv_count` of `0` for a file with no metadata section. Keys
+// MUST be non-empty, at most 65 535 bytes, and unique. Entries read out of another file
+// with [`hurray_file_reader_kv_entry`][crate::file::hurray_file_reader_kv_entry] can be
+// passed straight in.
+//
+// The writer handle stays alive and MUST still be destroyed with
+// [`hurray_file_writer_destroy`]; any flush or close belongs to the transport's release
+// callback, because only the caller knows what its sink is.
+//
+// # Safety
+//
+// - `handle` MUST point to a live [`HurrayFileWriter`].
+// - If `kv_count` is non-zero, `kv` MUST point to `kv_count` readable
+//   [`HurrayKvEntry`] values whose own pointers are readable for their declared lengths,
+//   all unmodified until this call returns.
+
+HurrayStatus hurray_file_writer_finish(struct HurrayFileWriter *handle,
+                                       const struct HurrayKvEntry *kv,
+                                       uintptr_t kv_count)
+;
+
+// Creates a file writer over `transport` and writes the 64-byte file header.
+//
+// The header goes out here, not on the first tensor, which is what makes every later
+// offset in the file knowable without seeking back.
+//
+// # Arguments
+//
+// - `transport` — Non-null; its `write` callback MUST be non-null. `read_at` and `size`
+//   are not used: a file writer never reads what it has written.
+// - `options` — MAY be null for [`HurrayFileWriterOptions`]' documented defaults.
+// - `out_handle` — Non-null pointer to a `*mut HurrayFileWriter`; set on success.
+//
+// Returns [`HURRAY_ERR_INVALID_FILE`][crate::HURRAY_ERR_INVALID_FILE] if
+// `data_buffer_alignment` is not a power of two in range.
+//
+// # Safety
+//
+// - `transport` MUST point to a readable [`HurrayTransport`] for the duration of the call.
+// - `options`, if non-null, MUST point to a readable [`HurrayFileWriterOptions`].
+// - `out_handle` MUST be a valid, non-null, writable pointer.
+
+HurrayStatus hurray_file_writer_new(const struct HurrayTransport *transport,
+                                    const struct HurrayFileWriterOptions *options,
+                                    struct HurrayFileWriter **out_handle)
+;
+
+// Writes one tensor under `name`: its descriptor, its padding, then its data buffers.
+//
+// `payloads` MUST have one entry per buffer in the descriptor's buffer table, in that
+// order, each with the declared `byte_size`. The whole tensor is validated before a byte
+// reaches the sink. The name is recorded in the footer index, so it is what
+// [`hurray_file_reader_read_tensor`][crate::file::hurray_file_reader_read_tensor] will
+// ask for; it MUST be non-empty, at most 65 535 bytes, and unique within the file.
+//
+// Returns:
+//
+// - [`HURRAY_OK`] — the tensor is entirely written and the payload pointers are no
+//   longer held.
+// - [`HURRAY_ERR_INVALID_FILE`][crate::HURRAY_ERR_INVALID_FILE] — the name is empty, too
+//   long, or already used in this file. Refused before a byte goes out, so the file is
+//   still completable and another name may be used.
+// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes, or the write callback
+//   failed, once part of this tensor was already out.
+// - Whatever status the write callback returned, if it failed before any byte of this
+//   tensor reached the sink.
+//
+// **A write that fails is the end of the file**, whichever of those two it reports: the
+// writer is poisoned, every later call on it fails, and the bytes on the sink are not a
+// container. Unlike a stream write, it is not retryable — the tensor's name is spent and
+// its descriptor is already staged, so a second attempt would describe a different file
+// from the one on the sink. Writing a file again from the beginning is the recovery, and
+// for a storage failure it is the only one worth having.
+//
+// Composite tensors are not yet writable from C; a composite head alone is not a valid
+// tensor and is refused.
+//
+// # Safety
+//
+// - `handle` MUST point to a live [`HurrayFileWriter`] and `descriptor` to a live
+//   [`HurrayDescriptor`].
+// - `name` MUST be readable for `name_len` bytes.
+// - If `count` is non-zero, `payloads` MUST point to `count` readable [`HurrayIoSlice`]
+//   values, each describing memory readable for its own `len` bytes.
+// - All of that memory MUST stay valid and unmodified until this call returns.
+
+HurrayStatus hurray_file_writer_write_tensor(struct HurrayFileWriter *handle,
+                                             const uint8_t *name,
+                                             uintptr_t name_len,
+                                             const struct HurrayDescriptor *descriptor,
+                                             const struct HurrayIoSlice *payloads,
+                                             uintptr_t count)
 ;
 
 // Destroys a reader, releases its transport context, and writes null through `handle`.

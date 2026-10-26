@@ -21,7 +21,9 @@ That matters for three reasons:
 
 `FileReader` and `FileWriter` are thin drivers over the cores and remain the ordinary way
 to read and write files from async Rust; reach for the cores when you need the bytes to
-come from somewhere they do not know about.
+come from somewhere they do not know about. From C, that driver is already written:
+`HurrayFileReader` and `HurrayFileWriter` drive the same cores over the transport vtable,
+which is what the C tabs below use.
 
 ## The protocol
 
@@ -35,6 +37,11 @@ Three calls, in a loop:
 
 `step()` never blocks, which is what lets the same core sit behind a blocking C callback
 and an event loop alike (§ 4).
+
+A C caller never writes that loop. It supplies two callbacks — `read_at(ctx, offset, dst,
+len, &filled)` and `size(ctx, &size)` — and `hurray_file_reader_*` runs the protocol
+inside them. The callbacks are *allowed* to block, which is the point of them; nothing
+inside Hurray does.
 
 ## Reading a file by range
 
@@ -125,6 +132,67 @@ assert_eq!(tensor.buffers[0].as_ptr() as usize % declared, 0);
 # }
 ```
 
+```c
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include "hurray.h"
+
+/* One absolute range. A positional read keeps no cursor, which is why re-issuing a
+   failed request reads the same bytes rather than resuming somewhere else. */
+static HurrayStatus file_read_at(void *ctx, uint64_t offset, uint8_t *dst, size_t len,
+                                 size_t *out_filled) {
+    ssize_t n = pread(*(int *)ctx, dst, len, (off_t)offset);
+    if (n < 0) { *out_filled = 0; return HURRAY_ERR_TRANSPORT; }  /* moved nothing */
+    *out_filled = (size_t)n;  /* short is normal; 0 means the file is truncated */
+    return HURRAY_OK;
+}
+
+/* Asked once, at open: a container is located from its end. */
+static HurrayStatus file_size(void *ctx, uint64_t *out_size) {
+    struct stat st;
+    if (fstat(*(int *)ctx, &st) != 0) { return HURRAY_ERR_TRANSPORT; }
+    *out_size = (uint64_t)st.st_size;
+    return HURRAY_OK;
+}
+
+int fd = open("model.hrry", O_RDONLY);
+HurrayTransport transport = { .ctx = &fd, .read_at = file_read_at, .size = file_size };
+
+HurrayFileReader *reader = NULL;
+if (hurray_file_reader_new(&transport, &reader) != HURRAY_OK) return -1;
+
+/* The names come from the footer index, so listing them reads no tensor data. */
+uint64_t count = 0;
+hurray_file_reader_tensor_count(reader, &count);
+for (uint64_t i = 0; i < count; i++) {
+    const uint8_t *name = NULL;
+    size_t name_len = 0;
+    hurray_file_reader_tensor_name(reader, i, &name, &name_len);  /* borrowed, no NUL */
+    printf("%.*s\n", (int)name_len, (const char *)name);
+}
+
+/* One tensor by name; the bytes of every other tensor stay on disk. */
+const char *want = "embeddings";
+HurrayTensor *tensor = NULL;
+HurrayStatus s = hurray_file_reader_read_tensor(
+    reader, (const uint8_t *)want, strlen(want), &tensor);
+if (s == HURRAY_ERR_NOT_FOUND) {
+    /* The file is fine — that name is simply not in it, and the reader stays usable. */
+} else if (s == HURRAY_OK) {
+    HurrayBufferList *buffers = NULL;   /* borrowed — do not destroy */
+    hurray_tensor_buffers(tensor, &buffers);
+    /* ... hand the buffers to your kernels ... */
+    hurray_tensor_destroy(&tensor);     /* one call frees descriptor and buffers */
+}
+
+hurray_file_reader_destroy(&reader);
+close(fd);
+```
+
 ```python
 import numpy as np
 import hurray
@@ -202,6 +270,53 @@ assert_eq!(&file[0..8], b"HRRYFILE");
 assert_eq!(&file[file.len() - 4..], b"HRRY");
 # Ok(())
 # }
+```
+
+```c
+#include "hurray.h"
+
+static HurrayStatus file_write(void *ctx, const uint8_t *src, size_t len,
+                               size_t *out_written) {
+    ssize_t n = write(*(int *)ctx, src, len);
+    if (n < 0) { *out_written = 0; return HURRAY_ERR_TRANSPORT; }
+    *out_written = (size_t)n;  /* never 0 on success: that means the sink is closed */
+    return HURRAY_OK;
+}
+
+int fd = open("model.hrry", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+/* A writer needs no range reads: it emits one forward pass. */
+HurrayTransport transport = { .ctx = &fd, .write = file_write };
+
+HurrayFileWriter *writer = NULL;
+/* NULL options: 4096-byte data alignment, index in write order. The 64-byte header
+   goes out during this call. */
+if (hurray_file_writer_new(&transport, NULL, &writer) != HURRAY_OK) return -1;
+
+const char *name = "embeddings";
+HurrayIoSlice payload = { .ptr = data, .len = data_len };
+if (hurray_file_writer_write_tensor(writer, (const uint8_t *)name, strlen(name),
+                                    descriptor, &payload, 1) != HURRAY_OK) {
+    /* A failed file write ends the file: the writer is poisoned, and the recovery is
+       to write the file again from the start, not to retry this tensor. */
+    hurray_file_writer_destroy(&writer);
+    return -1;
+}
+
+/* KV values are borrowed, and the same struct a reader hands back — so copying one
+   file's metadata into another needs no transcription. */
+const char *producer = "cookbook";
+HurrayKvEntry kv[1] = {{
+    .key = (const uint8_t *)"producer",
+    .key_len = 8,
+    .value = { .kind = HURRAY_KV_STRING,
+               .data = (const uint8_t *)producer,
+               .data_len = 8 },
+}};
+
+/* Until this returns, the bytes on disk are not a container: the index is written here. */
+hurray_file_writer_finish(writer, kv, 1);
+hurray_file_writer_destroy(&writer);
+close(fd);
 ```
 
 ```python
@@ -292,6 +407,13 @@ There is no "unusable" state for a lost byte count here, unlike the stream core.
 that never arrives simply means the next `step()` re-offers the same absolute range, and
 re-filling the destination from the start of that range is idempotent.
 
+The write side has no such symmetry, and it is worth knowing before you build a retry
+around it: **a failed file write ends the file.** By the time bytes move, the tensor has
+consumed its name in the index and staged its descriptor, so a second attempt under that
+name would describe a file other than the one on the sink. Writing the file again from the
+beginning is the recovery — which, for the storage failure that caused it, is the only one
+worth having.
+
 ## Runnable example
 
 `hurray-io/examples/sans_io_file.rs` writes a file with two tensors, a partition composite
@@ -300,6 +422,13 @@ linked:
 
 ```text
 cargo run --example sans_io_file
+```
+
+`hurray-ffi/examples/file_vtable.rs` does the same thing through the C entry points, over
+a real file on disk reached only through callbacks:
+
+```text
+cargo run --example file_vtable -p hurray-ffi
 ```
 
 ## See also
