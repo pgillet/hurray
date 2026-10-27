@@ -225,6 +225,10 @@ pub(crate) fn status_from_io_error(e: &hurray_io::Error) -> HurrayStatus {
         | E::IndexOverrunsTrailer
         | E::ReservedFileFlagBits { .. }
         | E::DuplicateTensorName(_)
+        // A driver bug rather than a caller error, but unreachable from C — this crate
+        // writes the header in `hurray_file_writer_new` — so it maps with the container's
+        // own code instead of making the wildcard below load-bearing.
+        | E::HeaderNotWritten
         | E::TensorNameEmpty
         | E::TensorNameTooLong { .. }
         | E::DuplicateKvKey(_)

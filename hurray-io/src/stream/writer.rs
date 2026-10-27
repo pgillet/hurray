@@ -83,6 +83,10 @@ impl<W: AsyncWrite + Unpin> StreamWriter<W> {
     ///   non-`ProducerSynced` sync mode
     /// - [`Error::SinkClosed`] — the sink accepted zero bytes mid-item
     /// - [`Error::CoreUnusable`] — an earlier write left this writer's sink poisoned
+    ///
+    /// A failure *before the first byte of this tensor* leaves the writer usable, so the
+    /// same tensor may be written again; a failure after it poisons the writer, because a
+    /// truncated item is on the wire and a stream has no resynchronisation point (§ 6b).
     /// - [`Error::Core`] — descriptor encoding failed
     /// - [`Error::Io`] — underlying write error
     pub async fn write_tensor(&mut self, desc: &TensorDescriptor, buffers: &[&[u8]]) -> Result<()> {
@@ -165,8 +169,10 @@ async fn drain<W: AsyncWrite + Unpin>(op: &mut WriteOp<'_>, sink: &mut W) -> Res
                     Ok(n) => break n,
                     // `write_all`, which this replaces, absorbed this internally.
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    // A write that errors put no bytes on the wire, so the count is known
-                    // to be zero and neither core nor sink is poisoned (§ 6).
+                    // This call put no bytes on the wire, so its count is known to be
+                    // zero. That is not the same as the item being intact: if an earlier
+                    // call in this item moved bytes, the core is already torn and the next
+                    // call on this writer reports `CoreUnusable` (§ 6b).
                     Err(e) => return Err(Error::Io(e)),
                 }
             }

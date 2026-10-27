@@ -74,6 +74,10 @@ pub struct StreamWriterCore {
     enforce_cross_machine_sync: bool,
     /// Set once the core may no longer be used; survives the [`WriteOp`] that set it.
     unusable: Option<Unusable>,
+    /// Set when the item in flight has had a byte accepted, cleared when it completes
+    /// (§ 6b). Carried on the core, not the op, because a driver that returns an error and
+    /// drops the op reports nothing — so the poison cannot depend on being told.
+    torn: bool,
 }
 
 impl Default for StreamWriterCore {
@@ -92,6 +96,7 @@ impl StreamWriterCore {
         Self {
             enforce_cross_machine_sync: false,
             unusable: None,
+            torn: false,
         }
     }
 
@@ -110,6 +115,7 @@ impl StreamWriterCore {
         Self {
             enforce_cross_machine_sync: true,
             unusable: None,
+            torn: false,
         }
     }
 
@@ -137,7 +143,7 @@ impl StreamWriterCore {
         descriptor: &'a TensorDescriptor,
         buffers: &'a [&'a [u8]],
     ) -> Result<WriteOp<'a>> {
-        if let Some(reason) = self.unusable {
+        if let Some(reason) = self.retired() {
             return Err(Error::CoreUnusable(reason));
         }
         self.validate_tensor(descriptor, buffers)?;
@@ -148,6 +154,7 @@ impl StreamWriterCore {
             payloads: buffers,
             state: OpState::Descriptor,
             written: 0,
+            emitted_bytes: 0,
             stack: Vec::new(),
         })
     }
@@ -203,7 +210,7 @@ impl StreamWriterCore {
         head: &'a TensorDescriptor,
         members: &'a [CompositeNode<'a>],
     ) -> Result<WriteOp<'a>> {
-        if let Some(reason) = self.unusable {
+        if let Some(reason) = self.retired() {
             return Err(Error::CoreUnusable(reason));
         }
         self.validate_composite(head, members)?;
@@ -215,6 +222,7 @@ impl StreamWriterCore {
             payloads: &[],
             state: OpState::Descriptor,
             written: 0,
+            emitted_bytes: 0,
             stack: vec![Frame { members, next: 0 }],
         })
     }
@@ -225,7 +233,16 @@ impl StreamWriterCore {
     ///
     /// See [`WriteOp::mark_unusable`].
     pub fn is_unusable(&self) -> bool {
-        self.unusable.is_some()
+        self.retired().is_some()
+    }
+
+    /// The reason this core is retired, if it is.
+    ///
+    /// `unusable` wins over `torn`: a lost count is strictly worse than a known-incomplete
+    /// item. Read through here at every site so the precedence cannot drift.
+    fn retired(&self) -> Option<Unusable> {
+        self.unusable
+            .or(self.torn.then_some(Unusable::IncompleteOutput))
     }
 
     /// Checks one tensor's payload slices against its buffer table, writing nothing.
@@ -320,6 +337,9 @@ pub struct WriteOp<'a> {
     state: OpState,
     /// Bytes of the current slice already written.
     written: usize,
+    /// Bytes of *this item* already accepted by the sink — per item, not per slice, so
+    /// `begin_payload`/`next_node` must not reset it. The § 6b predicate.
+    emitted_bytes: u64,
     /// Members awaiting emission, outermost first: ADR-041 § 10's explicit stack, in place
     /// of the recursion `write_composite_unchecked` used.
     stack: Vec<Frame<'a>>,
@@ -338,13 +358,21 @@ impl WriteOp<'_> {
     ///
     /// See [`StreamWriterCore`].
     pub fn step(&mut self) -> Result<WriteStep> {
+        // `unusable`, not `retired()`: `torn` is set by *this* operation's first byte, and
+        // this operation is the one that can still clear it by finishing the item. `torn`
+        // only means damage once the op is gone and new work is submitted.
         if let Some(reason) = self.core.unusable {
             return Err(Error::CoreUnusable(reason));
         }
         loop {
             match self.state {
                 OpState::Failed => return Err(Error::CoreFailed),
-                OpState::Done => return Ok(WriteStep::ItemWritten),
+                OpState::Done => {
+                    // The item is whole, so the output is conforming again (§ 6b). Nothing
+                    // to commit: the stream core holds no names and no index.
+                    self.core.torn = false;
+                    return Ok(WriteStep::ItemWritten);
+                }
                 OpState::Descriptor => {
                     if self.written < self.staging.len() {
                         return Ok(WriteStep::Output {
@@ -400,6 +428,7 @@ impl WriteOp<'_> {
     ///
     /// See [`StreamWriterCore`].
     pub fn report_written(&mut self, n: usize) -> Result<()> {
+        // See `step`: the in-flight item's own `torn` is not a bar to continuing it.
         if let Some(reason) = self.core.unusable {
             return Err(Error::CoreUnusable(reason));
         }
@@ -420,8 +449,43 @@ impl WriteOp<'_> {
                 offered,
             });
         }
+        if self.emitted_bytes == 0 {
+            // Poison at the first accepted byte, not in `Drop`: `Drop` can be skipped by
+            // `forget`, delayed by a live op, or run while unwinding. The transient state
+            // is unobservable anyway — the op holds `&mut core` for its whole life.
+            self.core.torn = true;
+        }
+        self.emitted_bytes += n as u64;
         self.written += n;
         Ok(())
+    }
+
+    /// Bytes of this item already accepted by the sink, padding included.
+    ///
+    /// Zero means nothing of the item has left the driver, which is exactly when the item
+    /// may be resubmitted after a failure (§ 6b).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_io::stream::StreamWriterCore;
+    /// use hurray_core::{ElementType, TensorDescriptor};
+    ///
+    /// let descriptor = TensorDescriptor::new(ElementType::Uint8, vec![4])?;
+    /// let payload = vec![0u8; 4];
+    /// let buffers: [&[u8]; 1] = [&payload];
+    ///
+    /// let mut core = StreamWriterCore::new();
+    /// let mut op = core.tensor(&descriptor, &buffers)?;
+    /// assert_eq!(op.emitted(), 0);
+    ///
+    /// op.step()?;
+    /// op.report_written(3)?;
+    /// assert_eq!(op.emitted(), 3);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn emitted(&self) -> u64 {
+        self.emitted_bytes
     }
 
     /// Declares the sink closed while this item is in flight.
@@ -434,7 +498,9 @@ impl WriteOp<'_> {
     ///
     /// See [`mark_unusable`][Self::mark_unusable].
     pub fn report_sink_closed(&mut self) -> Error {
-        self.core.unusable = Some(Unusable::LostWriteCount);
+        // Not `LostWriteCount`: the count is known exactly. What is lost is the ability to
+        // finish the item, which is a different claim (§ 6b).
+        self.core.unusable = Some(Unusable::IncompleteOutput);
         self.state = OpState::Failed;
         Error::SinkClosed
     }

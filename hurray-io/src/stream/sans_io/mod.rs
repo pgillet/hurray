@@ -50,15 +50,25 @@ use std::fmt;
 /// core.mark_unusable();
 /// assert!(matches!(core.step(), Err(Error::CoreUnusable(_))));
 /// ```
+// `non_exhaustive`: the reasons a core can be retired are open-ended, and a caller
+// matching on them exhaustively would break on every future one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Unusable {
     /// A read moved bytes into the core's destination and the count never arrived. Only
     /// this core's position is lost; the transport is untouched.
     LostReadCount,
-    /// A write put an unknown number of payload bytes on the wire. A stream cannot be
-    /// un-sent, so the sink is poisoned too: the reader at the far end will see a
-    /// truncated item, and a fresh writer over the same connection is not a recovery.
+    /// A write put an unknown number of payload bytes on the wire, so the position is
+    /// *unknown*. Narrower than [`Self::IncompleteOutput`], which is a known-incomplete
+    /// item: a stream cannot be un-sent, so the sink is poisoned too — the reader at the
+    /// far end will see a truncated item, and a fresh writer over the same connection is
+    /// not a recovery.
     LostWriteCount,
+    /// An item was begun and cannot be completed, so the output is incomplete. The count
+    /// is *known*, unlike [`Self::LostWriteCount`]; what is lost is the ability to produce
+    /// a conforming output, because a forward-only writer has no way back to the item's
+    /// start (§ 6b).
+    IncompleteOutput,
 }
 
 impl fmt::Display for Unusable {
@@ -67,6 +77,12 @@ impl fmt::Display for Unusable {
             Self::LostReadCount => f.write_str("a read's byte count was lost"),
             Self::LostWriteCount => {
                 f.write_str("a write's byte count was lost; the sink is poisoned")
+            }
+            // Worded to cover both reachable cases: an item torn mid-emission, and a sink
+            // that closed before the item's first byte. "Begun and not finished" would be
+            // false for the second.
+            Self::IncompleteOutput => {
+                f.write_str("the output is incomplete and cannot be completed")
             }
         }
     }

@@ -64,12 +64,24 @@ Accepted (2026-10-19)
 > of reading discovers a file's length.
 >
 > It also found the one place where the C surface must promise **less** than the stream
-> surface does. **A failed file write ends the file.** By the time bytes move, the tensor
+> surface does. **[RETRACTED by step 4c — see § 6b.]** **A failed file write ends the file.** By the time bytes move, the tensor
 > has consumed its name in the index and staged its descriptor, and the core offers no
 > rollback for either, so a retry under the same name would describe a file other than the
 > one on the sink. The writer is poisoned whether the failure landed before or after the
 > first byte. The underlying sharp edge is the Rust driver's too, and is reported as
 > [#248](https://github.com/pgillet/hurray/issues/248) rather than fixed here.
+>
+> **Step 4c retracts the paragraph above.** Investigating #248 showed that the burnt name
+> and the staged descriptor were not a constraint to document but a state split to remove:
+> an operation was committing to the core at *submission* while earning its index entry at
+> *completion*. Two further defects came with it. The orphan descriptor does not merely
+> waste space — it makes the file **non-conforming**, because `file-format.md`'s tensor
+> region is a sequence of complete tensors and the orphan is never padded to 8, so the next
+> real descriptor can begin unaligned. And neither tokio driver poisoned the core on a
+> mid-item `Err`, so `FileWriter` could emit a half-written tensor *and* a clean footer
+> index: a self-consistent index over a non-conforming region, with no error raised
+> anywhere. § 6b replaces the retracted promise; the terminal case is a *partially emitted*
+> item, not a *failed* one.
 >
 > Steps 5 and 6 remain.
 
@@ -375,6 +387,35 @@ This is step 5's hardest requirement and step 1 has to leave room for it: the re
 must be callable from inside an event-loop callback, which § 4 already requires by making
 it non-blocking.
 
+### 6b. An item commits at completion; a partially emitted item is terminal
+
+A submitted item MUST NOT mutate any state the core carries past the operation until the
+core reports that item written. The name it consumes, the index entry it earns, and the
+bytes it stages all belong to the operation, not the core, until that point. An operation
+abandoned before its first byte reaches the transport therefore leaves the core exactly as
+it was, and resubmitting the same item — under the same name — MUST succeed.
+
+The "nothing emitted" predicate is exactly decidable, which is what makes the rule
+implementable rather than aspirational: a core's write position advances in exactly one
+place, the progress report of § 4, so a core always knows whether the item in flight has
+had a byte accepted.
+
+Once an item's first byte has been accepted, the output can no longer be made conforming by
+any forward-only writer: a stream has no resynchronisation point, and a file container's
+tensor region is a sequence of complete tensors (`file-format.md` §§ Tensor Region,
+Descriptor Placement). Rollback is not available either — the file writer never seeks, and
+the transport vtable of § 8 has no truncate. So the core MUST become unusable at that first
+byte and MUST retire that state only when the item completes. It MUST NOT depend on a
+driver reporting the abandonment, because a driver that returns an error and drops the
+operation reports nothing.
+
+`finish` is an item under this rule. A footer that emitted nothing is retryable; one that
+emitted anything is terminal.
+
+> **Note (non-normative):** this supersedes "a failed file write ends the file" in the step
+> 4b preamble above. The terminal case is a *partially emitted* item, not a *failed* one,
+> and the two surfaces now promise the same thing.
+
 ### 7. Two drivers, because the format has two access patterns
 
 The sequential driver feeds bytes forward: stream read and write, and the file writer's
@@ -550,9 +591,11 @@ compatibility contract — blocked on a question nobody is answering.
 ## Required Documentation Amendments
 
 - `docs/impl/c-ffi.md` — the reader and writer handles, the transport vtable and every § 8
-  rule, the blocking contract, and the thread-affinity rule.
+  rule, the blocking contract, the thread-affinity rule, and § 6b's writer retry contract
+  (which replaces "a failed file write ends the file").
 - `docs/impl/rust-reference.md` — the core/driver split, and §§ 2–6 as requirements on an
-  implementation rather than internal details.
+  implementation rather than internal details, including § 6b's commit-at-completion rule for
+  writer cores.
 - `docs/impl/python-bindings.md` — the async surface, its relationship to the sync one, and
   § 6's cancellation and buffer-lifetime semantics.
 - `docs/cookbook/` — a C consumer reading a stream through the vtable, and the Python async
@@ -590,6 +633,9 @@ compatibility contract — blocked on a question nobody is answering.
 - **Composites as a C sum type.** `StreamItem` is a tensor or a composite head with
   members, and the C surface has no way to express a sum type. § 10's explicit stack has to
   produce something C can walk.
-- **A late `finish` failure.** The file writer's footer index is written last, so a writer
-  that fails after the data leaves a file with no index. What both surfaces promise about
-  that state is unstated today and should not stay that way.
+- ~~**A late `finish` failure.** The file writer's footer index is written last, so a
+  writer that fails after the data leaves a file with no index. What both surfaces promise
+  about that state is unstated today and should not stay that way.~~ **Resolved by § 6b in
+  step 4c:** `finish` is an item, so a footer that emitted nothing is retryable and one that
+  emitted anything is terminal. Both surfaces promise that; the core-level retry is reachable
+  from C, and not from the tokio driver, whose `finish(self)` consumes the sink.

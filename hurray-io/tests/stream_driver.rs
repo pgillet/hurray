@@ -16,7 +16,7 @@ use hurray_core::{
     BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, SyncMode, TensorDescriptor,
     MIN_BUFFER_ALIGNMENT,
 };
-use hurray_io::stream::{StreamReader, StreamWriter};
+use hurray_io::stream::{StreamReader, StreamWriter, Unusable};
 use hurray_io::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -133,6 +133,38 @@ impl AsyncWrite for InterruptingSink {
         if me.interrupts > 0 {
             me.interrupts -= 1;
             return Poll::Ready(Err(io::Error::new(io::ErrorKind::Interrupted, "simulated")));
+        }
+        me.written.extend_from_slice(buf);
+        Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Fails the first write with an error, then accepts everything. Unlike
+/// `InterruptingSink`, the error is not `Interrupted`, so the driver surfaces it instead
+/// of retrying — which is what makes this the "failed before the first byte" case.
+struct FailOnce {
+    written: Vec<u8>,
+    failed: bool,
+}
+
+impl AsyncWrite for FailOnce {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let me = self.get_mut();
+        if !me.failed {
+            me.failed = true;
+            return Poll::Ready(Err(io::Error::other("simulated")));
         }
         me.written.extend_from_slice(buf);
         Poll::Ready(Ok(buf.len()))
@@ -319,11 +351,11 @@ async fn a_closed_sink_is_reported_and_poisons_the_writer() {
     ));
 }
 
-/// A failing write is not a lost count: the contract on `write` is that an error moved no
-/// bytes, so the writer's position is still known and it is not poisoned (§ 6). The sink
-/// holds a partial item, which is the pre-existing contract for a mid-item I/O failure.
+/// A write that fails *after* its first byte leaves a truncated item on the wire, and a
+/// stream has no resynchronisation point, so the writer is poisoned (§ 6b). The failing
+/// call still reports the I/O error that caused it — the poison surfaces on the next call.
 #[tokio::test]
-async fn a_failing_write_is_an_io_error_and_leaves_the_writer_usable() {
+async fn a_write_that_fails_after_its_first_byte_poisons_the_writer() {
     let d = desc();
     let payload = vec![0u8; 256];
     let buffers: [&[u8]; 1] = [&payload];
@@ -335,9 +367,34 @@ async fn a_failing_write_is_an_io_error_and_leaves_the_writer_usable() {
         writer.write_tensor(&d, &buffers).await,
         Err(Error::Io(_))
     ));
-    // Not CoreUnusable: the failure is reported as I/O again, not as a poisoned core.
+    assert!(matches!(
+        writer.write_tensor(&d, &buffers).await,
+        Err(Error::CoreUnusable(Unusable::IncompleteOutput))
+    ));
+}
+
+/// The other half of § 6b: a write that fails *before* its first byte emitted nothing, so
+/// there is nothing to un-send. The writer stays usable, the same tensor may be written
+/// again, and the wire is byte-identical to one written with no failure at all.
+#[tokio::test]
+async fn a_write_that_fails_before_its_first_byte_is_retryable() {
+    let d = desc();
+    let payload = vec![0u8; 256];
+    let buffers: [&[u8]; 1] = [&payload];
+
+    let mut writer = StreamWriter::new(FailOnce {
+        written: Vec::new(),
+        failed: false,
+    });
+    // The very first write of the item fails, so nothing reached the sink.
     assert!(matches!(
         writer.write_tensor(&d, &buffers).await,
         Err(Error::Io(_))
     ));
+    writer.write_tensor(&d, &buffers).await.unwrap();
+    let retried = writer.finish().await.unwrap().written;
+
+    let mut clean = StreamWriter::new(Vec::new());
+    clean.write_tensor(&d, &buffers).await.unwrap();
+    assert_eq!(retried, clean.finish().await.unwrap());
 }
