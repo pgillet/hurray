@@ -161,7 +161,7 @@ fn main() -> Result<()> {
 
     let mut file = Vec::new();
     let mut writer = FileWriterCore::new();
-    drain(writer.header(), &mut file)?;
+    drain(writer.header()?, &mut file)?;
 
     let embeddings_buffers: [&[u8]; 1] = [&embeddings_data];
     drain(

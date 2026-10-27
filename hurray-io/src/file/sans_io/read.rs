@@ -175,7 +175,7 @@ struct Pending<D> {
 /// # let buffers: [&[u8]; 1] = [&payload];
 /// # let mut bytes = Vec::new();
 /// # let mut writer = FileWriterCore::new();
-/// # drive(writer.header(), &mut bytes)?;
+/// # drive(writer.header()?, &mut bytes)?;
 /// # drive(writer.tensor("embeddings", &descriptor, &buffers)?, &mut bytes)?;
 /// # drive(writer.finish(vec![])?, &mut bytes)?;
 /// let mut file = std::io::Cursor::new(bytes);

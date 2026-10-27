@@ -2014,7 +2014,7 @@ mod tests {
 
         let mut bytes = Vec::new();
         let mut core = FileWriterCore::new();
-        drain(core.header(), &mut bytes);
+        drain(core.header().unwrap(), &mut bytes);
         for node in flatten_composite("head", &head, &members).unwrap() {
             drain(
                 core.tensor(node.name, node.descriptor, node.buffers)

@@ -1504,7 +1504,14 @@ HurrayStatus hurray_file_reader_tensor_name(const struct HurrayFileReader *handl
 // Writes the KV section, the footer index and the 40-byte trailer, completing the file.
 //
 // Until this returns [`HURRAY_OK`] the bytes on the sink are not a container: the index
-// a reader opens from is written here. Calling it twice fails.
+// a reader opens from is written here. Calling it twice *after it returned*
+// [`HURRAY_OK`] fails.
+//
+// A footer that failed **before any of its bytes reached the sink** may be written again:
+// nothing was emitted, so the file is still completable (ADR-041 § 6b). This is the one
+// retry worth having here — the data is already on the sink, and only the index is
+// missing. A footer that failed after its first byte poisons the writer like any other
+// torn item.
 //
 // `kv` MAY be null with a `kv_count` of `0` for a file with no metadata section. Keys
 // MUST be non-empty, at most 65 535 bytes, and unique. Entries read out of another file
@@ -1569,16 +1576,13 @@ HurrayStatus hurray_file_writer_new(const struct HurrayTransport *transport,
 //   long, or already used in this file. Refused before a byte goes out, so the file is
 //   still completable and another name may be used.
 // - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes, or the write callback
-//   failed, once part of this tensor was already out.
-// - Whatever status the write callback returned, if it failed before any byte of this
-//   tensor reached the sink.
-//
-// **A write that fails is the end of the file**, whichever of those two it reports: the
-// writer is poisoned, every later call on it fails, and the bytes on the sink are not a
-// container. Unlike a stream write, it is not retryable — the tensor's name is spent and
-// its descriptor is already staged, so a second attempt would describe a different file
-// from the one on the sink. Writing a file again from the beginning is the recovery, and
-// for a storage failure it is the only one worth having.
+//   failed, once part of this tensor was already out. A torn tensor is in the file and a
+//   forward-only writer cannot get back to its start, so the writer is poisoned: every
+//   later call fails, including the footer, and the bytes on the sink are not a container.
+// - Whatever status the write callback returned, if it failed **before any byte of this
+//   tensor reached the sink**. Nothing was emitted, so the call MAY be retried — under the
+//   same name, which the failed attempt did not consume — and the file is still
+//   completable (ADR-041 § 6b).
 //
 // Composite tensors are not yet writable from C; a composite head alone is not a valid
 // tensor and is refused.

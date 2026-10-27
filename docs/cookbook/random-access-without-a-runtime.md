@@ -101,7 +101,7 @@ fn drive<R: Read + Seek>(
 # let buffers: [&[u8]; 1] = [&data];
 # let mut bytes = Vec::new();
 # let mut writer = FileWriterCore::new();
-# drain(writer.header(), &mut bytes)?;
+# drain(writer.header()?, &mut bytes)?;
 # drain(writer.tensor("embeddings", &descriptor, &buffers)?, &mut bytes)?;
 # drain(writer.finish(vec![])?, &mut bytes)?;
 # let mut source = std::io::Cursor::new(bytes);
@@ -259,7 +259,7 @@ let buffers: [&[u8]; 1] = [&payload];
 
 let mut file = Vec::new();
 let mut core = FileWriterCore::new();
-drain(core.header(), &mut file)?;
+drain(core.header()?, &mut file)?;
 drain(core.tensor("embeddings", &descriptor, &buffers)?, &mut file)?;
 drain(
     core.finish(vec![("producer".into(), KvValue::String("cookbook".into()))])?,

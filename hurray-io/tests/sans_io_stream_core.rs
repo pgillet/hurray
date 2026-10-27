@@ -872,14 +872,9 @@ fn a_completed_item_clears_the_torn_state() {
 
     let mut core = StreamWriterCore::new();
     let mut op = core.tensor(&descriptor, &buffers).unwrap();
-    loop {
-        match op.step().unwrap() {
-            WriteStep::Output { .. } => {
-                let n = op.output_src().len();
-                op.report_written(n).unwrap();
-            }
-            WriteStep::ItemWritten => break,
-        }
+    while let WriteStep::Output { .. } = op.step().unwrap() {
+        let n = op.output_src().len();
+        op.report_written(n).unwrap();
     }
     drop(op);
 
