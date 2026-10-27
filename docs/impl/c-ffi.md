@@ -347,16 +347,18 @@ through `write` alone and never seeks back.
 | `hurray_file_reader_destroy(&reader)` | Destroys the reader, releases the transport context, writes `NULL`. Tensors already produced are unaffected; borrowed name and KV pointers are not. |
 | `hurray_file_writer_new(transport, options, out_writer)` | `transport->write` MUST be non-null. Writes the 64-byte header during the call. `options` MAY be `NULL` for 4096-byte data alignment and an index in write order. |
 | `hurray_file_writer_write_tensor(writer, name, name_len, descriptor, payloads, count)` | As the stream writer's, plus the name that becomes the footer-index entry: non-empty, at most 65 535 bytes, unique within the file. |
-| `hurray_file_writer_finish(writer, kv, kv_count)` | Writes the KV section, the footer index and the trailer. `kv` MAY be `NULL` with a count of `0`. Until this returns `HURRAY_OK` the bytes are not a container. Calling it twice MUST fail. |
+| `hurray_file_writer_finish(writer, kv, kv_count)` | Writes the KV section, the footer index and the trailer. `kv` MAY be `NULL` with a count of `0`. Until this returns `HURRAY_OK` the bytes are not a container. Calling it twice **after it returned `HURRAY_OK`** MUST fail; a footer that failed before its first byte MAY be retried. |
 | `hurray_file_writer_destroy(&writer)` | Destroys the writer and releases the transport context. Any flush or close belongs to the transport's release callback. |
 
-**A failed file write ends the file.** Unlike a stream write, a file write MUST NOT be
-presented as retryable: by the time bytes move, the tensor has consumed its name in the
-index and staged its descriptor, so a second attempt under the same name would describe a
-file other than the one on the sink. The writer is poisoned whether the failure came
-before or after the first byte; the status distinguishes the two (`HURRAY_ERR_SINK_CLOSED`
-after, the callback's own status before) but the recovery is the same one: write the file
-again from the start.
+**The file writer's failure contract is the stream writer's.** The rule stated above for
+`hurray_writer_write_tensor` is normative for both surfaces: a write that fails **after**
+the first byte of its item MUST poison the writer, and one that fails **before** it MUST
+leave the writer usable, the item's name unconsumed, and the file completable. The status
+distinguishes the two — `HURRAY_ERR_SINK_CLOSED` after, the callback's own status before.
+
+`hurray_file_writer_finish` is an item under the same rule, which makes it the one retry
+worth having here: the data is already on the sink and only the index is missing, so a
+footer that failed before its first byte MAY be written again.
 
 ### KV Metadata
 

@@ -407,12 +407,128 @@ There is no "unusable" state for a lost byte count here, unlike the stream core.
 that never arrives simply means the next `step()` re-offers the same absolute range, and
 re-filling the destination from the start of that range is idempotent.
 
-The write side has no such symmetry, and it is worth knowing before you build a retry
-around it: **a failed file write ends the file.** By the time bytes move, the tensor has
-consumed its name in the index and staged its descriptor, so a second attempt under that
-name would describe a file other than the one on the sink. Writing the file again from the
-beginning is the recovery — which, for the storage failure that caused it, is the only one
-worth having.
+The write side splits differently, on a line worth knowing before you build a retry around
+it: **what matters is whether the item emitted a byte, not whether the call failed.**
+
+- **A write that fails before its first byte emitted nothing**, so there is nothing to
+  un-send. The item's name was not consumed, the core is unchanged, and resubmitting the
+  same item produces a file byte-identical to one written with no failure at all.
+- **A write that fails after its first byte is terminal.** The file's tensor region is a
+  sequence of complete tensors, and a forward-only writer has no way back to the item's
+  start — there is no seek, and the C vtable has no truncate. The core is poisoned and
+  `finish` refuses, rather than writing a clean index over a region that does not conform.
+
+`finish` is an item under the same rule, which makes it the retry most worth having: the
+data is already out and only the index is missing, so a footer that failed before its
+first byte can simply be written again.
+
+<div class="lang-tabs">
+
+```rust
+# use std::io::Write;
+# use hurray_io::file::{FileWriteOp, FileWriterCore};
+# use hurray_io::stream::WriteStep;
+#
+# fn drain<W: Write>(mut op: FileWriteOp<'_>, sink: &mut W) -> hurray_io::Result<()> {
+#     loop {
+#         match op.step()? {
+#             WriteStep::Output { .. } => match sink.write(op.output_src())? {
+#                 0 => return Err(op.report_sink_closed()),
+#                 n => op.report_written(n)?,
+#             },
+#             WriteStep::ItemWritten => return Ok(()),
+#         }
+#     }
+# }
+#
+/// A sink that fails its first write, then accepts everything.
+struct FailsOnce {
+    bytes: Vec<u8>,
+    failed: bool,
+}
+
+impl Write for FailsOnce {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        if !self.failed {
+            self.failed = true;
+            return Err(std::io::Error::other("simulated"));
+        }
+        self.bytes.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+# use hurray_core::{
+#     BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, SyncMode,
+#     TensorDescriptor, MIN_BUFFER_ALIGNMENT,
+# };
+# let handle = BufferHandle::new(
+#     256, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced,
+# )?;
+# let descriptor = TensorDescriptor::new(
+#     1, 0, ElementType::Float32, Shape::new(vec![8u64, 8])?, 0,
+#     LayoutDescriptor::RowMajor, vec![handle], None, None, None, None,
+# )?;
+let payload = vec![0u8; 256];
+let buffers: [&[u8]; 1] = [&payload];
+
+let mut sink = FailsOnce { bytes: Vec::new(), failed: false };
+let mut core = FileWriterCore::new();
+
+// The header's first write is the one that fails, so nothing reached the sink.
+assert!(drain(core.header()?, &mut sink).is_err());
+assert!(!core.is_unusable());
+
+// Nothing was emitted, so every name is still free and the file is completable.
+drain(core.header()?, &mut sink)?;
+drain(core.tensor("weight", &descriptor, &buffers)?, &mut sink)?;
+drain(core.finish(Vec::new())?, &mut sink)?;
+
+assert_eq!(&sink.bytes[0..8], b"HRRYFILE");
+assert_eq!(&sink.bytes[sink.bytes.len() - 4..], b"HRRY");
+# Ok(())
+# }
+```
+
+```c
+/* Same split, through the vtable. A failure before the tensor's first byte returns the
+   write callback's own status and the writer stays usable; one after it returns
+   HURRAY_ERR_SINK_CLOSED and every later call fails. */
+HurrayStatus st = hurray_file_writer_write_tensor(
+    writer, "weight", 6, descriptor, payloads, 1);
+if (st == HURRAY_ERR_SINK_CLOSED) {
+    /* Torn: this file cannot be completed. Start a new one. */
+} else if (st != HURRAY_OK) {
+    /* Nothing was emitted — retry the same name. */
+    st = hurray_file_writer_write_tensor(
+        writer, "weight", 6, descriptor, payloads, 1);
+}
+```
+
+```python
+import os
+
+import hurray
+
+weight = hurray.zeros((8, 8), dtype=hurray.float32)
+
+# `hurray.save` is all-or-nothing: it owns the file it creates, so there is no partially
+# written state for a caller to inspect or resume. If it raises, delete and write again.
+try:
+    hurray.save("weights.hrry", {"weight": weight})
+except OSError:
+    if os.path.exists("weights.hrry"):
+        os.remove("weights.hrry")
+    hurray.save("weights.hrry", {"weight": weight})
+
+assert hurray.load("weights.hrry")["weight"].shape == (8, 8)
+```
+
+</div>
 
 ## Runnable example
 

@@ -264,5 +264,70 @@ fn main() -> Result<()> {
         }
     }
 
+    // ── A write that fails ────────────────────────────────────────────────────────
+    //
+    // The core distinguishes a failure that emitted nothing from one that did not, and
+    // only the first is retryable (ADR-041 § 6b). A sink that fails its first write stands
+    // in for a transport error here.
+    /// Fails the `fail_at`-th write call, then accepts everything.
+    struct FailsOnce {
+        bytes: Vec<u8>,
+        calls: usize,
+        fail_at: usize,
+    }
+
+    impl Write for FailsOnce {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let call = self.calls;
+            self.calls += 1;
+            if call == self.fail_at {
+                return Err(std::io::Error::other("simulated transport failure"));
+            }
+            self.bytes.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    // Call 0 is the header; call 1 is the tensor's first write, which is the one to fail.
+    let mut sink = FailsOnce {
+        bytes: Vec::new(),
+        calls: 0,
+        fail_at: 1,
+    };
+    let mut retried = FileWriterCore::new();
+    let one_buffer: [&[u8]; 1] = [&embeddings_data];
+
+    drain(retried.header()?, &mut sink)?;
+    // Fails before any byte of the tensor goes out, so nothing of it is on the sink.
+    let failure = drain(
+        retried.tensor("embeddings", &embeddings, &one_buffer)?,
+        &mut sink,
+    );
+    println!();
+    println!("first attempt: {}", failure.unwrap_err());
+    println!("core still usable: {}", !retried.is_unusable());
+
+    // The name was never consumed, so the same tensor goes again.
+    drain(
+        retried.tensor("embeddings", &embeddings, &one_buffer)?,
+        &mut sink,
+    )?;
+    drain(retried.finish(Vec::new())?, &mut sink)?;
+
+    let mut clean = Vec::new();
+    let mut unfailed = FileWriterCore::new();
+    drain(unfailed.header()?, &mut clean)?;
+    drain(
+        unfailed.tensor("embeddings", &embeddings, &one_buffer)?,
+        &mut clean,
+    )?;
+    drain(unfailed.finish(Vec::new())?, &mut clean)?;
+
+    assert_eq!(sink.bytes, clean, "the retry must produce the same file");
+    println!("retried file is byte-identical to one written with no failure");
+
     Ok(())
 }

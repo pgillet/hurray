@@ -77,6 +77,14 @@ The following are requirements on any implementation of the core, not internal d
   boundary. If a count is ever lost the core MUST enter an explicitly named unusable state
   rather than diverge silently, and a partially filled destination MUST never be
   observable (§ 6).
+- **A writer core MUST commit at completion.** A submitted item MUST NOT mutate any state
+  the core carries past the operation — the name it consumes, the index entry it earns, the
+  bytes it stages — until the core reports that item written. An operation abandoned before
+  its first byte therefore leaves the core unchanged, and resubmitting the same item under
+  the same name MUST succeed. Once the first byte is accepted the core MUST become unusable
+  and MUST retire that state only when the item completes, and it MUST NOT depend on a
+  driver reporting the abandonment, because a driver that errors and drops the operation
+  reports nothing (§ 6b).
 - **Composite nesting MUST be an explicit stack**, not call recursion, so a composite can
   survive being suspended mid-member (§ 10).
 

@@ -116,6 +116,17 @@ workspace share one version and are released together.
 
 ### Changed
 
+- **A mid-item write failure now poisons `StreamWriter` and `FileWriter`.** Previously the
+  failing call reported `Error::Io` and the writer accepted further items; it now reports
+  the same error, and the *next* call reports `Error::CoreUnusable`. A failure before an
+  item's first byte is unaffected and remains retryable. The C surface loosens to match:
+  `hurray_file_writer_write_tensor` no longer documents that a failed file write ends the
+  file — it promises what the stream writer already did — and `hurray_file_writer_finish`
+  may be retried if it emitted nothing. No symbol, struct or status changed, so the C ABI
+  stays at 8.
+- `FileWriterCore::header` returns a `Result` and must be driven before any tensor or
+  footer, which replaces its previous promise that a driver which forgot it would still
+  produce a correct file.
 - `FileReader` and `FileWriter` are **drivers** over the new cores, with unchanged public
   signatures and byte-for-byte identical output. Between them they lost 600 lines of
   format logic: no descriptor decode, no offset arithmetic, no padding, no alignment, no
@@ -170,6 +181,26 @@ workspace share one version and are released together.
 
 ### Fixed
 
+- A **file write that fails part-way no longer burns its tensor name or strands its
+  descriptor** ([#248](https://github.com/pgillet/hurray/issues/248), ADR-041 § 6b). A
+  writer core now commits nothing until an item reports written, and becomes unusable at
+  that item's first emitted byte. So a write that fails *before* its first byte leaves the
+  file completable and the name free — the retry produces a byte-identical file — while one
+  that fails after it is terminal, which no forward-only writer could avoid. `finish` is an
+  item under the same rule, so a footer that emitted nothing may be written again; that
+  turns a wasted multi-gigabyte data write into a complete file, and resolves ADR-041's own
+  deferred question about a late `finish` failure.
+- `StreamWriter` and `FileWriter` no longer return a mid-item I/O error while leaving the
+  core usable. The driver's own comment — "a write that errors put no bytes on the sink" —
+  is true per write *call* and false per *item*, so bytes emitted earlier in the same item
+  were already gone: `FileWriter` could emit a half-written tensor **and** a clean footer
+  index, a self-consistent index over a non-conforming tensor region, with no error raised
+  anywhere.
+- `FileWriter::write_composite` no longer finishes cleanly over a torn composite group. A
+  head followed by fewer than `member_count` members is an invalid file
+  (`file-format.md § Composite Tensors`), and a member could fail — including at
+  *submission*, on a duplicate name or a buffer-length mismatch — after the head was
+  already on the sink.
 - `FileReader` no longer panics on a file whose header declares a `data_buffer_alignment`
   of `0` — or any non-power-of-two. The value reached the padding arithmetic as a divisor,
   so a crafted multi-buffer file could divide by zero inside a parser; it is now rejected
