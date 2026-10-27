@@ -468,18 +468,27 @@ impl WriteOp<'_> {
     /// # Examples
     ///
     /// ```
+    /// use hurray_core::{
+    ///     BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, SyncMode,
+    ///     TensorDescriptor, MIN_BUFFER_ALIGNMENT,
+    /// };
     /// use hurray_io::stream::StreamWriterCore;
-    /// use hurray_core::{ElementType, TensorDescriptor};
     ///
-    /// let descriptor = TensorDescriptor::new(ElementType::Uint8, vec![4])?;
-    /// let payload = vec![0u8; 4];
+    /// let handle =
+    ///     BufferHandle::new(8, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced)?;
+    /// let descriptor = TensorDescriptor::new(
+    ///     1, 0, ElementType::Float64, Shape::new(vec![1u64])?, 0,
+    ///     LayoutDescriptor::RowMajor, vec![handle], None, None, None, None,
+    /// )?;
+    /// let payload = [1u8; 8];
     /// let buffers: [&[u8]; 1] = [&payload];
     ///
     /// let mut core = StreamWriterCore::new();
     /// let mut op = core.tensor(&descriptor, &buffers)?;
+    /// // Stepping offers bytes; only a report counts them.
+    /// op.step()?;
     /// assert_eq!(op.emitted(), 0);
     ///
-    /// op.step()?;
     /// op.report_written(3)?;
     /// assert_eq!(op.emitted(), 3);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
