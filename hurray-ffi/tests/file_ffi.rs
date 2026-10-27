@@ -1067,7 +1067,7 @@ fn a_sink_that_closes_mid_tensor_reports_sink_closed() {
 }
 
 #[test]
-fn a_failed_write_ends_the_file() {
+fn a_file_write_that_fails_before_its_first_byte_is_retryable() {
     unsafe {
         let descriptor = plain_2x2();
         let data = payload(16, 0x42);
@@ -1083,21 +1083,34 @@ fn a_failed_write_ends_the_file() {
             HURRAY_ERR_TRANSPORT
         );
 
-        // Not retryable, and that is the contract: the name is spent and the descriptor is
-        // staged, so a second attempt would describe a file other than the one on the
-        // sink. Every later call fails, including the footer.
-        assert!(write_one(writer, "weight", &descriptor, &[&data]) < 0);
-        assert!(write_one(writer, "other", &descriptor, &[&data]) < 0);
-        assert!(hurray_file_writer_finish(writer, std::ptr::null(), 0) < 0);
+        // Retryable, under the same name: the failed attempt emitted nothing, so it
+        // consumed neither the name nor a byte of the file (§ 6b).
+        sink.fail_write_at = None;
+        assert_eq!(
+            write_one(writer, "weight", &descriptor, &[&data]),
+            HURRAY_OK
+        );
+        assert_eq!(
+            hurray_file_writer_finish(writer, std::ptr::null(), 0),
+            HURRAY_OK
+        );
         assert_eq!(hurray_file_writer_destroy(&mut writer), HURRAY_OK);
 
-        // What is on the sink is a header and nothing else: not a container, and no
-        // reader opens it.
+        // A complete one-tensor container, which the retracted contract said was
+        // impossible.
         let mut source = MemFile::reading(std::mem::take(&mut sink.output));
         let vt = vtable(&mut source);
         let mut reader: *mut HurrayFileReader = std::ptr::null_mut();
-        assert!(hurray_file_reader_new(&vt, &mut reader) < 0);
-        assert!(reader.is_null());
+        assert_eq!(hurray_file_reader_new(&vt, &mut reader), HURRAY_OK);
+        assert!(!reader.is_null());
+        let mut count: u64 = 0;
+        assert_eq!(
+            hurray_file_reader_tensor_count(reader, &mut count),
+            HURRAY_OK
+        );
+        assert_eq!(count, 1);
+        let mut r = reader;
+        assert_eq!(hurray_file_reader_destroy(&mut r), HURRAY_OK);
     }
 }
 
@@ -1157,5 +1170,84 @@ fn null_arguments_are_refused_rather_than_dereferenced() {
         // is reported rather than dereferenced.
         assert!(reader.is_null());
         assert!(hurray_file_reader_destroy(&mut reader) < 0);
+    }
+}
+
+/// The terminal half of § 6b through C. `chunk` forces several writes per item, so the
+/// failure lands *after* bytes of the tensor are already on the sink — a torn item, which
+/// the transport's own status would understate.
+#[test]
+fn a_file_write_that_fails_after_its_first_byte_poisons_the_writer() {
+    unsafe {
+        let descriptor = plain_2x2();
+        let data = payload(16, 0x42);
+        let mut sink = MemFile::writing();
+        sink.chunk = 8;
+        let mut writer = writer_over(&mut sink, None);
+
+        // Past the header and into the tensor.
+        sink.fail_write_at = Some(sink.output.len() + 16);
+        assert_eq!(
+            write_one(writer, "weight", &descriptor, &[&data]),
+            HURRAY_ERR_SINK_CLOSED
+        );
+
+        // Terminal: the file cannot be made conforming by writing forward.
+        assert!(write_one(writer, "weight", &descriptor, &[&data]) < 0);
+        assert!(write_one(writer, "other", &descriptor, &[&data]) < 0);
+        assert!(hurray_file_writer_finish(writer, std::ptr::null(), 0) < 0);
+        assert_eq!(hurray_file_writer_destroy(&mut writer), HURRAY_OK);
+
+        // Not a container: no trailer was ever written.
+        let mut source = MemFile::reading(std::mem::take(&mut sink.output));
+        let vt = vtable(&mut source);
+        let mut reader: *mut HurrayFileReader = std::ptr::null_mut();
+        assert!(hurray_file_reader_new(&vt, &mut reader) < 0);
+        assert!(reader.is_null());
+    }
+}
+
+/// ADR-041's struck open question, and the one § 6b retry reachable *only* from C — the
+/// tokio `finish(self)` consumes its sink. The data is already on the sink and only the
+/// index is missing, so a footer that emitted nothing is worth retrying.
+#[test]
+fn a_file_footer_that_fails_before_its_first_byte_may_be_retried() {
+    unsafe {
+        let descriptor = plain_2x2();
+        let data = payload(16, 0x42);
+        let mut sink = MemFile::writing();
+        let mut writer = writer_over(&mut sink, None);
+
+        assert_eq!(
+            write_one(writer, "weight", &descriptor, &[&data]),
+            HURRAY_OK
+        );
+
+        // The footer's very first write fails, so none of it reached the sink.
+        sink.fail_write_at = Some(sink.output.len());
+        assert_eq!(
+            hurray_file_writer_finish(writer, std::ptr::null(), 0),
+            HURRAY_ERR_TRANSPORT
+        );
+
+        // Retried, and the file is complete.
+        assert_eq!(
+            hurray_file_writer_finish(writer, std::ptr::null(), 0),
+            HURRAY_OK
+        );
+        assert_eq!(hurray_file_writer_destroy(&mut writer), HURRAY_OK);
+
+        let mut source = MemFile::reading(std::mem::take(&mut sink.output));
+        let vt = vtable(&mut source);
+        let mut reader: *mut HurrayFileReader = std::ptr::null_mut();
+        assert_eq!(hurray_file_reader_new(&vt, &mut reader), HURRAY_OK);
+        let mut count: u64 = 0;
+        assert_eq!(
+            hurray_file_reader_tensor_count(reader, &mut count),
+            HURRAY_OK
+        );
+        assert_eq!(count, 1);
+        let mut r = reader;
+        assert_eq!(hurray_file_reader_destroy(&mut r), HURRAY_OK);
     }
 }

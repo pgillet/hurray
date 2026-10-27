@@ -103,7 +103,12 @@ pub unsafe extern "C" fn hurray_file_writer_new(
             Err(e) => return status_from_io_error(&e),
         };
 
-        let status = drain(&mut core.header(), &transport);
+        let mut header = match core.header() {
+            Ok(op) => op,
+            Err(e) => return status_from_io_error(&e),
+        };
+        let status = drain(&mut header, &transport);
+        drop(header);
         if status != HURRAY_OK {
             return status;
         }
@@ -163,16 +168,13 @@ pub unsafe extern "C" fn hurray_file_writer_destroy(
 ///   long, or already used in this file. Refused before a byte goes out, so the file is
 ///   still completable and another name may be used.
 /// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes, or the write callback
-///   failed, once part of this tensor was already out.
-/// - Whatever status the write callback returned, if it failed before any byte of this
-///   tensor reached the sink.
-///
-/// **A write that fails is the end of the file**, whichever of those two it reports: the
-/// writer is poisoned, every later call on it fails, and the bytes on the sink are not a
-/// container. Unlike a stream write, it is not retryable — the tensor's name is spent and
-/// its descriptor is already staged, so a second attempt would describe a different file
-/// from the one on the sink. Writing a file again from the beginning is the recovery, and
-/// for a storage failure it is the only one worth having.
+///   failed, once part of this tensor was already out. A torn tensor is in the file and a
+///   forward-only writer cannot get back to its start, so the writer is poisoned: every
+///   later call fails, including the footer, and the bytes on the sink are not a container.
+/// - Whatever status the write callback returned, if it failed **before any byte of this
+///   tensor reached the sink**. Nothing was emitted, so the call MAY be retried — under the
+///   same name, which the failed attempt did not consume — and the file is still
+///   completable (ADR-041 § 6b).
 ///
 /// Composite tensors are not yet writable from C; a composite head alone is not a valid
 /// tensor and is refused.
@@ -239,7 +241,14 @@ pub unsafe extern "C" fn hurray_file_writer_write_tensor(
 /// Writes the KV section, the footer index and the 40-byte trailer, completing the file.
 ///
 /// Until this returns [`HURRAY_OK`] the bytes on the sink are not a container: the index
-/// a reader opens from is written here. Calling it twice fails.
+/// a reader opens from is written here. Calling it twice *after it returned*
+/// [`HURRAY_OK`] fails.
+///
+/// A footer that failed **before any of its bytes reached the sink** may be written again:
+/// nothing was emitted, so the file is still completable (ADR-041 § 6b). This is the one
+/// retry worth having here — the data is already on the sink, and only the index is
+/// missing. A footer that failed after its first byte poisons the writer like any other
+/// torn item.
 ///
 /// `kv` MAY be null with a `kv_count` of `0` for a file with no metadata section. Keys
 /// MUST be non-empty, at most 65 535 bytes, and unique. Entries read out of another file
@@ -301,9 +310,6 @@ pub unsafe extern "C" fn hurray_file_writer_finish(
 /// distinct types with no common trait upstream, and a trait defined here to join them
 /// would be more surface than the twenty lines it saves.
 fn drain(op: &mut FileWriteOp<'_>, transport: &Transport) -> HurrayStatus {
-    // Bytes of *this* item already on the sink. What makes a transport failure
-    // recoverable or not: nothing emitted means nothing to un-send.
-    let mut emitted = 0usize;
     loop {
         match op.step() {
             Err(e) => return status_from_io_error(&e),
@@ -320,15 +326,14 @@ fn drain(op: &mut FileWriteOp<'_>, transport: &Transport) -> HurrayStatus {
                         if let Err(e) = op.report_written(n) {
                             return status_from_io_error(&e);
                         }
-                        emitted += n;
                     }
                     Err(status) => {
-                        // Poisoned either way, unlike the stream writer. A file's tensor
-                        // has already consumed its name and staged its descriptor by the
-                        // time bytes move, and the core offers no rollback for that, so a
-                        // retry would write a file that does not match its own index.
-                        op.report_sink_closed();
-                        if emitted > 0 {
+                        // No `report_sink_closed` here: the core poisoned itself at this
+                        // item's first accepted byte (§ 6b), and calling it would overwrite
+                        // that with `LostWriteCount` — claiming the count is unknown when
+                        // it is known exactly. It would also make the footer retry
+                        // unreachable, which is what § 6b exists to allow.
+                        if op.emitted() > 0 {
                             // A torn item: the transport's own status would understate it.
                             return HURRAY_ERR_SINK_CLOSED;
                         }

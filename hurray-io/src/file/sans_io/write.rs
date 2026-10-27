@@ -24,8 +24,9 @@ static ZEROS: [u8; 4096] = [0u8; 4096];
 /// One stretch of bytes to emit, in file order.
 #[derive(Debug, Clone, Copy)]
 enum Seg {
-    /// Owned bytes the core staged: the file header, a descriptor, or the footer.
-    Staged,
+    /// Bytes the *operation* owns: the file header, a descriptor, or the footer. Held by
+    /// the op rather than the core so that abandoning it commits nothing (§ 6b).
+    Owned,
     /// `len` padding bytes.
     Zeros { len: u64 },
     /// Caller payload `index`, borrowed and never copied (§ 3).
@@ -75,7 +76,7 @@ enum Seg {
 ///
 /// let mut file = Vec::new();
 /// let mut core = FileWriterCore::new();
-/// drive(core.header(), &mut file)?;
+/// drive(core.header()?, &mut file)?;
 /// drive(core.tensor("embeddings", &descriptor, &buffers)?, &mut file)?;
 /// drive(core.finish(vec![])?, &mut file)?;
 ///
@@ -91,10 +92,12 @@ pub struct FileWriterCore {
     offset: u64,
     entries: Vec<IndexEntry>,
     seen_names: HashSet<String>,
-    /// Owned bytes awaiting emission, from `staged_pos` onwards.
-    staging: Vec<u8>,
-    staged_pos: usize,
     unusable: Option<Unusable>,
+    /// Set when the item in flight has had a byte accepted, cleared when it completes
+    /// (§ 6b). On the core, not the op, because a driver that errors and drops the op
+    /// reports nothing — the poison cannot depend on being told.
+    torn: bool,
+    header_written: bool,
     finished: bool,
 }
 
@@ -141,60 +144,83 @@ impl FileWriterCore {
     }
 
     fn build(options: FileWriterOptions) -> Self {
-        // File flags known at write time. HAS_KV_METADATA is not set here because the KV
-        // content is supplied to `finish`, and this writer never seeks back to amend the
-        // header; readers treat a non-zero trailer `kv_offset` as authoritative.
-        let mut flags: u32 = file_flags::HAS_INDEX_CRC32C;
-        if options.sorted_index {
-            flags |= file_flags::SORTED_INDEX;
-        }
-
-        let mut header = vec![0u8; FILE_HEADER_SIZE as usize];
-        header[0..8].copy_from_slice(FILE_MAGIC);
-        header[8] = 1; // container_version_major
-        header[9] = 0; // container_version_minor
-                       // [10..12] _reserved = 0
-        header[12..16].copy_from_slice(&flags.to_le_bytes());
-        header[16..20].copy_from_slice(&options.data_buffer_alignment.to_le_bytes());
-        // first_descriptor_offset = 64 (immediately after the header)
-        header[20..28].copy_from_slice(&FILE_HEADER_SIZE.to_le_bytes());
-        // tensor_count_hint = UINT64_MAX (unknown at write time)
-        header[28..36].copy_from_slice(&u64::MAX.to_le_bytes());
-        // [36..64] _reserved_header = 0
-
         Self {
             alignment: u64::from(options.data_buffer_alignment),
             sorted_index: options.sorted_index,
             offset: 0,
             entries: Vec::new(),
             seen_names: HashSet::new(),
-            staging: header,
-            staged_pos: 0,
             unusable: None,
+            torn: false,
+            header_written: false,
             finished: false,
         }
     }
 
+    /// Builds the 64-byte header on demand.
+    ///
+    /// Derived rather than stored so that a header operation owns its own bytes and an
+    /// abandoned one leaves the core untouched (§ 6b). Called once per file.
+    fn encode_header(&self) -> Vec<u8> {
+        // File flags known at write time. HAS_KV_METADATA is not set here because the KV
+        // content is supplied to `finish`, and this writer never seeks back to amend the
+        // header; readers treat a non-zero trailer `kv_offset` as authoritative.
+        let mut flags: u32 = file_flags::HAS_INDEX_CRC32C;
+        if self.sorted_index {
+            flags |= file_flags::SORTED_INDEX;
+        }
+
+        // `FILE_HEADER_SIZE`, not a literal 64: the header writes that same constant into
+        // its own `first_descriptor_offset` field below.
+        let mut header = vec![0u8; FILE_HEADER_SIZE as usize];
+        header[0..8].copy_from_slice(FILE_MAGIC);
+        header[8] = 1; // container_version_major
+        header[9] = 0; // container_version_minor
+                       // [10..12] _reserved = 0
+        header[12..16].copy_from_slice(&flags.to_le_bytes());
+        header[16..20].copy_from_slice(&(self.alignment as u32).to_le_bytes());
+        // first_descriptor_offset = 64 (immediately after the header)
+        header[20..28].copy_from_slice(&FILE_HEADER_SIZE.to_le_bytes());
+        // tensor_count_hint = UINT64_MAX (unknown at write time)
+        header[28..36].copy_from_slice(&u64::MAX.to_le_bytes());
+        // [36..64] _reserved_header = 0
+        header
+    }
+
     /// Emits the 64-byte file header.
     ///
-    /// Drive this before the first tensor. Any operation emits whatever bytes are still
-    /// staged, so a driver that forgets still produces a correct file — but it will have
-    /// written nothing until its first tensor, which a driver that promises otherwise
-    /// should not do.
+    /// Drive this before the first tensor: a core with no header written refuses
+    /// [`tensor`][Self::tensor] and [`finish`][Self::finish].
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::CoreUnusable`] — the core is poisoned
+    /// - [`Error::CoreFailed`] — the header is already written, or the file is finished
     ///
     /// # Examples
     ///
     /// See the type-level example.
-    pub fn header(&mut self) -> FileWriteOp<'_> {
-        FileWriteOp {
-            plan: vec![Seg::Staged],
+    pub fn header(&mut self) -> Result<FileWriteOp<'_>> {
+        if let Some(reason) = self.retired() {
+            return Err(Error::CoreUnusable(reason));
+        }
+        // Checked in the same order as a second `finish`, so a header after the trailer
+        // reports `CoreFailed` for the same reason.
+        if self.finished || self.header_written {
+            return Err(Error::CoreFailed);
+        }
+        let bytes = self.encode_header();
+        Ok(FileWriteOp {
+            plan: vec![Seg::Owned],
             core: self,
+            bytes,
             payloads: &[],
             cursor: 0,
             written: 0,
-            entry: None,
+            emitted_bytes: 0,
+            commit: Some(Commit::Header),
             failed: false,
-        }
+        })
     }
 
     /// Submits one tensor: its descriptor, its alignment padding, and its payloads.
@@ -224,12 +250,15 @@ impl FileWriterCore {
         descriptor: &TensorDescriptor,
         buffers: &'a [&'a [u8]],
     ) -> Result<FileWriteOp<'a>> {
-        if let Some(reason) = self.unusable {
+        if let Some(reason) = self.retired() {
             return Err(Error::CoreUnusable(reason));
         }
         // The trailer is the last thing in the file, so there is no legal tensor after it.
         if self.finished {
             return Err(Error::CoreFailed);
+        }
+        if !self.header_written {
+            return Err(Error::HeaderNotWritten);
         }
         if name.is_empty() {
             return Err(Error::TensorNameEmpty);
@@ -237,7 +266,9 @@ impl FileWriterCore {
         if name.len() > 65535 {
             return Err(Error::TensorNameTooLong { len: name.len() });
         }
-        if !self.seen_names.insert(name.to_string()) {
+        // `contains`, not `insert`: the name is consumed when the item completes, so an
+        // operation that never emits a byte leaves it free (§ 6b).
+        if self.seen_names.contains(name) {
             return Err(Error::DuplicateTensorName(name.to_string()));
         }
         if buffers.len() != descriptor.buffers.len() {
@@ -258,11 +289,12 @@ impl FileWriterCore {
             }
         }
         let encoded = descriptor.encode()?;
-        let descriptor_offset = self.offset + self.pending_staged();
+        // Exact, with nothing staged on the core: every byte an earlier item planned has
+        // either been reported written or belongs to an op that poisoned the core (§ 6b).
+        let descriptor_offset = self.offset;
         let descriptor_length = encoded.len() as u32;
-        self.stage(encoded);
 
-        let mut plan = vec![Seg::Staged];
+        let mut plan = vec![Seg::Owned];
 
         // Padding from the descriptor's end to the first data buffer. Keyed on there
         // *being* a first data buffer: `buffer_count = 0` is reachable only for a
@@ -308,16 +340,19 @@ impl FileWriterCore {
         Ok(FileWriteOp {
             plan,
             core: self,
+            bytes: encoded,
             payloads: buffers,
             cursor: 0,
             written: 0,
-            entry: Some(IndexEntry {
+            emitted_bytes: 0,
+            // The name travels inside the entry, which already carries it.
+            commit: Some(Commit::Tensor(IndexEntry {
                 name: name.to_string(),
                 descriptor_offset,
                 descriptor_length,
                 data_offset,
                 data_length,
-            }),
+            })),
             failed: false,
         })
     }
@@ -336,18 +371,21 @@ impl FileWriterCore {
     ///
     /// See the type-level example.
     pub fn finish(&mut self, kv: Vec<(String, KvValue)>) -> Result<FileWriteOp<'_>> {
-        if let Some(reason) = self.unusable {
+        if let Some(reason) = self.retired() {
             return Err(Error::CoreUnusable(reason));
         }
         if self.finished {
             return Err(Error::CoreFailed);
+        }
+        if !self.header_written {
+            return Err(Error::HeaderNotWritten);
         }
         validate_kv_keys(&kv)?;
 
         // The tensor region is already 8-aligned, so the KV section starts where the last
         // tensor left off. Footer padding is at most 7 bytes, so it is staged inline
         // rather than streamed from `ZEROS`.
-        let footer_offset = self.offset + self.pending_staged();
+        let footer_offset = self.offset;
         let mut footer = Vec::new();
 
         let (kv_offset, kv_length) = if kv.is_empty() {
@@ -363,11 +401,16 @@ impl FileWriterCore {
             (footer_offset, kv_length)
         };
 
-        if self.sorted_index {
-            self.entries
-                .sort_unstable_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
-        }
-        let index_bytes = encode_index_section(&self.entries);
+        // Sorted into a local copy, not in place: `finish` may be retried after a footer
+        // that emitted nothing, and § 6b forbids an operation mutating state the core
+        // carries past it. (The sort is idempotent, so this is about the rule, not a bug.)
+        let index_bytes = if self.sorted_index {
+            let mut sorted = self.entries.clone();
+            sorted.sort_unstable_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
+            encode_index_section(&sorted)
+        } else {
+            encode_index_section(&self.entries)
+        };
         let index_offset = footer_offset + footer.len() as u64;
         let index_length = index_bytes.len() as u64;
         let index_crc32c = crc32c::crc32c(&index_bytes);
@@ -383,16 +426,15 @@ impl FileWriterCore {
         trailer[36..40].copy_from_slice(TRAILER_MAGIC);
         footer.extend_from_slice(&trailer);
 
-        self.stage(footer);
-        self.finished = true;
-
         Ok(FileWriteOp {
-            plan: vec![Seg::Staged],
+            plan: vec![Seg::Owned],
             core: self,
+            bytes: footer,
             payloads: &[],
             cursor: 0,
             written: 0,
-            entry: None,
+            emitted_bytes: 0,
+            commit: Some(Commit::Footer),
             failed: false,
         })
     }
@@ -407,22 +449,25 @@ impl FileWriterCore {
     /// assert!(!FileWriterCore::new().is_unusable());
     /// ```
     pub fn is_unusable(&self) -> bool {
-        self.unusable.is_some()
+        self.retired().is_some()
     }
 
-    /// Bytes staged but not yet reported written.
-    fn pending_staged(&self) -> u64 {
-        (self.staging.len() - self.staged_pos) as u64
+    /// The reason this core is retired, if it is.
+    ///
+    /// `unusable` wins over `torn`: a lost count is strictly worse than a known-incomplete
+    /// item. Read through here at every site so the precedence cannot drift.
+    fn retired(&self) -> Option<Unusable> {
+        self.unusable
+            .or(self.torn.then_some(Unusable::IncompleteOutput))
     }
 
-    /// Appends owned bytes to the staging buffer, dropping bytes already emitted.
-    fn stage(&mut self, bytes: Vec<u8>) {
-        if self.staged_pos == self.staging.len() {
-            self.staging = bytes;
-            self.staged_pos = 0;
-        } else {
-            self.staging.extend_from_slice(&bytes);
-        }
+    /// Retires the core because the output can no longer be completed.
+    ///
+    /// For a unit larger than one item — a composite group, whose head is already on the
+    /// sink when a member fails. A `FileWriteOp` cannot express that: the failure may come
+    /// from *submission*, with no operation in hand.
+    pub(crate) fn poison(&mut self, reason: Unusable) {
+        self.unusable = Some(reason);
     }
 }
 
@@ -439,15 +484,29 @@ pub struct FileWriteOp<'a> {
     core: &'a mut FileWriterCore,
     /// The stretches to emit, in file order.
     plan: Vec<Seg>,
+    /// This operation's own bytes: the header, a descriptor, or the footer.
+    bytes: Vec<u8>,
     /// Payload slices of the tensor being emitted, in buffer order.
     payloads: &'a [&'a [u8]],
     /// Which entry of `plan` is being emitted.
     cursor: usize,
     /// Bytes of the current stretch already written.
     written: usize,
-    /// The index entry to record once every byte is out.
-    entry: Option<IndexEntry>,
+    /// Bytes of *this item* already accepted by the sink — per item, not per stretch. The
+    /// § 6b predicate.
+    emitted_bytes: u64,
+    /// What this operation changes on the core once every byte is out. `take`n at
+    /// completion so a second `step` after `ItemWritten` stays idempotent.
+    commit: Option<Commit>,
     failed: bool,
+}
+
+/// What an operation owes the core once its last byte is out (§ 6b).
+#[derive(Debug)]
+enum Commit {
+    Header,
+    Tensor(IndexEntry),
+    Footer,
 }
 
 impl FileWriteOp<'_> {
@@ -470,10 +529,18 @@ impl FileWriteOp<'_> {
         }
         loop {
             let Some(seg) = self.plan.get(self.cursor).copied() else {
-                // Every byte is out: the borrowed payloads are released, and the tensor
-                // earns its index entry (§ 3's "reports that item written" point).
-                if let Some(entry) = self.entry.take() {
-                    self.core.entries.push(entry);
+                // Every byte is out: the borrowed payloads are released and the operation
+                // pays what it owes. This is the single commit point of § 6b — the name and
+                // the index entry move together, which is what #248 was about.
+                self.core.torn = false;
+                match self.commit.take() {
+                    Some(Commit::Header) => self.core.header_written = true,
+                    Some(Commit::Tensor(entry)) => {
+                        self.core.seen_names.insert(entry.name.clone());
+                        self.core.entries.push(entry);
+                    }
+                    Some(Commit::Footer) => self.core.finished = true,
+                    None => {}
                 }
                 return Ok(WriteStep::ItemWritten);
             };
@@ -499,12 +566,7 @@ impl FileWriteOp<'_> {
     /// See [`FileWriterCore`].
     pub fn output_src(&self) -> &[u8] {
         match self.plan.get(self.cursor).copied() {
-            Some(Seg::Staged) => {
-                // `staged_pos` alone: staged bytes are consumed from the core's buffer, so
-                // counting them in `written` too would skip every second byte.
-                let from = self.core.staged_pos.min(self.core.staging.len());
-                &self.core.staging[from..]
-            }
+            Some(Seg::Owned) => &self.bytes[self.written.min(self.bytes.len())..],
             Some(Seg::Zeros { len }) => {
                 let left = len - self.written as u64;
                 let take = left.min(ZEROS.len() as u64) as usize;
@@ -562,12 +624,45 @@ impl FileWriteOp<'_> {
             });
         }
 
-        self.core.offset += n as u64;
-        match seg {
-            Seg::Staged => self.core.staged_pos += n,
-            _ => self.written += n,
+        if self.emitted_bytes == 0 {
+            // Poison at the first accepted byte, not in `Drop`: `Drop` can be skipped by
+            // `forget`, delayed by a live op, or run while unwinding. The transient state
+            // is unobservable anyway — the op holds `&mut core` for its whole life.
+            //
+            // Strictly this is the first *reported* byte. ADR-041 § 4 is what closes the
+            // gap: the transfer and its count report form one uninterruptible step, so a
+            // byte the sink took is always a byte reported.
+            self.core.torn = true;
         }
+        self.emitted_bytes += n as u64;
+        self.core.offset += n as u64;
+        // One buffer per segment now, so `written` tracks every kind of stretch.
+        self.written += n;
         Ok(())
+    }
+
+    /// Bytes of this item already accepted by the sink, padding included.
+    ///
+    /// Zero means nothing of the item has left the driver, which is exactly when the item
+    /// may be resubmitted after a failure (§ 6b).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_io::file::FileWriterCore;
+    ///
+    /// let mut core = FileWriterCore::new();
+    /// let mut op = core.header()?;
+    /// // Stepping offers bytes; only a report counts them.
+    /// op.step()?;
+    /// assert_eq!(op.emitted(), 0);
+    ///
+    /// op.report_written(16)?;
+    /// assert_eq!(op.emitted(), 16);
+    /// # Ok::<(), hurray_io::Error>(())
+    /// ```
+    pub fn emitted(&self) -> u64 {
+        self.emitted_bytes
     }
 
     /// Declares the sink closed while this item is in flight.
@@ -581,21 +676,23 @@ impl FileWriteOp<'_> {
     /// ```no_run
     /// # fn main() -> hurray_io::Result<()> {
     /// # let mut core = hurray_io::file::FileWriterCore::new();
-    /// let mut op = core.header();
+    /// let mut op = core.header()?;
     /// let error = op.report_sink_closed();
     /// assert!(matches!(error, hurray_io::Error::SinkClosed));
     /// # Ok(())
     /// # }
     /// ```
     pub fn report_sink_closed(&mut self) -> Error {
-        self.core.unusable = Some(Unusable::LostWriteCount);
+        // Not `LostWriteCount`: the count is known exactly. What is lost is the ability to
+        // finish the item, which is a different claim (§ 6b).
+        self.core.unusable = Some(Unusable::IncompleteOutput);
         self.failed = true;
         Error::SinkClosed
     }
 
     fn remaining_in(&self, seg: Seg) -> usize {
         match seg {
-            Seg::Staged => self.core.staging.len().saturating_sub(self.core.staged_pos),
+            Seg::Owned => self.bytes.len().saturating_sub(self.written),
             Seg::Zeros { len } => {
                 let left = len - self.written as u64;
                 left.min(ZEROS.len() as u64) as usize

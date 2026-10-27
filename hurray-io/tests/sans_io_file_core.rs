@@ -18,7 +18,7 @@ use hurray_io::file::{
 };
 use hurray_io::stream::{
     AlignedDestination, Destination, DestinationAlloc, DestinationRequest, SystemDestinations,
-    WriteStep,
+    Unusable, WriteStep,
 };
 use hurray_io::{Error, Result};
 
@@ -123,6 +123,21 @@ fn drain(mut op: FileWriteOp<'_>, sink: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
+/// Drives an operation, failing the write that would carry the `fail_at`-th byte of the
+/// *item* onward. `fail_at == 0` fails before any byte of the item reaches the sink.
+fn drain_failing(mut op: FileWriteOp<'_>, sink: &mut Vec<u8>, fail_at: u64) -> Result<()> {
+    while let WriteStep::Output { .. } = op.step()? {
+        if op.emitted() >= fail_at {
+            return Err(Error::Io(std::io::Error::other("simulated")));
+        }
+        let src = op.output_src();
+        let n = src.len().min((fail_at - op.emitted()) as usize);
+        sink.extend_from_slice(&src[..n]);
+        op.report_written(n)?;
+    }
+    Ok(())
+}
+
 /// Answers every range the core asks for, at most `chunk` bytes at a time.
 fn drive<A: DestinationAlloc>(
     core: &mut FileReaderCore<A>,
@@ -148,7 +163,7 @@ fn drive<A: DestinationAlloc>(
 fn one_tensor_file(name: &str, descriptor: &TensorDescriptor, buffers: &[&[u8]]) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut core = FileWriterCore::new();
-    drain(core.header(), &mut bytes).unwrap();
+    drain(core.header().unwrap(), &mut bytes).unwrap();
     drain(core.tensor(name, descriptor, buffers).unwrap(), &mut bytes).unwrap();
     drain(core.finish(vec![]).unwrap(), &mut bytes).unwrap();
     bytes
@@ -194,7 +209,7 @@ fn nested_composite_file() -> (Vec<u8>, Vec<Vec<u8>>) {
 
     let mut bytes = Vec::new();
     let mut core = FileWriterCore::new();
-    drain(core.header(), &mut bytes).unwrap();
+    drain(core.header().unwrap(), &mut bytes).unwrap();
     for node in flatten_composite("group", &group, &members).unwrap() {
         drain(
             core.tensor(node.name, node.descriptor, node.buffers)
@@ -571,7 +586,7 @@ fn a_torn_composite_is_reported_as_torn() {
 
     let mut bytes = Vec::new();
     let mut core = FileWriterCore::new();
-    drain(core.header(), &mut bytes).unwrap();
+    drain(core.header().unwrap(), &mut bytes).unwrap();
     drain(core.tensor("g", &head, &[]).unwrap(), &mut bytes).unwrap();
     drain(core.tensor("g.0", &member, &[&data]).unwrap(), &mut bytes).unwrap();
     drain(core.finish(vec![]).unwrap(), &mut bytes).unwrap();
@@ -628,7 +643,7 @@ fn a_payload_is_offered_from_the_callers_own_memory() {
 
     let mut core = FileWriterCore::new();
     let mut sink = Vec::new();
-    drain(core.header(), &mut sink).unwrap();
+    drain(core.header().unwrap(), &mut sink).unwrap();
 
     let mut op = core.tensor("t", &descriptor, &buffers).unwrap();
     let mut offered_from_the_payload = false;
@@ -655,6 +670,8 @@ fn a_zero_length_write_is_not_progress() {
     let buffers: [&[u8]; 1] = [&data];
 
     let mut core = FileWriterCore::new();
+    // The header is incidental setup: § 6b refuses a tensor before it.
+    drain(core.header().unwrap(), &mut Vec::new()).unwrap();
     let mut op = core.tensor("t", &descriptor, &buffers).unwrap();
     assert!(matches!(op.step().unwrap(), WriteStep::Output { .. }));
     assert!(matches!(op.report_written(0), Err(Error::ZeroLengthWrite)));
@@ -678,6 +695,8 @@ fn over_reporting_a_write_poisons_the_core() {
     let buffers: [&[u8]; 1] = [&data];
 
     let mut core = FileWriterCore::new();
+    // The header is incidental setup: § 6b refuses a tensor before it.
+    drain(core.header().unwrap(), &mut Vec::new()).unwrap();
     let mut op = core.tensor("t", &descriptor, &buffers).unwrap();
     let WriteStep::Output { len } = op.step().unwrap() else {
         panic!("expected output")
@@ -699,7 +718,7 @@ fn a_short_write_re_offers_the_remainder() {
     let mut sink = Vec::new();
     let mut core = FileWriterCore::new();
     // One byte per call, the whole way through.
-    let mut op = core.header();
+    let mut op = core.header().unwrap();
     while let WriteStep::Output { .. } = op.step().unwrap() {
         let src = op.output_src();
         sink.push(src[0]);
@@ -748,7 +767,7 @@ fn the_cores_round_trip_a_file_with_kv_and_a_sorted_index() {
         sorted_index: true,
     })
     .unwrap();
-    drain(writer.header(), &mut bytes).unwrap();
+    drain(writer.header().unwrap(), &mut bytes).unwrap();
     drain(
         writer.tensor("zeta", &zeta, &[&zeta_data]).unwrap(),
         &mut bytes,
@@ -885,7 +904,7 @@ fn nothing_may_follow_the_footer() {
 
     let mut sink = Vec::new();
     let mut core = FileWriterCore::new();
-    drain(core.header(), &mut sink).unwrap();
+    drain(core.header().unwrap(), &mut sink).unwrap();
     drain(core.tensor("t", &descriptor, &buffers).unwrap(), &mut sink).unwrap();
     drain(core.finish(vec![]).unwrap(), &mut sink).unwrap();
 
@@ -895,4 +914,235 @@ fn nothing_may_follow_the_footer() {
         Err(Error::CoreFailed)
     ));
     assert!(matches!(core.finish(vec![]), Err(Error::CoreFailed)));
+}
+
+/// Issue #248's own repro, driven to completion. A write that fails before its first byte
+/// consumed neither the name nor a byte of the file, so the same tensor may be submitted
+/// again — and the file that results is *byte-identical* to one written with no failure at
+/// all. That equality is the whole claim: no burnt name, and no orphan descriptor ahead of
+/// the next item's bytes.
+#[test]
+fn a_write_that_fails_before_its_first_byte_is_retryable_under_the_same_name() {
+    let data = payload(256, 0x11);
+    let descriptor = row_major(256, 64);
+    let buffers: [&[u8]; 1] = [&data];
+
+    let mut sink = Vec::new();
+    let mut core = FileWriterCore::new();
+    drain(core.header().unwrap(), &mut sink).unwrap();
+
+    // Fails before any byte of the tensor goes out.
+    assert!(matches!(
+        drain_failing(
+            core.tensor("weight", &descriptor, &buffers).unwrap(),
+            &mut sink,
+            0
+        ),
+        Err(Error::Io(_))
+    ));
+    assert!(!core.is_unusable());
+
+    // The name is free, which `DuplicateTensorName` used to deny.
+    drain(
+        core.tensor("weight", &descriptor, &buffers).unwrap(),
+        &mut sink,
+    )
+    .unwrap();
+    drain(core.finish(Vec::new()).unwrap(), &mut sink).unwrap();
+
+    assert_eq!(sink, one_tensor_file("weight", &descriptor, &buffers));
+}
+
+/// The other half of § 6b: once a byte is out, no forward-only writer can make the file
+/// conforming, so the core is terminal — and `finish` must refuse rather than write a
+/// clean index over a torn region.
+#[test]
+fn a_write_that_fails_after_its_first_byte_poisons_the_core() {
+    let data = payload(256, 0x11);
+    let descriptor = row_major(256, 64);
+    let buffers: [&[u8]; 1] = [&data];
+
+    let mut sink = Vec::new();
+    let mut core = FileWriterCore::new();
+    drain(core.header().unwrap(), &mut sink).unwrap();
+
+    assert!(matches!(
+        drain_failing(
+            core.tensor("weight", &descriptor, &buffers).unwrap(),
+            &mut sink,
+            8
+        ),
+        Err(Error::Io(_))
+    ));
+    assert!(core.is_unusable());
+    assert!(matches!(
+        core.tensor("other", &descriptor, &buffers),
+        Err(Error::CoreUnusable(Unusable::IncompleteOutput))
+    ));
+    assert!(matches!(
+        core.finish(Vec::new()),
+        Err(Error::CoreUnusable(Unusable::IncompleteOutput))
+    ));
+}
+
+/// An operation simply dropped — no error reported, which is what a driver that returns
+/// early does — must leave the core exactly as it was. The poison cannot depend on being
+/// told, and neither can the release of the name.
+#[test]
+fn an_op_dropped_before_its_first_byte_leaves_the_name_free() {
+    let data = payload(256, 0x11);
+    let descriptor = row_major(256, 64);
+    let buffers: [&[u8]; 1] = [&data];
+
+    let mut sink = Vec::new();
+    let mut core = FileWriterCore::new();
+    drain(core.header().unwrap(), &mut sink).unwrap();
+
+    let mut op = core.tensor("weight", &descriptor, &buffers).unwrap();
+    assert!(matches!(op.step().unwrap(), WriteStep::Output { .. }));
+    assert_eq!(op.emitted(), 0);
+    drop(op);
+
+    assert!(!core.is_unusable());
+    assert_eq!(sink.len(), 64, "nothing of the item reached the sink");
+    drain(
+        core.tensor("weight", &descriptor, &buffers).unwrap(),
+        &mut sink,
+    )
+    .unwrap();
+    drain(core.finish(Vec::new()).unwrap(), &mut sink).unwrap();
+    assert_eq!(sink, one_tensor_file("weight", &descriptor, &buffers));
+}
+
+/// ADR-041's struck open question. `finish` is an item under § 6b, so a footer that emitted
+/// nothing is retryable — which turns a wasted multi-gigabyte data write into a complete
+/// file, and is the retry most worth having in the whole path.
+#[test]
+fn a_footer_that_fails_before_its_first_byte_may_be_written_again() {
+    let data = payload(256, 0x11);
+    let descriptor = row_major(256, 64);
+    let buffers: [&[u8]; 1] = [&data];
+
+    let mut sink = Vec::new();
+    let mut core = FileWriterCore::new();
+    drain(core.header().unwrap(), &mut sink).unwrap();
+    drain(
+        core.tensor("weight", &descriptor, &buffers).unwrap(),
+        &mut sink,
+    )
+    .unwrap();
+
+    assert!(matches!(
+        drain_failing(core.finish(Vec::new()).unwrap(), &mut sink, 0),
+        Err(Error::Io(_))
+    ));
+    assert!(!core.is_unusable());
+
+    drain(core.finish(Vec::new()).unwrap(), &mut sink).unwrap();
+    assert_eq!(sink, one_tensor_file("weight", &descriptor, &buffers));
+}
+
+/// The `sorted_index` path mutates `entries` while building the footer, which is the one
+/// place § 6b's rule is bent. A footer retried *after another tensor was written* is what
+/// would catch an in-place sort leaking out of an abandoned operation.
+#[test]
+fn a_sorted_index_survives_a_footer_retry_with_a_tensor_in_between() {
+    let data = payload(256, 0x11);
+    let descriptor = row_major(256, 64);
+    let buffers: [&[u8]; 1] = [&data];
+
+    let sorted = || FileWriterOptions {
+        sorted_index: true,
+        ..Default::default()
+    };
+    let mut sink = Vec::new();
+    let mut core = FileWriterCore::with_options(sorted()).unwrap();
+    drain(core.header().unwrap(), &mut sink).unwrap();
+    drain(core.tensor("b", &descriptor, &buffers).unwrap(), &mut sink).unwrap();
+
+    // A footer that emitted nothing, then more work, then the real footer.
+    assert!(drain_failing(core.finish(Vec::new()).unwrap(), &mut sink, 0).is_err());
+    drain(core.tensor("a", &descriptor, &buffers).unwrap(), &mut sink).unwrap();
+    drain(core.finish(Vec::new()).unwrap(), &mut sink).unwrap();
+
+    // Identical to writing both tensors in the same order with no failure at all.
+    let mut clean = Vec::new();
+    let mut c2 = FileWriterCore::with_options(sorted()).unwrap();
+    drain(c2.header().unwrap(), &mut clean).unwrap();
+    drain(c2.tensor("b", &descriptor, &buffers).unwrap(), &mut clean).unwrap();
+    drain(c2.tensor("a", &descriptor, &buffers).unwrap(), &mut clean).unwrap();
+    drain(c2.finish(Vec::new()).unwrap(), &mut clean).unwrap();
+    assert_eq!(sink, clean);
+}
+
+/// `emitted` means bytes of the item on the sink, so alignment padding counts. A reader of
+/// the signature would otherwise assume it meant payload bytes.
+#[test]
+fn emitted_counts_padding_as_well_as_descriptor_and_payload() {
+    let data = payload(256, 0x11);
+    // A 4096-byte alignment forces real padding between descriptor and payload.
+    let descriptor = row_major(256, 4096);
+    let buffers: [&[u8]; 1] = [&data];
+
+    let options = FileWriterOptions {
+        data_buffer_alignment: 4096,
+        ..Default::default()
+    };
+    let mut sink = Vec::new();
+    let mut core = FileWriterCore::with_options(options).unwrap();
+    drain(core.header().unwrap(), &mut sink).unwrap();
+
+    let mut op = core.tensor("weight", &descriptor, &buffers).unwrap();
+    let before = sink.len();
+    while let WriteStep::Output { .. } = op.step().unwrap() {
+        let src = op.output_src();
+        sink.extend_from_slice(src);
+        let n = src.len();
+        op.report_written(n).unwrap();
+    }
+    let item_bytes = (sink.len() - before) as u64;
+    assert_eq!(op.emitted(), item_bytes);
+    // Strictly more than descriptor + payload: the gap between them was padded.
+    assert!(item_bytes > 256);
+}
+
+/// § 6b applies to the header too: a tensor submitted before one is refused, and so is a
+/// second header.
+#[test]
+fn the_header_must_be_written_before_anything_else() {
+    let data = payload(256, 0x11);
+    let descriptor = row_major(256, 64);
+    let buffers: [&[u8]; 1] = [&data];
+
+    let mut core = FileWriterCore::new();
+    assert!(matches!(
+        core.tensor("weight", &descriptor, &buffers),
+        Err(Error::HeaderNotWritten)
+    ));
+    assert!(matches!(
+        core.finish(Vec::new()),
+        Err(Error::HeaderNotWritten)
+    ));
+
+    let mut sink = Vec::new();
+    drain(core.header().unwrap(), &mut sink).unwrap();
+    // A second header would describe a file inside a file.
+    assert!(matches!(core.header(), Err(Error::CoreFailed)));
+}
+
+/// A header abandoned mid-emission is a torn item like any other, even though nothing it
+/// would have committed was a tensor.
+#[test]
+fn a_header_abandoned_mid_emission_poisons_the_core() {
+    let mut sink = Vec::new();
+    let mut core = FileWriterCore::new();
+    assert!(matches!(
+        drain_failing(core.header().unwrap(), &mut sink, 16),
+        Err(Error::Io(_))
+    ));
+    assert!(core.is_unusable());
+    assert!(matches!(
+        core.finish(Vec::new()),
+        Err(Error::CoreUnusable(Unusable::IncompleteOutput))
+    ));
 }

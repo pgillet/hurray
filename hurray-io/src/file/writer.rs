@@ -6,7 +6,7 @@ use crate::file::sans_io::{flatten_composite, FileWriteOp, FileWriterCore};
 // reader.rs). `hurray_io::file::FileCompositeNode` is canonical.
 pub use crate::file::types::FileCompositeNode;
 use crate::file::types::{FileWriterOptions, KvValue};
-use crate::stream::WriteStep;
+use crate::stream::{Unusable, WriteStep};
 use crate::{Error, Result};
 
 /// Writes a Hurray file in a single forward pass without seeks.
@@ -79,7 +79,7 @@ impl<W: AsyncWrite + Unpin> FileWriter<W> {
     /// - [`Error::Io`] — the header could not be written
     pub async fn with_options(mut inner: W, options: FileWriterOptions) -> Result<Self> {
         let mut core = FileWriterCore::with_options(options)?;
-        drain(&mut core.header(), &mut inner).await?;
+        drain(&mut core.header()?, &mut inner).await?;
         Ok(Self { inner, core })
     }
 
@@ -159,9 +159,30 @@ impl<W: AsyncWrite + Unpin> FileWriter<W> {
         // The tree is validated and flattened into write order first, so a torn or invalid
         // composite never reaches the sink — and the nesting is walked with an explicit
         // stack in the core rather than by recursing here (§ 10).
-        for node in flatten_composite(head_name, head, members)? {
-            let mut op = self.core.tensor(node.name, node.descriptor, node.buffers)?;
-            drain(&mut op, &mut self.inner).await?;
+        for (index, node) in flatten_composite(head_name, head, members)?
+            .into_iter()
+            .enumerate()
+        {
+            // The op is bound to a local and dropped before the poison below: it borrows
+            // the core mutably for its whole life, so `self.core` is unreachable until it
+            // is gone. That is also why `mark_unusable` on an op cannot serve here — a
+            // *submission* failure never produces one.
+            let result = match self.core.tensor(node.name, node.descriptor, node.buffers) {
+                Ok(mut op) => drain(&mut op, &mut self.inner).await,
+                Err(e) => Err(e),
+            };
+            if let Err(e) = result {
+                // A group that began and did not finish leaves a head with fewer than
+                // `member_count` members after it, which `file-format.md § Composite
+                // Tensors` calls invalid. No `finish` can rescue that, so the writer must
+                // not go on to write a clean index over it.
+                // `index > 0` is exactly "an earlier node completed": the loop returns on
+                // the first failure, so every node before this one is on the sink.
+                if index > 0 {
+                    self.core.poison(Unusable::IncompleteOutput);
+                }
+                return Err(e);
+            }
         }
         Ok(())
     }
@@ -202,8 +223,10 @@ async fn drain<W: AsyncWrite + Unpin>(op: &mut FileWriteOp<'_>, sink: &mut W) ->
                     Ok(n) => break n,
                     // `write_all`, which this replaces, absorbed this internally.
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
-                    // A write that errors put no bytes on the sink, so the count is known
-                    // to be zero and the file is still intact up to here (§ 6).
+                    // This call put no bytes on the sink, so its count is known to be
+                    // zero. That is not the same as the file being intact: if an earlier
+                    // call in this item moved bytes, the core is already torn and the next
+                    // call on this writer reports `CoreUnusable` (§ 6b).
                     Err(e) => return Err(Error::Io(e)),
                 }
             }
