@@ -95,6 +95,10 @@ pub enum Error {
     #[error("sink closed mid-item: the item on the wire is truncated")]
     SinkClosed,
 
+    /// A tensor or footer was submitted to a file writer core before its header.
+    #[error("the file header has not been written; drive FileWriterCore::header first")]
+    HeaderNotWritten,
+
     // ── File format ───────────────────────────────────────────────────────────
     /// The file header magic is not `HRRYFILE`.
     #[error("invalid file magic: expected HRRYFILE")]

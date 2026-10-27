@@ -208,9 +208,6 @@ pub unsafe extern "C" fn hurray_writer_write_tensor(
             Err(e) => return status_from_io_error(&e),
         };
 
-        // Bytes of *this* tensor already on the wire. What makes a transport failure
-        // recoverable or not: nothing emitted means nothing to un-send.
-        let mut emitted = 0usize;
         loop {
             match op.step() {
                 Err(e) => return status_from_io_error(&e),
@@ -227,13 +224,18 @@ pub unsafe extern "C" fn hurray_writer_write_tensor(
                             if let Err(e) = op.report_written(n) {
                                 return status_from_io_error(&e);
                             }
-                            emitted += n;
                         }
                         Err(status) => {
-                            if emitted > 0 {
-                                op.report_sink_closed();
+                            // No `report_sink_closed` here: the core poisoned itself at
+                            // this item's first accepted byte (§ 6b), and calling it would
+                            // overwrite that with `LostWriteCount` — claiming the count is
+                            // unknown when it is known exactly.
+                            if op.emitted() > 0 {
+                                // A torn item: the transport's own status understates it.
                                 return HURRAY_ERR_SINK_CLOSED;
                             }
+                            // Nothing of this item is on the wire, so the callback's status
+                            // is the more useful of the two — it says why the stream stopped.
                             return status;
                         }
                     }

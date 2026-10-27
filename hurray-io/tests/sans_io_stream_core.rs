@@ -343,7 +343,7 @@ fn a_closed_sink_mid_item_poisons_the_core() {
     assert!(core.is_unusable());
     assert!(matches!(
         core.tensor(&descriptor, &buffers),
-        Err(Error::CoreUnusable(Unusable::LostWriteCount))
+        Err(Error::CoreUnusable(Unusable::IncompleteOutput))
     ));
 }
 
@@ -818,3 +818,71 @@ fn composite_nesting_is_bounded() {
 // There is nothing left to assert here: the tokio drivers *are* this core now, so a
 // comparison between them would pass by construction. The wire-compatibility check moved
 // to `wire_compat.rs`, against bytes frozen before the refactor.
+
+/// § 6b's predicate: `emitted` counts bytes the driver *reported*, not bytes offered, and
+/// an operation dropped before its first report leaves the core clean — so the item may be
+/// submitted again.
+#[test]
+fn an_op_dropped_before_its_first_byte_leaves_the_core_clean() {
+    let descriptor = row_major(MIN_BUFFER_ALIGNMENT);
+    let payload = vec![0u8; 256];
+    let buffers: [&[u8]; 1] = [&payload];
+
+    let mut core = StreamWriterCore::new();
+    let mut op = core.tensor(&descriptor, &buffers).unwrap();
+    assert_eq!(op.emitted(), 0);
+    // Offered bytes are not emitted bytes: stepping alone reports nothing.
+    assert!(matches!(op.step().unwrap(), WriteStep::Output { .. }));
+    assert_eq!(op.emitted(), 0);
+    drop(op);
+
+    assert!(!core.is_unusable());
+    core.tensor(&descriptor, &buffers).unwrap();
+}
+
+/// Once a byte is reported the core is torn, and that outlives the operation: a *new* item
+/// is refused even though the failing one was merely dropped.
+#[test]
+fn an_op_dropped_after_its_first_byte_poisons_the_core() {
+    let descriptor = row_major(MIN_BUFFER_ALIGNMENT);
+    let payload = vec![0u8; 256];
+    let buffers: [&[u8]; 1] = [&payload];
+
+    let mut core = StreamWriterCore::new();
+    let mut op = core.tensor(&descriptor, &buffers).unwrap();
+    op.step().unwrap();
+    op.report_written(4).unwrap();
+    assert_eq!(op.emitted(), 4);
+    drop(op);
+
+    assert!(core.is_unusable());
+    assert!(matches!(
+        core.tensor(&descriptor, &buffers),
+        Err(Error::CoreUnusable(Unusable::IncompleteOutput))
+    ));
+}
+
+/// The clear half of the rule: an item driven to completion retires `torn`, so a core that
+/// wrote a whole tensor is as usable as a fresh one.
+#[test]
+fn a_completed_item_clears_the_torn_state() {
+    let descriptor = row_major(MIN_BUFFER_ALIGNMENT);
+    let payload = vec![0u8; 256];
+    let buffers: [&[u8]; 1] = [&payload];
+
+    let mut core = StreamWriterCore::new();
+    let mut op = core.tensor(&descriptor, &buffers).unwrap();
+    loop {
+        match op.step().unwrap() {
+            WriteStep::Output { .. } => {
+                let n = op.output_src().len();
+                op.report_written(n).unwrap();
+            }
+            WriteStep::ItemWritten => break,
+        }
+    }
+    drop(op);
+
+    assert!(!core.is_unusable());
+    core.tensor(&descriptor, &buffers).unwrap();
+}
