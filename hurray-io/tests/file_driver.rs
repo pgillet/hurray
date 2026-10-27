@@ -20,7 +20,13 @@ use hurray_io::Error;
 use tokio::io::AsyncWrite;
 
 fn buf(byte_size: u64, alignment: u32) -> BufferHandle {
-    BufferHandle::new(byte_size, alignment, DeviceTag::Cpu, SyncMode::ProducerSynced).unwrap()
+    BufferHandle::new(
+        byte_size,
+        alignment,
+        DeviceTag::Cpu,
+        SyncMode::ProducerSynced,
+    )
+    .unwrap()
 }
 
 fn row_major() -> TensorDescriptor {
@@ -201,7 +207,9 @@ async fn a_composite_whose_member_fails_after_the_head_poisons_the_writer() {
     // Enough for the header and the whole head descriptor, nothing more: the head commits
     // and the first member fails before any of its bytes go out.
     let head_len = head.encode().unwrap().len();
-    let mut writer = FileWriter::new(FailAfter::new(64 + head_len)).await.unwrap();
+    let mut writer = FileWriter::new(FailAfter::new(64 + head_len))
+        .await
+        .unwrap();
     assert!(writer.write_composite("w", &head, &members).await.is_err());
 
     assert!(matches!(
