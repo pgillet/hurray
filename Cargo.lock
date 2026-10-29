@@ -466,7 +466,6 @@ dependencies = [
  "hurray-io",
  "numpy",
  "pyo3",
- "tokio",
 ]
 
 [[package]]

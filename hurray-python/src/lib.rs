@@ -10,6 +10,7 @@
 
 use pyo3::prelude::*;
 
+mod blocking;
 pub(crate) mod buffer;
 mod buffer_handle;
 mod composite;
