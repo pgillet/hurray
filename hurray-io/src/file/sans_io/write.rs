@@ -464,9 +464,28 @@ impl FileWriterCore {
     /// Retires the core because the output can no longer be completed.
     ///
     /// For a unit larger than one item — a composite group, whose head is already on the
-    /// sink when a member fails. A `FileWriteOp` cannot express that: the failure may come
-    /// from *submission*, with no operation in hand.
-    pub(crate) fn poison(&mut self, reason: Unusable) {
+    /// sink when a member fails. A [`FileWriteOp`] cannot express that: the failure may
+    /// come from *submission*, with no operation in hand.
+    ///
+    /// Public because the driver that needs it may live in another crate. ADR-041 § 1
+    /// puts drivers at the edge, and a group spanning several operations is the driver's
+    /// unit, not the core's — so a binding outside `hurray-io` writing composites needs
+    /// the same tool `FileWriter` uses, exactly as [`WriteOp::mark_unusable`] is public
+    /// for the single-operation case.
+    ///
+    /// [`WriteOp::mark_unusable`]: crate::stream::WriteOp::mark_unusable
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_io::file::FileWriterCore;
+    /// use hurray_io::stream::Unusable;
+    ///
+    /// let mut core = FileWriterCore::new();
+    /// core.poison(Unusable::IncompleteOutput);
+    /// assert!(core.is_unusable());
+    /// ```
+    pub fn poison(&mut self, reason: Unusable) {
         self.unusable = Some(reason);
     }
 }
