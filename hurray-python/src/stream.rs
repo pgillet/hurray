@@ -9,12 +9,12 @@
 //!     ...                                    # each tensor as it arrives
 //! ```
 //!
-//! ## Blocking, with an owned runtime
+//! ## Blocking, driving the sans-io core
 //!
-//! Each stream object owns a current-thread `tokio` runtime for its lifetime and
-//! releases the GIL around every call into it. `load` and `save` already do this per
-//! call; a stream is long-lived, so the runtime moves from the call to the object
-//! (ADR-035 § 1). An `asyncio` surface is deferred, not rejected — see the ADR.
+//! A stream object owns a `StreamReaderCore` or `StreamWriterCore` and drives it over
+//! `std::io`, releasing the GIL around every transfer (ADR-041 § 9). ADR-035 § 1 gave
+//! each stream a current-thread `tokio` runtime instead; the cores replace it, so no
+//! async runtime is linked into the extension at all.
 //!
 //! ## Why `next_item`, not `next_tensor`
 //!
@@ -35,15 +35,14 @@
 #[cfg(unix)]
 use std::os::fd::RawFd;
 
+use std::io::{Read, Write};
+
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyModule, PyTuple};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::runtime::Runtime;
 
-use hurray_io::stream::{
-    StreamItem, StreamReader as IoReader, StreamReaderOptions, StreamWriter as IoWriter,
-};
+use hurray_io::stream::{StreamItem, StreamReaderOptions};
 
+use crate::blocking::{StreamReaderDriver, StreamWriterDriver};
 use crate::buffer::BufferStore;
 use crate::composite::{composite_from_parts, owned_tree, with_stream_nodes};
 use crate::device::Device;
@@ -51,11 +50,13 @@ use crate::dtype::Dtype;
 use crate::errors::{FileError, InvalidDescriptorError, StreamError};
 use crate::tensor::Tensor;
 
-/// Any source `hurray-io` can read a stream from.
-type BoxedSource = Box<dyn AsyncRead + Unpin + Send>;
+/// Any source the driver can read a stream from.
+///
+/// `Send` because every transfer runs inside a `py.detach`, whose closure must be.
+type BoxedSource = Box<dyn Read + Send>;
 
-/// Any sink `hurray-io` can write a stream to.
-type BoxedSink = Box<dyn AsyncWrite + Unpin + Send>;
+/// Any sink the driver can write a stream to.
+type BoxedSink = Box<dyn Write + Send>;
 
 // ── Error mapping ─────────────────────────────────────────────────────────────
 
@@ -75,14 +76,6 @@ fn stream_err(e: hurray_io::Error) -> PyErr {
     }
 }
 
-/// Builds the current-thread runtime a stream object owns for its lifetime.
-fn build_runtime() -> PyResult<Runtime> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| FileError::new_err(format!("failed to start the stream runtime: {e}")))
-}
-
 // ── Transport resolution ──────────────────────────────────────────────────────
 
 /// Duplicates `fd` so the stream owns a descriptor of its own.
@@ -100,15 +93,14 @@ fn dup_fd(fd: RawFd) -> PyResult<std::os::fd::OwnedFd> {
         .map_err(|e| FileError::new_err(format!("could not duplicate file descriptor {fd}: {e}")))
 }
 
-/// Opens the `std::fs::File` a duplicated descriptor becomes.
+/// Adopts a duplicated descriptor as a `std::fs::File`.
 ///
-/// `tokio::fs::File` reads and writes on the blocking pool, which works for a socket
-/// or a pipe as well as a regular file. A dedicated reactor type per descriptor kind
-/// would be faster, but it would require knowing which kind this is, and the caller
-/// gave us an integer.
+/// `File`'s reads and writes are plain `read(2)`/`write(2)`, which work on a socket or a
+/// pipe as well as on a regular file. A more specific type per descriptor kind would
+/// require knowing which kind this is, and the caller gave us an integer.
 #[cfg(unix)]
-fn file_from_fd(fd: std::os::fd::OwnedFd) -> tokio::fs::File {
-    tokio::fs::File::from_std(std::fs::File::from(fd))
+fn file_from_fd(fd: std::os::fd::OwnedFd) -> std::fs::File {
+    std::fs::File::from(fd)
 }
 
 /// The transport behind an object with `fileno()`, or `None` if it has no descriptor.
@@ -123,13 +115,13 @@ fn file_from_fd(fd: std::os::fd::OwnedFd) -> tokio::fs::File {
 /// stream that reads garbage from the wrong handle, so the Windows build refuses the
 /// argument and says why (see issue #215).
 #[cfg(unix)]
-fn transport_from_fileno(obj: &Bound<'_, PyAny>) -> Option<PyResult<tokio::fs::File>> {
+fn transport_from_fileno(obj: &Bound<'_, PyAny>) -> Option<PyResult<std::fs::File>> {
     let fd = fileno_of(obj).ok()?;
     Some(dup_fd(fd).map(file_from_fd))
 }
 
 #[cfg(not(unix))]
-fn transport_from_fileno(obj: &Bound<'_, PyAny>) -> Option<PyResult<tokio::fs::File>> {
+fn transport_from_fileno(obj: &Bound<'_, PyAny>) -> Option<PyResult<std::fs::File>> {
     let _ = fileno_of(obj).ok()?;
     // Fully qualified: importing it at module scope would be an unused import on Unix,
     // which -D warnings rejects.
@@ -141,11 +133,7 @@ fn transport_from_fileno(obj: &Bound<'_, PyAny>) -> Option<PyResult<tokio::fs::F
 
 /// Resolves the `source` argument to something readable: a path, an object with
 /// `fileno()`, or bytes.
-fn resolve_source(
-    py: Python<'_>,
-    source: &Bound<'_, PyAny>,
-    rt: &Runtime,
-) -> PyResult<BoxedSource> {
+fn resolve_source(py: Python<'_>, source: &Bound<'_, PyAny>) -> PyResult<BoxedSource> {
     if let Ok(data) = source.extract::<Vec<u8>>() {
         return Ok(Box::new(std::io::Cursor::new(data)));
     }
@@ -159,7 +147,7 @@ fn resolve_source(
         )
     })?;
     let file = py
-        .detach(|| rt.block_on(tokio::fs::File::open(&path)))
+        .detach(|| std::fs::File::open(&path))
         .map_err(|e| FileError::new_err(format!("could not open {path}: {e}")))?;
     Ok(Box::new(file))
 }
@@ -200,33 +188,19 @@ impl SharedBuffer {
     }
 }
 
-impl AsyncWrite for SharedBuffer {
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<std::io::Result<usize>> {
+impl Write for SharedBuffer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self.0.lock() {
             Ok(mut guard) => {
                 guard.extend_from_slice(buf);
-                std::task::Poll::Ready(Ok(buf.len()))
+                Ok(buf.len())
             }
-            Err(_) => std::task::Poll::Ready(Err(std::io::Error::other("stream buffer poisoned"))),
+            Err(_) => Err(std::io::Error::other("stream buffer poisoned")),
         }
     }
 
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        std::task::Poll::Ready(Ok(()))
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -270,8 +244,7 @@ unsafe impl Send for SendSlice {}
 /// ```
 #[pyclass(name = "StreamReader", unsendable)]
 pub struct StreamReader {
-    inner: Option<IoReader<BoxedSource>>,
-    runtime: Runtime,
+    inner: Option<StreamReaderDriver<BoxedSource>>,
 }
 
 #[pymethods]
@@ -337,8 +310,7 @@ impl StreamReader {
         max_composite_depth: Option<usize>,
         cross_machine: bool,
     ) -> PyResult<Self> {
-        let runtime = build_runtime()?;
-        let boxed = resolve_source(py, source, &runtime)?;
+        let boxed = resolve_source(py, source)?;
         // Start from core's defaults so an unset argument keeps whatever the format
         // considers sensible, rather than freezing today's numbers into this binding.
         let defaults = StreamReaderOptions::default();
@@ -349,8 +321,7 @@ impl StreamReader {
             enforce_cross_machine_sync: cross_machine,
         };
         Ok(Self {
-            inner: Some(IoReader::with_options(boxed, options)),
-            runtime,
+            inner: Some(StreamReaderDriver::with_options(boxed, options)),
         })
     }
 
@@ -392,9 +363,7 @@ impl StreamReader {
         // next_item, never next_tensor: a composite head owns no buffers, so
         // next_tensor would return it as an empty tensor and then surface its members
         // as top-level ones — a stream that "read fine" having lost the composition.
-        let item = py
-            .detach(|| self.runtime.block_on(reader.next_item()))
-            .map_err(stream_err)?;
+        let item = py.detach(|| reader.next_item()).map_err(stream_err)?;
 
         match item {
             None => Ok(None),
@@ -466,8 +435,7 @@ impl StreamReader {
 /// ```
 #[pyclass(name = "StreamWriter", unsendable)]
 pub struct StreamWriter {
-    inner: Option<IoWriter<BoxedSink>>,
-    runtime: Runtime,
+    inner: Option<StreamWriterDriver<BoxedSink>>,
     /// Present only for an in-memory stream; holds the bytes `getvalue()` returns.
     memory: Option<SharedBuffer>,
     finished: bool,
@@ -503,7 +471,6 @@ impl StreamWriter {
         destination: Option<&Bound<'_, PyAny>>,
         cross_machine: bool,
     ) -> PyResult<Self> {
-        let runtime = build_runtime()?;
         let (sink, memory): (BoxedSink, Option<SharedBuffer>) = match destination {
             None => {
                 let buffer = SharedBuffer::default();
@@ -520,7 +487,7 @@ impl StreamWriter {
                         )
                     })?;
                     let file = py
-                        .detach(|| runtime.block_on(tokio::fs::File::create(&path)))
+                        .detach(|| std::fs::File::create(&path))
                         .map_err(|e| FileError::new_err(format!("could not create {path}: {e}")))?;
                     (Box::new(file), None)
                 }
@@ -528,11 +495,10 @@ impl StreamWriter {
         };
         Ok(Self {
             inner: Some(if cross_machine {
-                IoWriter::cross_machine(sink)
+                StreamWriterDriver::cross_machine(sink)
             } else {
-                IoWriter::new(sink)
+                StreamWriterDriver::new(sink)
             }),
-            runtime,
             memory,
             finished: false,
         })
@@ -581,7 +547,6 @@ impl StreamWriter {
             .collect();
         drop(borrowed);
 
-        let runtime = &self.runtime;
         py.detach(move || {
             // SAFETY: `tensor` is a strong reference held for the whole call, so the
             // buffers cannot be freed while this runs — releasing the GIL does not
@@ -590,7 +555,7 @@ impl StreamWriter {
                 .iter()
                 .map(|s| unsafe { std::slice::from_raw_parts(s.0, s.1) })
                 .collect();
-            runtime.block_on(writer.write_tensor(&descriptor, &buffers))
+            writer.write_tensor(&descriptor, &buffers)
         })
         .map_err(stream_err)
     }
@@ -610,13 +575,12 @@ impl StreamWriter {
         // Pull the whole tree out while the GIL is held: descriptors by value, buffers
         // as raw parts. The Python objects stay alive because `composite` borrows them.
         let tree = owned_tree(py, composite);
-        let runtime = &self.runtime;
 
         py.detach(move || {
             // SAFETY: every slice points into a buffer owned by a tensor the caller's
             // composite still holds, so releasing the GIL cannot free any of them.
             with_stream_nodes(&tree.members, &[], &mut |members| {
-                runtime.block_on(writer.write_composite(&tree.head, members))
+                writer.write_composite(&tree.head, members)
             })
         })
         .map_err(stream_err)
@@ -641,7 +605,7 @@ impl StreamWriter {
             return Ok(());
         };
         self.finished = true;
-        py.detach(|| self.runtime.block_on(writer.finish()))
+        py.detach(|| writer.finish())
             .map(|_sink| ())
             .map_err(stream_err)
     }
@@ -879,15 +843,11 @@ mod tests {
             },
         ];
 
-        let runtime = build_runtime().expect("runtime");
-        runtime.block_on(async {
-            let mut writer = IoWriter::new(Vec::new());
-            writer
-                .write_composite(&head, &members)
-                .await
-                .expect("composite written");
-            writer.finish().await.expect("stream finished")
-        })
+        let mut writer = StreamWriterDriver::new(Vec::new());
+        writer
+            .write_composite(&head, &members)
+            .expect("composite written");
+        writer.finish().expect("stream finished")
     }
 
     /// The failure this guards against: `next_tensor` would return the head as an

@@ -1,9 +1,9 @@
 //! `hurray.load` and `hurray.save` — Python file I/O bridge (Layer 8b).
 //!
-//! Both functions are synchronous from the Python side. They drive the async
-//! `hurray-io` file reader/writer via a disposable single-threaded Tokio runtime
-//! created per call. The GIL is released while the runtime runs, so other Python
-//! threads are not blocked during I/O.
+//! Both functions drive `hurray-io`'s random-access file cores over `std::io`, with the
+//! GIL released around the whole I/O section so other Python threads are not blocked
+//! (ADR-041 § 9). Until then they built a disposable single-threaded Tokio runtime per
+//! call; no async runtime is linked into the extension now.
 //!
 //! ## Error mapping
 //!
@@ -14,9 +14,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 use pyo3::IntoPyObjectExt;
 
-use hurray_io::file::{FileItem, FileReader, FileTensor, FileWriter, KvValue};
+use hurray_io::file::{FileItem, FileTensor, KvValue};
 
 use crate::{
+    blocking::{FileReaderDriver, FileWriterDriver},
     buffer::BufferStore,
     errors::{FileError, InvalidDescriptorError, UnsupportedError},
     tensor::Tensor,
@@ -217,15 +218,8 @@ pub fn load_kv(py: Python<'_>, path: String) -> PyResult<Bound<'_, PyDict>> {
     // Release the GIL for the open and the footer read, as `load` does.
     let pairs = py
         .detach(|| -> hurray_io::Result<Vec<(String, KvValue)>> {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(hurray_io::Error::Io)?
-                .block_on(async {
-                    let file = tokio::fs::File::open(&path).await?;
-                    let reader = FileReader::open(file).await?;
-                    Ok(reader.kv().to_vec())
-                })
+            let file = std::fs::File::open(&path)?;
+            Ok(FileReaderDriver::open(file)?.kv().to_vec())
         })
         .map_err(io_err_to_py)?;
 
@@ -275,50 +269,43 @@ pub fn load(
     path: String,
     names: Option<Vec<String>>,
 ) -> PyResult<Bound<'_, PyDict>> {
-    // Release GIL while doing async file I/O.
+    // Release the GIL for the whole I/O section.
     let file_tensors = py
         .detach(|| -> hurray_io::Result<Vec<(String, FileItem)>> {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(hurray_io::Error::Io)?
-                .block_on(async {
-                    let file = tokio::fs::File::open(&path).await?;
-                    let mut reader = FileReader::open(file).await?;
+            let file = std::fs::File::open(&path)?;
+            let mut reader = FileReaderDriver::open(file)?;
 
-                    let names_to_load: Vec<String> = match names {
-                        Some(ref ns) => ns.clone(),
-                        None => reader.tensor_names().map(|s| s.to_string()).collect(),
-                    };
+            let names_to_load: Vec<String> = match names {
+                Some(ref ns) => ns.clone(),
+                None => reader.tensor_names().map(|s| s.to_string()).collect(),
+            };
 
-                    // A composite's members have index entries of their own, so a name
-                    // already claimed by a composite must not also come back alone.
-                    // Membership is the reader's to decide, recovered from write order.
-                    let mut claimed: std::collections::HashSet<String> =
-                        std::collections::HashSet::new();
+            // A composite's members have index entries of their own, so a name already
+            // claimed by a composite must not also come back alone. Membership is the
+            // reader's to decide, recovered from write order.
+            let mut claimed: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-                    let mut out = Vec::with_capacity(names_to_load.len());
-                    for name in names_to_load {
-                        if claimed.contains(&name) {
-                            continue;
-                        }
-                        // Read the descriptor alone first: read_tensor rejects a
-                        // composite head, which owns no buffers, so the kind has to be
-                        // known before choosing how to read it.
-                        let descriptor = reader.read_descriptor(&name).await?;
-                        let item = if matches!(
-                            descriptor.layout,
-                            hurray_core::LayoutDescriptor::Composite(_)
-                        ) {
-                            FileItem::Composite(reader.read_composite(&name).await?)
-                        } else {
-                            FileItem::Tensor(reader.read_tensor(&name).await?)
-                        };
-                        consumed_names(&item, &mut claimed);
-                        out.push((name, item));
-                    }
-                    Ok(out)
-                })
+            let mut out = Vec::with_capacity(names_to_load.len());
+            for name in names_to_load {
+                if claimed.contains(&name) {
+                    continue;
+                }
+                // Read the descriptor alone first: read_tensor rejects a composite head,
+                // which owns no buffers, so the kind has to be known before choosing how
+                // to read it.
+                let descriptor = reader.read_descriptor(&name)?;
+                let item = if matches!(
+                    descriptor.layout,
+                    hurray_core::LayoutDescriptor::Composite(_)
+                ) {
+                    FileItem::Composite(reader.read_composite(&name)?)
+                } else {
+                    FileItem::Tensor(reader.read_tensor(&name)?)
+                };
+                consumed_names(&item, &mut claimed);
+                out.push((name, item));
+            }
+            Ok(out)
         })
         .map_err(io_err_to_py)?;
 
@@ -460,18 +447,10 @@ pub fn save(
         Vec::new()
     };
 
-    // Release GIL while doing async file I/O.
+    // Release the GIL for the whole I/O section.
     py.detach(|| -> hurray_io::Result<()> {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(hurray_io::Error::Io)?;
-
-        // One block_on per step rather than one around the whole loop: a composite's
-        // borrowed node tree is built by a *synchronous* continuation (see
-        // with_file_nodes), and block_on cannot be called from inside another.
-        let file = runtime.block_on(tokio::fs::File::create(&path))?;
-        let mut writer = runtime.block_on(FileWriter::new(file))?;
+        let file = std::fs::File::create(&path)?;
+        let mut writer = FileWriterDriver::new(file)?;
 
         for entry in &entries {
             match entry {
@@ -481,24 +460,24 @@ pub fn save(
                     buffers,
                 } => {
                     let slices: Vec<&[u8]> = buffers.iter().map(|b| b.as_slice()).collect();
-                    runtime.block_on(writer.write_tensor(name, descriptor, &slices))?;
+                    writer.write_tensor(name, descriptor, &slices)?;
                 }
                 SaveEntry::Composite {
                     name,
                     head,
                     members,
                 } => {
-                    let mut result = Ok(());
+                    // `with_file_nodes` hands the borrowed node tree to a *synchronous*
+                    // continuation, which is all the driver needs — the nested `block_on`
+                    // this used to work around cannot arise without a runtime.
                     crate::composite::with_file_nodes(members, &[], &mut |nodes| {
-                        result = runtime.block_on(writer.write_composite(name, head, nodes));
-                    });
-                    result?;
+                        writer.write_composite(name, head, nodes)
+                    })?;
                 }
             }
         }
 
-        runtime.block_on(writer.finish(kv_pairs))?;
-        Ok(())
+        writer.finish(kv_pairs)
     })
     .map_err(io_err_to_py)
 }
