@@ -15,6 +15,14 @@ workspace share one version and are released together.
 
 ### Added
 
+- **`hurray-io`** — `FileWriterCore::poison` is public. A composite group spans several
+  write operations, so retiring the core when one begins and does not finish is the
+  *driver's* decision, not the core's — and ADR-041 § 1 puts drivers at the edge, which
+  for every binding but one means another crate. `WriteOp::mark_unusable` already covered
+  the single-operation case; this covers the group.
+- **`hurray-python`** — the frozen stream and file corpora in `hurray-io/tests/fixtures/`
+  are now read through the Python surface too (`test_wire_compat.py`), alongside the Rust
+  and C readers that already read them.
 - **`hurray-io`** — a **random-access core for the file container**, so the `HRRYFILE`
   format can be read and written with no runtime linked (ADR-041 §§ 1, 7). Where the
   stream core is fed forwards, `FileReaderCore` is asked by *range*: it names the bytes
@@ -116,6 +124,17 @@ workspace share one version and are released together.
 
 ### Changed
 
+- **`hurray-python` drives the sans-io cores directly; no async runtime is linked into
+  the extension** (ADR-041 § 9). `hurray.StreamReader`, `hurray.StreamWriter`,
+  `hurray.load`, `hurray.load_kv` and `hurray.save` used to drive `hurray-io`'s Tokio
+  drivers through a `block_on` — one runtime per stream object, one disposable runtime per
+  file call. They now own a core and move the bytes themselves over `std::io`, with the
+  GIL released around the I/O exactly as before. Nothing about the Python API changes, and
+  every byte the writers emit is unchanged; `hurray-python` no longer depends on `tokio`
+  or asks `hurray-io` for its `tokio` feature. The practical gain beyond the dependency is
+  that a composite file write is no longer shaped by the bridge: `block_on` could not be
+  called from inside another, so `save` drove the writer one step at a time to keep its
+  borrowed node tree out of a nested call. That constraint is gone.
 - **A mid-item write failure now poisons `StreamWriter` and `FileWriter`.** Previously the
   failing call reported `Error::Io` and the writer accepted further items; it now reports
   the same error, and the *next* call reports `Error::CoreUnusable`. A failure before an

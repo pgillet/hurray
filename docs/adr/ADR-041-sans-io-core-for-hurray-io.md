@@ -83,7 +83,31 @@ Accepted (2026-10-19)
 > anywhere. § 6b replaces the retracted promise; the terminal case is a *partially emitted*
 > item, not a *failed* one.
 >
-> Steps 5 and 6 remain.
+> Step 5's first half followed ([#251](https://github.com/pgillet/hurray/issues/251)):
+> `hurray-python`'s synchronous surface stopped driving the Tokio drivers through a
+> `block_on` and now drives the cores itself over `std::io`, which is the half of § 9 that
+> is not the `asyncio` API. No async runtime is linked into the extension any more —
+> `hurray-python` was the last member asking `hurray-io` for its `tokio` feature — and the
+> nested-`block_on` constraint that shaped `file_io.rs`'s composite write is gone with it.
+> Every byte the writers emit is unchanged, verified against the pre-refactor build, and
+> the frozen corpora now read through a third reader.
+>
+> It made `FileWriterCore::poison` public, and the reason generalises: a composite group
+> spans several operations, so poisoning it is the *driver's* job, and § 1 puts drivers at
+> the edge — in another crate, for every binding but one. A tool the in-crate driver needs
+> and an out-of-crate driver cannot reach is a hole in the sans-io boundary, which the
+> dead-code warning on a `tokio`-less build made visible.
+>
+> It also found that the Python binding **copies** every payload out of the core's aligned
+> destination into a 64-aligned allocation, so a handle declaring 4096 arrives at an
+> address satisfying 64 — #235 one layer up, and the only binding still paying a
+> tensor-sized copy per read. Reported as
+> [#253](https://github.com/pgillet/hurray/issues/253) rather than fixed in a pass whose
+> acceptance was unchanged behaviour; it is the same question § Open Questions parks as
+> "who allocates the aligned destination".
+>
+> Step 5's second half ([#252](https://github.com/pgillet/hurray/issues/252)) and step 6
+> remain.
 
 Resolves the bridge question `HurrayReader` and `HurrayWriter` have carried as bare
 typedefs since C ABI 1, and which **ADR-034** deferred alongside "does streaming reuse

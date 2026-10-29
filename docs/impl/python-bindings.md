@@ -911,9 +911,12 @@ for tensor in hurray.StreamReader(source):
 
 ### Blocking
 
-Both classes are **blocking**. Each owns a `tokio` runtime for its lifetime and MUST
-release the GIL around every call into it, so other Python threads run while a stream
-waits on its transport. An `asyncio` surface is deliberately absent; see ADR-035 § 1.
+Both classes are **blocking** and MUST release the GIL around every call that touches
+the transport, so other Python threads run while a stream waits on it. How the bytes are
+moved is not specified here: the reference binding drives a `hurray-io` sans-io core over
+blocking I/O (ADR-041 § 9), having previously given each object its own `tokio` runtime,
+and neither is a requirement on an implementation. An `asyncio` surface is a second,
+additive surface; see ADR-035 § 1 and ADR-041 § 9.
 
 ### `hurray.StreamReader`
 
