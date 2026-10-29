@@ -25,6 +25,13 @@ Four questions have to be settled before any code, and the first one settles the
 
 ### 1. Blocking, with an owned runtime — not `asyncio`
 
+> **Amended by ADR-041 step 5a.** The runtime is gone. `hurray.StreamReader` and
+> `hurray.StreamWriter` each own a `hurray-io` sans-io *core* and drive it over
+> `std::io`, so no async runtime is linked into the extension; the GIL release and every
+> observable behaviour below are unchanged. What this section decided — a blocking
+> surface rather than an `asyncio` one — stood until ADR-041 § 9, which adds the
+> `asyncio` surface alongside it rather than in place of it.
+
 `hurray.StreamReader` and `hurray.StreamWriter` each own a current-thread `tokio`
 runtime for their lifetime and release the GIL around every call into it.
 
@@ -173,7 +180,8 @@ and costs nothing to undo.
 
 - **A runtime per stream object.** A current-thread runtime is cheap, but a caller
   holding hundreds of open streams pays for hundreds of them. That is the same caller
-  who will want the async API, which is the signal § 1 asks for.
+  who will want the async API, which is the signal § 1 asks for. *(Resolved by ADR-041
+  step 5a: a stream object owns a state machine, not a runtime.)*
 - **Composites are unreadable from Python**, and a stream containing one fails rather
   than degrading. Deliberate, and the alternative is worse.
 - **`io.BytesIO` is not accepted directly**, only its `getvalue()`. A caller must know
