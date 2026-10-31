@@ -686,15 +686,14 @@ fn stream_item_to_py(py: Python<'_>, item: StreamItem) -> PyResult<Py<PyAny>> {
 
 /// Builds a `hurray.Tensor` from a decoded stream tensor.
 ///
-/// The buffers are **copied** out of the `Bytes` the reader produced. Borrowing would
-/// need a Python object owning the `Bytes` for the tensor to hold, which is machinery
-/// in exchange for skipping a memcpy that a caller has already paid for once by
-/// reading the bytes off a transport. If a profile ever says otherwise, the borrow can
-/// be added behind the same API.
+/// The buffers are **adopted**, not copied: each `Bytes` is the allocation the core read
+/// into, already placed at the alignment its handle declares, and the tensor keeps it
+/// (issue #253). The `Bytes` itself is the owner, so no Python object has to stand in as
+/// one — which is what the copy this replaced was buying.
 fn stream_tensor_to_py(
     py: Python<'_>,
     descriptor: hurray_core::TensorDescriptor,
-    buffers: Vec<impl AsRef<[u8]>>,
+    buffers: Vec<bytes::Bytes>,
 ) -> PyResult<Py<PyAny>> {
     if buffers.len() != descriptor.buffers.len() {
         return Err(InvalidDescriptorError::new_err(format!(
@@ -728,7 +727,7 @@ fn stream_tensor_to_py(
         },
     )?;
 
-    let mut stores = buffers.iter().map(|b| BufferStore::from_slice(b.as_ref()));
+    let mut stores = buffers.into_iter().map(BufferStore::adopted);
     let buffer = match stores.next() {
         Some(b) => b,
         None => return Err(InvalidDescriptorError::new_err("tensor carries no buffers")),
@@ -774,9 +773,13 @@ mod tests {
     }
 
     fn buf(byte_size: u64) -> BufferHandle {
+        buf_aligned(byte_size, MIN_BUFFER_ALIGNMENT)
+    }
+
+    fn buf_aligned(byte_size: u64, alignment: u32) -> BufferHandle {
         BufferHandle::new(
             byte_size,
-            MIN_BUFFER_ALIGNMENT,
+            alignment,
             DeviceTag::Cpu,
             SyncMode::ProducerSynced,
         )
@@ -876,6 +879,66 @@ mod tests {
                 reader.__next__(py).expect("clean EOF").is_none(),
                 "the members must not also appear as top-level items"
             );
+        });
+    }
+
+    /// A read hands back the core's own destination, and so the alignment its handle
+    /// declares (issue #253). Copying the payload out used to re-align it to 64, which
+    /// made a 4096 declaration false of the bytes it described.
+    #[test]
+    fn a_read_adopts_the_core_destination_at_its_declared_alignment() {
+        use hurray_core::PAGE_ALIGNMENT;
+
+        init();
+        let descriptor = TensorDescriptor::new(
+            1,
+            0,
+            ElementType::Float32,
+            Shape::new(vec![8u64, 8]).expect("valid shape"),
+            0,
+            LayoutDescriptor::RowMajor,
+            vec![buf_aligned(256, PAGE_ALIGNMENT)],
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("valid descriptor");
+
+        let data = vec![0xCDu8; 256];
+        let mut writer = StreamWriterDriver::new(Vec::new());
+        writer
+            .write_tensor(&descriptor, &[data.as_slice()])
+            .expect("tensor written");
+        let wire = writer.finish().expect("stream finished");
+
+        Python::attach(|py| {
+            let bytes = pyo3::types::PyBytes::new(py, &wire);
+            let mut reader = StreamReader::new(py, bytes.as_any(), None, None, None, false)
+                .expect("reader opens");
+            let item = reader
+                .__next__(py)
+                .expect("the tensor decodes")
+                .expect("one item");
+            let tensor = item
+                .bind(py)
+                .extract::<PyRef<'_, Tensor>>()
+                .expect("a tensor");
+
+            assert!(
+                matches!(tensor.buffer, BufferStore::Adopted { .. }),
+                "the payload was copied instead of adopted"
+            );
+            assert_eq!(tensor.descriptor.buffers[0].alignment(), PAGE_ALIGNMENT);
+            assert_eq!(
+                tensor.buffer.as_ptr() as usize % PAGE_ALIGNMENT as usize,
+                0,
+                "the handle declares {PAGE_ALIGNMENT} over an address that does not satisfy it"
+            );
+            // SAFETY: Adopted variant; the `Bytes` owns the allocation.
+            assert!(unsafe { tensor.buffer.as_slice() }
+                .iter()
+                .all(|&b| b == 0xCD));
         });
     }
 }

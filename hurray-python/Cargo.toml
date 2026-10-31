@@ -21,6 +21,10 @@ extension-module = ["pyo3/extension-module"]
 hurray-core = { workspace = true }
 hurray-ffi = { workspace = true }
 hurray-io = { workspace = true }
+# The buffers a hurray-io read hands back are `Bytes`, and the Python tensor adopts them
+# rather than copying (buffer.rs, issue #253) — so this is already a public dependency of
+# hurray-io's API, named here to use the type.
+bytes = { workspace = true }
 half = { workspace = true }
 pyo3 = { workspace = true, features = ["abi3-py310"] }
 numpy = { workspace = true, optional = true }

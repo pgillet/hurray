@@ -8,9 +8,9 @@ binding drives those cores itself now (ADR-041 § 9), so the bytes it accepts mu
 be the bytes 0.1.0 wrote.
 
 Buffer addresses are checked against their *declared* alignment, not against 64 — the
-guarantee ADR-041 § 5 makes and #235 fixed. Those two checks are ``xfail`` today: the
-binding copies each payload out of the core's aligned destination into a 64-aligned
-allocation, so the handle declares an alignment the bytes no longer satisfy (#253).
+guarantee ADR-041 § 5 makes and #235 fixed. The binding adopts the core's destination
+rather than copying out of it (#253), so those addresses are the ones the core chose and
+the declaration stays true of the bytes it describes.
 """
 
 import pathlib
@@ -79,10 +79,6 @@ def test_frozen_coo_stream_round_trips_both_payloads():
     assert raw(tensor, 1) == payload(128, 0x22)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="#253: the read copies out of the aligned destination into a 64-aligned one",
-)
 def test_frozen_coo_stream_keeps_its_declared_alignments():
     """Two buffers declaring 128 and 4096, which the destination must honour (§ 5)."""
     (tensor,) = list(hurray.StreamReader(str(FIXTURES / "coo.bin")))
@@ -160,10 +156,6 @@ def test_frozen_file_multi_buffer_carries_both_buffers():
     assert [len(raw(tensor, i)) for i in (0, 1)] == sizes
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="#253: the read copies out of the aligned destination into a 64-aligned one",
-)
 def test_frozen_file_multi_buffer_keeps_its_declared_alignments():
     (tensor,) = hurray.load(str(FIXTURES / "file" / "multi_buffer.hrry")).values()
     for index in (0, 1):

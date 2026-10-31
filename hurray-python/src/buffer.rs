@@ -2,13 +2,16 @@
 //!
 //! ## Design decision (D2)
 //!
-//! Two variants:
+//! Three variants, one per owner a buffer can have:
 //!
 //! - `Owned` — bytes copied into an allocation this module over-aligns to
 //!   [`MIN_BUFFER_ALIGNMENT`] (e.g. `hurray.Tensor(buf, …)`).
 //! - `Borrowed` — zero-copy pointer into a source Python object's buffer
 //!   (e.g. `hurray.from_numpy(arr)`). A strong Python reference (`base`) keeps
 //!   the source alive for the Tensor's entire lifetime.
+//! - `Adopted` — the allocation a `hurray-io` core read into, taken whole
+//!   (`hurray.StreamReader`, `hurray.load`). The [`Bytes`] *is* the owner, so no Python
+//!   object has to stand in for one.
 //!
 //! The alternative (Python buffer protocol via `PyBuffer`) was considered but
 //! rejected: it doesn't cover GPU tensors (CUDA buffers don't implement it).
@@ -19,6 +22,7 @@
 //! (ADR-037 § 5–6). Every descriptor this crate emits therefore declares an alignment
 //! its bytes actually have — see [`measured_alignment`].
 
+use bytes::Bytes;
 use hurray_core::MIN_BUFFER_ALIGNMENT;
 use pyo3::prelude::*;
 
@@ -55,6 +59,18 @@ pub enum BufferStore {
         /// Kept alive as long as this `BufferStore` exists.
         base: Py<PyAny>,
     },
+    /// The allocation a `hurray-io` core read into, adopted rather than copied out of.
+    ///
+    /// A read's destination is already the memory the format asks for: the core allocates
+    /// it at the alignment the buffer handle *declares* and the transport fills it in
+    /// place (ADR-041 §§ 2, 5), and `AlignedBuf::freeze` hands it out through
+    /// `Bytes::from_owner`, which keeps that address. Copying it into an `Owned` store
+    /// cost a tensor-sized memcpy and re-aligned the bytes to 64, so a handle declaring
+    /// 4096 arrived on an address that satisfied only 64 — see issue #253.
+    ///
+    /// The `Bytes` is the owner, which is why this needs no `base`: there is no Python
+    /// object to keep alive, and dropping the store drops the last reference.
+    Adopted { bytes: Bytes },
 }
 
 impl Drop for BufferStore {
@@ -72,6 +88,7 @@ impl Drop for BufferStore {
 // SAFETY: BufferStore is only accessed while holding the GIL (all entry points
 // go through PyO3 `#[pymethods]` which hold the GIL). The raw pointer in
 // Borrowed is never sent across thread boundaries without GIL protection.
+// Adopted needs no such argument: `Bytes` is Send + Sync on its own.
 unsafe impl Send for BufferStore {}
 unsafe impl Sync for BufferStore {}
 
@@ -113,6 +130,19 @@ impl BufferStore {
             .pad_to_align()
     }
 
+    /// Adopt the allocation a `hurray-io` core read into, without copying it.
+    ///
+    /// The bytes keep the address the core placed them at, so the descriptor's declared
+    /// alignment stays true of them (see [`BufferStore::Adopted`]).
+    ///
+    /// Not an allocation the binding could own instead: a `DestinationAlloc` handing out
+    /// NumPy arrays would need the GIL where the core calls `allocate`, which is inside
+    /// the `py.detach` the read holds for its whole I/O section. Adopting keeps both the
+    /// zero copy and the released GIL.
+    pub fn adopted(bytes: Bytes) -> Self {
+        BufferStore::Adopted { bytes }
+    }
+
     /// Construct a borrowed buffer from a raw pointer and a Python base object.
     ///
     /// # Safety
@@ -126,19 +156,16 @@ impl BufferStore {
     }
 
     /// Return a raw const pointer to the first byte of the buffer.
+    ///
+    /// No mutable counterpart: nothing mutates a store after it is built, and `Adopted`
+    /// shares its allocation with whatever else holds a clone of the `Bytes`, so a `&mut`
+    /// into it would be unsound.
     pub fn as_ptr(&self) -> *const u8 {
         match self {
             BufferStore::Owned { ptr, .. } => *ptr,
             // SAFETY: ptr is valid for at least `len` bytes per the Borrowed invariant.
             BufferStore::Borrowed { ptr, .. } => *ptr as *const u8,
-        }
-    }
-
-    /// Return a mutable raw pointer to the first byte of the buffer.
-    pub fn as_mut_ptr(&mut self) -> *mut u8 {
-        match self {
-            BufferStore::Owned { ptr, .. } => *ptr,
-            BufferStore::Borrowed { ptr, .. } => *ptr,
+            BufferStore::Adopted { bytes } => bytes.as_ptr(),
         }
     }
 
@@ -147,6 +174,7 @@ impl BufferStore {
         match self {
             BufferStore::Owned { len, .. } => *len,
             BufferStore::Borrowed { len, .. } => *len,
+            BufferStore::Adopted { bytes } => bytes.len(),
         }
     }
 
@@ -158,8 +186,9 @@ impl BufferStore {
     ///
     /// This is what a descriptor MUST declare for the buffer (ADR-037 § 5). It is always
     /// at least [`MIN_BUFFER_ALIGNMENT`] for a non-empty store: `Owned` allocates
-    /// over-aligned, and `Borrowed` is only constructed through [`ingest`] on an address
-    /// that already qualifies.
+    /// over-aligned, `Borrowed` is only constructed through [`ingest`] on an address that
+    /// already qualifies, and `Adopted` carries an allocation the core made at the
+    /// handle's own declared alignment.
     pub(crate) fn alignment(&self) -> u32 {
         measured_alignment(self.as_ptr(), self.len())
     }
@@ -178,6 +207,9 @@ impl BufferStore {
             BufferStore::Owned { ptr, len } => std::slice::from_raw_parts(*ptr, *len),
             // SAFETY: ptr is valid for `len` bytes per the Borrowed invariant.
             BufferStore::Borrowed { ptr, len, .. } => std::slice::from_raw_parts(*ptr, *len),
+            // Safe on its own: `Bytes` derefs to its bytes. In this arm only because the
+            // other two cannot.
+            BufferStore::Adopted { bytes } => bytes.as_ref(),
         }
     }
 }
@@ -325,5 +357,51 @@ mod tests {
     fn owned_is_empty_on_empty_slice() {
         let store = BufferStore::from_slice(&[]);
         assert!(store.is_empty());
+    }
+
+    /// The no-copy proof at the seam: the adopted store's address *is* the address the
+    /// core's destination had, so a handle declaring 4096 still describes its own bytes
+    /// (issue #253). `SystemDestinations` is the allocator every read goes through.
+    #[test]
+    fn adopting_a_destination_keeps_its_address_and_its_alignment() {
+        use hurray_core::PAGE_ALIGNMENT;
+        use hurray_io::stream::{Destination, DestinationAlloc, DestinationRequest};
+
+        let mut dest = hurray_io::stream::SystemDestinations
+            .allocate(DestinationRequest {
+                index: 0,
+                byte_size: 256,
+                alignment: PAGE_ALIGNMENT,
+            })
+            .expect("a page-aligned destination");
+        dest.as_mut_slice().fill(0xAB);
+
+        let frozen = dest.freeze();
+        let address = frozen.as_ptr() as usize;
+
+        let store = BufferStore::adopted(frozen);
+        assert_eq!(
+            store.as_ptr() as usize,
+            address,
+            "adoption moved the bytes — that is the copy #253 removed"
+        );
+        assert_eq!(
+            store.as_ptr() as usize % PAGE_ALIGNMENT as usize,
+            0,
+            "the destination's declared alignment did not survive adoption"
+        );
+        assert_eq!(store.alignment(), PAGE_ALIGNMENT);
+        assert_eq!(store.len(), 256);
+        // SAFETY: Adopted variant; the `Bytes` owns the allocation.
+        assert!(unsafe { store.as_slice() }.iter().all(|&b| b == 0xAB));
+    }
+
+    #[test]
+    fn an_empty_adopted_buffer_reads_as_empty() {
+        let store = BufferStore::adopted(Bytes::new());
+        assert!(store.is_empty());
+        assert_eq!(store.alignment(), 1, "an empty buffer declares 1");
+        // SAFETY: Adopted variant, length zero.
+        assert!(unsafe { store.as_slice() }.is_empty());
     }
 }

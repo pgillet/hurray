@@ -57,6 +57,10 @@ fn file_tensor_to_tensor(py: Python<'_>, ft: FileTensor) -> PyResult<Py<Tensor>>
 
     let desc = ft.descriptor;
     let element_type = desc.element_type;
+    // Moved out, not borrowed: each `Bytes` is the allocation the core read into, at the
+    // alignment its handle declares, and the tensor adopts it rather than copying it into
+    // a weaker one (issue #253).
+    let buffers = ft.buffers;
 
     let (device_tag, memory_class) = desc
         .buffers
@@ -67,13 +71,13 @@ fn file_tensor_to_tensor(py: Python<'_>, ft: FileTensor) -> PyResult<Py<Tensor>>
             hurray_core::MemoryClass::Standard,
         ));
 
-    let mut read_buffers = ft.buffers.iter();
+    let mut read_buffers = buffers.into_iter().map(BufferStore::adopted);
     // The emptiness check above guarantees a first element.
     let buffer = match read_buffers.next() {
-        Some(b) => BufferStore::from_slice(b),
+        Some(b) => b,
         None => return Err(InvalidDescriptorError::new_err("tensor carries no buffers")),
     };
-    let aux_buffers: Vec<BufferStore> = read_buffers.map(|b| BufferStore::from_slice(b)).collect();
+    let aux_buffers: Vec<BufferStore> = read_buffers.collect();
 
     let dtype_py = Py::new(
         py,
