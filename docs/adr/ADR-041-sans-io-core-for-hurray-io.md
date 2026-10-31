@@ -106,6 +106,15 @@ Accepted (2026-10-19)
 > acceptance was unchanged behaviour; it is the same question § Open Questions parks as
 > "who allocates the aligned destination".
 >
+> **#253 is fixed.** A Python tensor now *adopts* the `Bytes` the core froze, as a third
+> `BufferStore` variant whose owner is the `Bytes` itself — the same answer § 2 gives C,
+> where `hurray-ffi` hands back a `HurrayBuffer` pointing into the destination. No binding
+> pays a payload copy per read any more, and the declared alignment is true of the bytes
+> in all three. The destination is still the core's allocation, not a NumPy one: a
+> `DestinationAlloc` that allocated a NumPy array would need the GIL at the point the core
+> calls `allocate`, inside the `py.detach` a read holds for its whole I/O section. That
+> seam stays open and unused by Python, which costs nothing now that nothing is copied.
+>
 > Step 5's second half ([#252](https://github.com/pgillet/hurray/issues/252)) and step 6
 > remain.
 

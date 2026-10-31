@@ -460,6 +460,7 @@ dependencies = [
 name = "hurray-python"
 version = "0.2.0"
 dependencies = [
+ "bytes",
  "half",
  "hurray-core",
  "hurray-ffi",
