@@ -200,6 +200,17 @@ workspace share one version and are released together.
 
 ### Fixed
 
+- **`hurray-python` no longer copies a payload out of the core's destination, and no
+  longer under-aligns it** ([#253](https://github.com/pgillet/hurray/issues/253)). Every
+  tensor read through `hurray.StreamReader` or `hurray.load` was copied into a fresh
+  allocation aligned only to the 64-byte floor, so a buffer whose handle declared 4096
+  arrived on an address that satisfied 64 — a declaration `buffer-protocol.md § Minimum
+  Alignment` makes a promise, and which a consumer's aligned SIMD load may rely on. A
+  Python tensor now adopts the allocation the core read into, which is already placed at
+  the declared alignment (ADR-041 §§ 2, 5). Two defects, one cause: the alignment is true
+  again, and Python stops paying a tensor-sized copy per read — twice the memory and twice
+  the traffic on a multi-gigabyte model, for bytes that were already correctly placed.
+  `hurray-io` and `hurray-ffi` never paid it.
 - A **file write that fails part-way no longer burns its tensor name or strands its
   descriptor** ([#248](https://github.com/pgillet/hurray/issues/248), ADR-041 § 6b). A
   writer core now commits nothing until an item reports written, and becomes unusable at
