@@ -7,3 +7,5 @@ __pycache__/
 .pytest_cache/
 .venv/
 *.egg-info/
+# `maturin develop` drops the compiled extension next to the checked-in package source.
+hurray-python/python/hurray/*.so

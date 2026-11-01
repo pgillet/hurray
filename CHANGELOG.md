@@ -15,6 +15,31 @@ workspace share one version and are released together.
 
 ### Added
 
+- **`hurray-python` — an `asyncio` surface: `hurray.aio.StreamReader` and
+  `hurray.aio.StreamWriter`** ([#252](https://github.com/pgillet/hurray/issues/252),
+  ADR-041 § 9, ADR-042). `async for item in hurray.aio.StreamReader(sock)` and
+  `await writer.write(tensor)`, driven by Python's own event loop — there is no Rust
+  runtime in the extension to bridge to. Same cores as the blocking surface, so the bytes
+  are identical and either reader reads either writer's output; composites cross it whole,
+  as one item. The driver is `hurray/aio.py`, checked-in Python source, which also makes
+  the wheel a mixed Rust/Python package for the first time (the import path and every
+  module identity are unchanged).
+
+  Every `await` waits for the **descriptor** to become ready and never for a transfer: the
+  transfer and its byte-count report happen in one synchronous call, which is what makes
+  cancellation safe rather than merely unlikely (ADR-041 § 6a). So a read cancelled
+  mid-tensor resumes on the same reader, and a write cancelled mid-item **poisons** the
+  writer rather than silently truncating the stream at the peer — a fresh writer over the
+  same connection is not a recovery, and the error says so. A write cancelled before its
+  first byte leaves the writer intact and the item re-writable.
+
+  Descriptors only, and so Unix-only (the same boundary as issue #215): the argument must
+  be an object whose `fileno()` an event loop can poll — a socket or a pipe. A path,
+  `bytes`, or a regular file is refused, naming the blocking class to use instead. There is
+  deliberately **no async file API**: asyncio has no asynchronous random access, so one
+  would be the synchronous API with a thread behind it, which `asyncio.to_thread` already
+  expresses at a visible cost. See the cookbook's *Streaming Without Blocking*.
+
 - **`hurray-io`** — `FileWriterCore::poison` is public. A composite group spans several
   write operations, so retiring the core when one begins and does not finish is the
   *driver's* decision, not the core's — and ADR-041 § 1 puts drivers at the edge, which

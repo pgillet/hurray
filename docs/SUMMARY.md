@@ -73,6 +73,7 @@
 - [Python: Layout Descriptors](cookbook/hurray-python-layouts.md)
 - [Python: Sparse Tensors and SciPy](cookbook/hurray-python-sparse-scipy.md)
 - [Python: Streaming](cookbook/hurray-python-streaming.md)
+- [Streaming Without Blocking](cookbook/async-streaming.md)
 - [Python: File I/O](cookbook/hurray-python-file-io.md)
 - [Python: Tensor Display](cookbook/hurray-python-display.md)
 - [Python: Error Handling](cookbook/hurray-python-error-handling.md)
@@ -133,3 +134,4 @@
     - [ADR-039: C ABI Structured Descriptor Fields](adr/ADR-039-c-abi-structured-descriptor-fields.md)
     - [ADR-040: C ABI Section Field Identifiers](adr/ADR-040-c-abi-section-field-identifiers.md)
     - [ADR-041: Sans-io Core for hurray-io](adr/ADR-041-sans-io-core-for-hurray-io.md)
+    - [ADR-042: Python asyncio Surface](adr/ADR-042-python-asyncio-surface.md)

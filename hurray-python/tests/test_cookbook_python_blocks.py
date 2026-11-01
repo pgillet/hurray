@@ -36,6 +36,7 @@ COOKBOOK = pathlib.Path(__file__).resolve().parents[2] / "docs" / "cookbook"
 # from the environment: a block that fails on one of these is skipped rather than
 # failed, and any other ImportError is still a failure.
 RUN: dict[str, frozenset[str]] = {
+    "async-streaming.md": frozenset(),
     "authoring-quantized-tensors.md": frozenset(),
     "block-paged-kv-cache.md": frozenset(),
     "composite-tensors.md": frozenset(),

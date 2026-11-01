@@ -27,6 +27,11 @@ dev    = ["maturin>=1.7", "pytest>=8.0", "numpy>=1.24"]
 # The distribution is `pyhurray` because `hurray` is taken on PyPI; the import
 # name stays `hurray`, so maturin needs the module name spelled out here.
 module-name = "hurray"
+# The package is mixed Rust/Python: `hurray/aio.py` is the asyncio driver, which is
+# Python because that is where the event-loop readiness logic belongs (ADR-042 § 1).
+# maturin already built a `hurray/` package around the extension with a generated
+# `__init__.py`; this checks that file in instead of generating it.
+python-source = "python"
 # abi3-py310 is declared as a pyo3 feature in Cargo.toml; maturin picks it up
 # from there. The extension-module feature is required for cdylib builds.
 features = ["extension-module"]

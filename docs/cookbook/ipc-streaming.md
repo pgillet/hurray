@@ -5,9 +5,11 @@ one process, across a pipe or socket (IPC), or between machines. It is self-deli
 descriptor-before-data, so a reader can start work before the whole payload has arrived
 and a writer can emit tensors one at a time without buffering the output.
 
-In Rust this is the `hurray-io` streaming reader/writer over any async byte stream. In
-Python today the equivalent producer→consumer hand-off is the file format (`save` in one
-process, `load` in another); the incremental streaming API is Rust / C-FFI.
+In Rust this is the `hurray-io` streaming reader/writer over any async byte stream.
+Python has the same thing in two drivers — [`hurray.StreamReader`
+/`StreamWriter`](hurray-python-streaming.md) blocking, and [`hurray.aio`](async-streaming.md)
+on an event loop. The Python tab below shows the *file* hand-off instead, because that is
+the shape to reach for when the two processes do not overlap in time.
 
 <div class="lang-tabs">
 
