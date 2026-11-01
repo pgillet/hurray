@@ -31,6 +31,17 @@ Four questions have to be settled before any code, and the first one settles the
 > observable behaviour below are unchanged. What this section decided — a blocking
 > surface rather than an `asyncio` one — stood until ADR-041 § 9, which adds the
 > `asyncio` surface alongside it rather than in place of it.
+>
+> **The deferral below is closed (ADR-042).** `hurray.aio` exists. The condition this
+> section attached to it — "when a real multiplexing consumer appears, this ADR should be
+> revisited rather than worked around" — was met by the revisit itself: ADR-041 § 9 settled
+> the semantics and ADR-042 the shape. Two things this section could not have known made
+> it cheaper than it looked. The binding no longer owns a runtime, so an async surface no
+> longer means bridging two executors; and the driver is ~120 lines of Python over the same
+> core, not a second implementation of the protocol. The "two APIs for one protocol"
+> objection below therefore does not apply as written: there is one protocol
+> implementation, with two drivers over it — which is the shape ADR-041 § 1 chose
+> everywhere else, for C as well.
 
 `hurray.StreamReader` and `hurray.StreamWriter` each own a current-thread `tokio`
 runtime for their lifetime and release the GIL around every call into it.

@@ -16,7 +16,9 @@ defines ``__repr__``, so a new one cannot arrive without that decision being mad
 """
 
 import inspect
+import os
 import re
+import socket
 
 import pytest
 
@@ -103,6 +105,18 @@ SUMMARY = {
     "PrivateExtensionLayout": hurray.PrivateExtensionLayout(0xF0, 7),
     "BlockPagedLayout": hurray.BlockPagedLayout(16, 4, 1, 2),
 }
+
+# `hurray.aio` is descriptor-driven and so POSIX-only; its two classes are Python, not
+# PyO3, which is exactly why they are classified here too — the contract is about what
+# this package prints, not about which language printed it.
+if os.name == "posix":
+    import hurray.aio
+
+    # Kept alive for the session: both objects hold a descriptor, and a repr that reports
+    # `fd=` must have a live one to report.
+    _SOCKETS = socket.socketpair()
+    SUMMARY["aio.StreamReader"] = hurray.aio.StreamReader(_SOCKETS[0])
+    SUMMARY["aio.StreamWriter"] = hurray.aio.StreamWriter(_SOCKETS[1])
 
 # Classes that define __repr__ but are never instantiated as themselves.
 NOT_INSTANTIABLE = {
@@ -194,20 +208,35 @@ def test_a_summary_repr_still_identifies_its_class():
 # ── Completeness ──────────────────────────────────────────────────────────────
 
 
-def test_every_repr_bearing_class_is_classified():
-    """The guard that keeps this file honest: a class that defines `__repr__` and appears
-    in neither table fails here, rather than shipping an unexamined repr."""
-    declared = {
-        name
-        for name, cls in inspect.getmembers(hurray, inspect.isclass)
+def _repr_bearing(module) -> set[type]:
+    """The classes in `module` that print something of their own."""
+    return {
+        cls
+        for _, cls in inspect.getmembers(module, inspect.isclass)
         if cls.__repr__ is not object.__repr__ and not issubclass(cls, BaseException)
     }
-    classified = {type(obj).__name__ for obj in (*EXPRESSION.values(), *SUMMARY.values())}
-    classified |= set(NOT_INSTANTIABLE)
 
-    assert not declared - classified, (
+
+def test_every_repr_bearing_class_is_classified():
+    """The guard that keeps this file honest: a class that defines `__repr__` and appears
+    in neither table fails here, rather than shipping an unexamined repr.
+
+    Two things it learned when `hurray.aio` arrived. It walks the submodule now — looking
+    only at the top level would have let a submodule ship an unexamined repr past it. And
+    it compares *classes*, not class names: `hurray.StreamReader` and
+    `hurray.aio.StreamReader` are different classes with the same `__name__`, so a
+    name-keyed guard would have let either one stand in for the other.
+    """
+    declared = _repr_bearing(hurray)
+    if os.name == "posix":
+        declared |= _repr_bearing(hurray.aio)
+    classified = {type(obj) for obj in (*EXPRESSION.values(), *SUMMARY.values())}
+    classified |= {getattr(hurray, name) for name in NOT_INSTANTIABLE}
+
+    missing = declared - classified
+    assert not missing, (
         "these classes define __repr__ but are in no table: "
-        f"{sorted(declared - classified)}"
+        f"{sorted(f'{cls.__module__}.{cls.__name__}' for cls in missing)}"
     )
 
 

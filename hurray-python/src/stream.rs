@@ -68,7 +68,7 @@ type BoxedSink = Box<dyn Write + Send>;
 /// - framing — a truncated frame, a bad header, an oversized frame → `hurray.StreamError`
 /// - descriptor — anything core rejected → `hurray.InvalidDescriptorError`
 /// - transport — the underlying read or write failed → `hurray.FileError` (an `OSError`)
-fn stream_err(e: hurray_io::Error) -> PyErr {
+pub(crate) fn stream_err(e: hurray_io::Error) -> PyErr {
     match e {
         hurray_io::Error::Io(io) => FileError::new_err(io.to_string()),
         hurray_io::Error::Core(core) => InvalidDescriptorError::new_err(core.to_string()),
@@ -84,7 +84,7 @@ fn stream_err(e: hurray_io::Error) -> PyErr {
 /// them on `finish` — a socket handed to a writer would stop working the moment the
 /// writer was done with it (ADR-035 § 3).
 #[cfg(unix)]
-fn dup_fd(fd: RawFd) -> PyResult<std::os::fd::OwnedFd> {
+pub(crate) fn dup_fd(fd: RawFd) -> PyResult<std::os::fd::OwnedFd> {
     // SAFETY: borrow_raw only asserts the descriptor is valid for this call; the clone
     // below is what takes ownership, and the borrow is dropped immediately after.
     let borrowed = unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) };
@@ -670,7 +670,7 @@ impl StreamWriter {
 /// A composite becomes a `hurray.Composite`, recursively — the reader has already
 /// validated the tree through the same `CompositeValidator` the constructor uses, so
 /// this path does not revalidate it.
-fn stream_item_to_py(py: Python<'_>, item: StreamItem) -> PyResult<Py<PyAny>> {
+pub(crate) fn stream_item_to_py(py: Python<'_>, item: StreamItem) -> PyResult<Py<PyAny>> {
     match item {
         StreamItem::Tensor(t) => stream_tensor_to_py(py, t.descriptor, t.buffers),
         StreamItem::Composite(c) => {

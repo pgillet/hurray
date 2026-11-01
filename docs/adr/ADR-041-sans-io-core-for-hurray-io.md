@@ -115,8 +115,25 @@ Accepted (2026-10-19)
 > calls `allocate`, inside the `py.detach` a read holds for its whole I/O section. That
 > seam stays open and unused by Python, which costs nothing now that nothing is copied.
 >
-> Step 5's second half ([#252](https://github.com/pgillet/hurray/issues/252)) and step 6
-> remain.
+> **Step 5b landed (#252, ADR-042).** `hurray.aio.StreamReader` and
+> `hurray.aio.StreamWriter` are driven by Python's own event loop: readiness is awaited,
+> and each transfer reports its byte count in the same synchronous call, so § 6a's case 2
+> is unreachable rather than merely unlikely. The two tests § 11 step 5 names both exist
+> and both pass — a read cancelled mid-tensor resumes on the same reader, a write
+> cancelled after its first byte poisons — and so does the third case they imply: a write
+> cancelled *before* its first byte leaves the writer usable, which is § 6b's other half.
+>
+> It needed **nothing new in `hurray-io`**, and less of it than expected: the driver never
+> evaluates § 6b's predicate. `StreamWriterCore` sets `torn` at an item's first accepted
+> byte and clears it on completion, and `is_unusable()` reports it — so dropping a
+> cancelled operation is the driver's whole obligation. (`WriteOp::emitted()` is public and
+> would answer the same question; consulting it would duplicate the predicate in the
+> binding.) Step 5a had to publish `FileWriterCore::poison` for the equivalent need, so
+> this is the sans-io boundary holding rather than leaking again. ADR-042 records the three shapes § 9 left open, plus a fourth it did not
+> anticipate: a composite's borrowed node tree has to be pinned in a flat arena, because
+> the binding's continuation-passing builder cannot outlive the frame that built it.
+>
+> Step 6 remains.
 
 Resolves the bridge question `HurrayReader` and `HurrayWriter` have carried as bare
 typedefs since C ABI 1, and which **ADR-034** deferred alongside "does streaming reuse

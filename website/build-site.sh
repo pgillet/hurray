@@ -100,8 +100,17 @@ build_python_api() {
   maturin build -m "$srcdir/hurray-python/Cargo.toml" --out "$wheels"
   python3 -m pip install --quiet --force-reinstall --no-deps "$wheels"/*.whl
   rm -rf "$wheels"
+  # `hurray.aio` is named explicitly: pdoc walks a package's `__all__` to find its
+  # submodules, and `hurray/__init__.py` deliberately keeps `aio` out of it so that
+  # `import hurray` cannot fail on a platform where the asyncio seam is not compiled
+  # (ADR-042 § 2). Guarded by the file test so older tags, which have no `aio.py`, still
+  # build.
+  local modules=(hurray)
+  if [ -f "$srcdir/hurray-python/python/hurray/aio.py" ]; then
+    modules+=(hurray.aio)
+  fi
   pdoc --docformat markdown --footer-text "hurray $(basename "$dest")" \
-    --output-directory "$dest/python-api" hurray
+    --output-directory "$dest/python-api" "${modules[@]}"
 }
 
 # --- 2. dev (current tree) -------------------------------------------------------------

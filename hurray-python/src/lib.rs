@@ -10,6 +10,8 @@
 
 use pyo3::prelude::*;
 
+#[cfg(unix)]
+mod aio;
 mod blocking;
 pub(crate) mod buffer;
 mod buffer_handle;
@@ -78,6 +80,8 @@ mod tensor;
 fn hurray(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     errors::register(m)?;
+    #[cfg(unix)]
+    aio::register(m)?;
     dtype::register(m)?;
     device::register(m)?;
     tensor::register(m)?;
