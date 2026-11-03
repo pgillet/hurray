@@ -53,8 +53,7 @@ use crate::{
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct HurrayCompositeNode {
-    /// [`HURRAY_ITEM_TENSOR`][crate::HURRAY_ITEM_TENSOR] or
-    /// [`HURRAY_ITEM_COMPOSITE`][crate::HURRAY_ITEM_COMPOSITE].
+    /// [`HURRAY_ITEM_TENSOR`] or [`HURRAY_ITEM_COMPOSITE`].
     pub kind: u8,
     /// First byte of this node's tensor name, UTF-8 and not NUL-terminated.
     ///

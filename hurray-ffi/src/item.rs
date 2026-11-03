@@ -64,7 +64,7 @@ pub const HURRAY_ITEM_COMPOSITE: u8 = 1;
 ///
 /// Every pointer in it **borrows** from the [`HurrayItem`] it came from and is valid
 /// until [`hurray_item_destroy`]. In particular `tensor` MUST NOT be passed to
-/// [`hurray_tensor_destroy`][crate::hurray_tensor_destroy] — the item owns it.
+/// [`hurray_tensor_destroy`] — the item owns it.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct HurrayItemNode {
