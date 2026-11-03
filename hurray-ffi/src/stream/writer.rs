@@ -5,9 +5,10 @@
 //! that the core must not retain a payload pointer past the item costs a blocking surface
 //! nothing — the whole operation lives and dies inside one call.
 
-use hurray_io::stream::{StreamWriterCore, WriteStep};
+use hurray_io::stream::{CompositeNode, StreamWriterCore, WriteOp, WriteStep};
 
 use crate::{
+    composite::{stream_tree, HurrayCompositeNode, TreeArena},
     descriptor::HurrayDescriptor,
     panic::{catch, null_check},
     status::{
@@ -154,8 +155,8 @@ pub unsafe extern "C" fn hurray_writer_destroy(handle: *mut *mut HurrayWriter) -
 ///   after the first byte is reported as [`HURRAY_ERR_SINK_CLOSED`] instead, because at
 ///   that point the damage is the same.
 ///
-/// Composite tensors are not yet writable from C; a composite head alone is not a valid
-/// tensor and is refused.
+/// A composite is written with [`hurray_writer_write_composite`]; a composite head offered
+/// here is refused, because a head alone is not a valid tensor.
 ///
 /// # Safety
 ///
@@ -207,40 +208,126 @@ pub unsafe extern "C" fn hurray_writer_write_tensor(
             Ok(op) => op,
             Err(e) => return status_from_io_error(&e),
         };
+        drain(&mut op, transport)
+    })
+}
 
-        loop {
-            match op.step() {
-                Err(e) => return status_from_io_error(&e),
-                Ok(WriteStep::ItemWritten) => return HURRAY_OK,
-                Ok(WriteStep::Output { .. }) => {
-                    let src = op.output_src();
-                    match transport.write(src) {
-                        Ok(0) => {
-                            // § 4: zero accepted bytes is never progress.
-                            let e = op.report_sink_closed();
+// ── The driver ────────────────────────────────────────────────────────────────
+
+/// Writes every byte of one submitted item — a tensor or a whole composite — to the
+/// transport.
+///
+/// A free function rather than a method, so the core and the transport can be borrowed as
+/// disjoint fields: the op holds the core mutably for as long as it lives.
+fn drain(op: &mut WriteOp<'_>, transport: &Transport) -> HurrayStatus {
+    loop {
+        match op.step() {
+            Err(e) => return status_from_io_error(&e),
+            Ok(WriteStep::ItemWritten) => return HURRAY_OK,
+            Ok(WriteStep::Output { .. }) => {
+                let src = op.output_src();
+                match transport.write(src) {
+                    Ok(0) => {
+                        // § 4: zero accepted bytes is never progress.
+                        let e = op.report_sink_closed();
+                        return status_from_io_error(&e);
+                    }
+                    Ok(n) => {
+                        if let Err(e) = op.report_written(n) {
                             return status_from_io_error(&e);
                         }
-                        Ok(n) => {
-                            if let Err(e) = op.report_written(n) {
-                                return status_from_io_error(&e);
-                            }
+                    }
+                    Err(status) => {
+                        // No `report_sink_closed` here: the core poisoned itself at this
+                        // item's first accepted byte (§ 6b), and calling it would
+                        // overwrite that with `LostWriteCount` — claiming the count is
+                        // unknown when it is known exactly.
+                        if op.emitted() > 0 {
+                            // A torn item: the transport's own status understates it.
+                            return HURRAY_ERR_SINK_CLOSED;
                         }
-                        Err(status) => {
-                            // No `report_sink_closed` here: the core poisoned itself at
-                            // this item's first accepted byte (§ 6b), and calling it would
-                            // overwrite that with `LostWriteCount` — claiming the count is
-                            // unknown when it is known exactly.
-                            if op.emitted() > 0 {
-                                // A torn item: the transport's own status understates it.
-                                return HURRAY_ERR_SINK_CLOSED;
-                            }
-                            // Nothing of this item is on the wire, so the callback's status
-                            // is the more useful of the two — it says why the stream stopped.
-                            return status;
-                        }
+                        // Nothing of this item is on the wire, so the callback's status is
+                        // the more useful of the two — it says why the stream stopped.
+                        return status;
                     }
                 }
             }
         }
+    }
+}
+
+/// Writes a composite — its head, then every member, nested ones included — as one item.
+///
+/// `nodes` is the composite in preorder: `nodes[0]` is the head, and each node declares
+/// how many of the nodes after it are its direct members. [`crate::composite`] has the
+/// shape and an example layout; names are ignored here, because the stream wire carries
+/// none.
+///
+/// The whole tree is validated before a byte reaches the sink — member counts at every
+/// level, partition exact-cover, overlay base-first ordering — so an invalid composite is
+/// refused rather than half written. Payload slices stay borrowed throughout: nothing is
+/// copied or concatenated (ADR-041 § 3).
+///
+/// Returns:
+///
+/// - [`HURRAY_OK`] — the composite is entirely written and the payload pointers are no
+///   longer held.
+/// - [`HURRAY_ERR_NOT_COMPOSITE`] — `count` is `0`, or `nodes[0]` is not a composite head.
+///   Use [`hurray_writer_write_tensor`] for a tensor.
+/// - [`HURRAY_ERR_INDEX_OUT_OF_BOUNDS`][crate::HURRAY_ERR_INDEX_OUT_OF_BOUNDS] — the
+///   member counts do not describe the array: a head declares members the array does not
+///   carry, or nodes trail after the head's subtree is complete.
+/// - [`HURRAY_ERR_INVALID_LAYOUT`][crate::HURRAY_ERR_INVALID_LAYOUT] — the tree is not a
+///   valid composite: a head that is not one, a member count that disagrees with the
+///   head, a partition that does not cover its index space, an overlay whose base is not
+///   first. Refused before a byte moved, so the writer stays usable.
+/// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes mid-composite, so a
+///   truncated item is on the wire and the writer is poisoned. A composite is one item:
+///   there is no partially valid composite to resume from.
+/// - Whatever status the write callback returned, if it failed **before any byte of this
+///   composite reached the sink**. Nothing was emitted, so the call MAY be retried.
+///
+/// # Safety
+///
+/// - `handle` MUST point to a live [`HurrayWriter`].
+/// - If `count` is non-zero, `nodes` MUST point to `count` readable
+///   [`HurrayCompositeNode`] values, each satisfying that type's own pointer contract.
+/// - All of that memory MUST stay valid and unmodified until this call returns.
+#[no_mangle]
+pub unsafe extern "C" fn hurray_writer_write_composite(
+    handle: *mut HurrayWriter,
+    nodes: *const HurrayCompositeNode,
+    count: usize,
+) -> HurrayStatus {
+    catch(|| {
+        null_check!(handle);
+        if count > 0 {
+            null_check!(nodes);
+        }
+
+        // SAFETY: non-null and caller-guaranteed to describe `count` readable nodes.
+        let nodes = if count == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(nodes, count)
+        };
+
+        // Outlives the op below: the borrowed tree points into it.
+        let mut arena: TreeArena<CompositeNode<'static>> = TreeArena::default();
+        // SAFETY: delegated to this function's contract on `nodes`.
+        let (head, members) = match stream_tree(&mut arena, nodes) {
+            Ok(tree) => tree,
+            Err(status) => return status,
+        };
+
+        // SAFETY: handle is non-null and points to a live HurrayWriter, which the C ABI's
+        // one-handle-one-thread rule says nothing else is touching.
+        let HurrayWriter { core, transport } = &mut *handle;
+
+        let mut op = match core.composite(head, members) {
+            Ok(op) => op,
+            Err(e) => return status_from_io_error(&e),
+        };
+        drain(&mut op, transport)
     })
 }

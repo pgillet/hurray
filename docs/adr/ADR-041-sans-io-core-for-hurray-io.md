@@ -133,7 +133,38 @@ Accepted (2026-10-19)
 > anticipate: a composite's borrowed node tree has to be pinned in a flat arena, because
 > the binding's continuation-passing builder cannot outlive the frame that built it.
 >
-> Step 6 remains.
+> **Step 6 landed ([#258](https://github.com/pgillet/hurray/issues/258)), and with it the
+> last open question this ADR carried.** Composites now cross the C boundary on both
+> surfaces, which flips the last two `hurray-ffi` rows of the interchange table: every one
+> of the seven § Context names is ✅ in all three columns.
+>
+> **The C sum type is preorder plus `member_count` — the format's own shape.** A head
+> followed by its members, each node declaring how many of the nodes after it are its
+> direct members, as `HurrayItem` on the read side and an array of `HurrayCompositeNode` on
+> the write side. The deciding argument is not ergonomics: a tree of pointers crossing an
+> ABI can be *cyclic*, and a walker on either side loops forever on one, while an array
+> with member counts cannot describe a cycle at all. It is also one allocation for a C
+> caller instead of one per level, and it is what the wire already says. The kind tag is
+> not redundant with the count, because `CompositeLayout` permits `member_count == 0`: a
+> zero-member head and a plain tensor are otherwise indistinguishable.
+>
+> It needed **nothing new in `hurray-io`** — both cores have handled composites since the
+> passes that built them (§ 10's explicit stack, step 2's `CompositeAssembler`, step 4a's
+> `flatten_composite`), and `FileWriterCore::poison`, published for step 5a, is what the C
+> file driver needed for the same reason. Converting the C array into the borrowed tree
+> `hurray-io` takes is the binding's own work, done in reverse preorder — a node's members
+> always sit after it — with one isolated `unsafe` to publish a boxed array for the rest of
+> the call, the shape ADR-042 § 4 wrote down.
+>
+> Two things it exposed, both fixed here. The **whole composite-validation family of
+> `hurray_core::Error` mapped to `HURRAY_ERR_INTERNAL`**, blaming the library for a
+> caller's tree; they are layout-structural errors and now report
+> `HURRAY_ERR_INVALID_LAYOUT`. They were unreachable from C before this step, which is why
+> nothing had caught it. And a **file** composite spans several index entries rather than
+> being one item, so a defect found after the head is on the sink — a member's name, not
+> only a transport failure — cannot be recovered from: the writer is poisoned, and § 6b's
+> retry applies only to a failure on the head itself. The stream surface has no such case,
+> a composite there being one item.
 
 Resolves the bridge question `HurrayReader` and `HurrayWriter` have carried as bare
 typedefs since C ABI 1, and which **ADR-034** deferred alongside "does streaming reuse
@@ -543,6 +574,11 @@ This is an improvement to be collected rather than a cost to be absorbed:
 `max_composite_depth` is currently enforced against an implicit call depth, and becomes a
 bound on a visible structure that a C caller can also walk.
 
+> **Step 6 made that literal.** The visible structure a C caller walks is the preorder node
+> array of § Open Questions' resolved sum-type entry, and the bound reached the C surface as
+> `HurrayReaderOptions::max_composite_depth`, which bounds the *assembler* and leaves the
+> flat view of the same bytes untouched.
+
 ### 11. Sequencing, and the condition that stops it
 
 1. **Sequential stream core**, proving the contracts that the rest depends on:
@@ -569,7 +605,13 @@ bound on a visible structure that a C caller can also walk.
    poisons, and one that cancels mid-write and asserts it poisons rather than silently
    truncating.
 6. **Composites across both surfaces**, including the C sum-type answer. Full C composite
-   support lands here; the core's composite handling was proven in step 1.
+   support lands here; the core's composite handling was proven in step 1. Landed as
+   [#258](https://github.com/pgillet/hurray/issues/258): `hurray_reader_next_item`,
+   `hurray_writer_write_composite`, `hurray_file_reader_read_composite`,
+   `hurray_file_writer_write_composite`, the `HurrayItem` / `HurrayCompositeNode` pair,
+   `max_composite_depth` on `HurrayReaderOptions` (ABI 8 → 9), and `HURRAY_ERR_NOT_COMPOSITE`
+   — which is a question wrongly asked, not a defect, exactly as step 4b argued for
+   `HURRAY_ERR_NOT_FOUND`.
 
 **Stop condition:** stop if the contract in §§ 2–4 **cannot** be satisfied without an
 additional payload copy — a flaw in the abstraction, demonstrated by argument and not by a
@@ -680,9 +722,13 @@ compatibility contract — blocked on a question nobody is answering.
   exactly the pairing #174 folds into one `HurrayTensor`. Whichever lands first constrains
   the other; this ADR deliberately does not decide it, but it does remove the reason #174
   was postponed, so #174 should be re-examined when step 3 is scheduled.
-- **Composites as a C sum type.** `StreamItem` is a tensor or a composite head with
+- ~~**Composites as a C sum type.** `StreamItem` is a tensor or a composite head with
   members, and the C surface has no way to express a sum type. § 10's explicit stack has to
-  produce something C can walk.
+  produce something C can walk.~~ **Resolved in step 6:** preorder plus `member_count`, the
+  format's own shape — `HurrayItem` out, an array of `HurrayCompositeNode` in, one node per
+  tensor, nesting in the count column. Chosen over a pointer tree because an array with
+  member counts cannot describe a cycle, which a caller-built tree crossing an ABI can; and
+  the `kind` tag stays because a head may legally declare zero members.
 - ~~**A late `finish` failure.** The file writer's footer index is written last, so a
   writer that fails after the data leaves a file with no index. What both surfaces promise
   about that state is unstated today and should not stay that way.~~ **Resolved by § 6b in

@@ -13,8 +13,11 @@
 //!
 //! That is what lets the blocking contract live entirely in the caller's callbacks.
 //!
-//! Scope: flat tensors. A composite head reads back as the buffer-less tensor it is on the
-//! wire, and writing a composite from C is not supported yet. File containers are
+//! Scope: tensors and composites. The reader offers both views of the same bytes —
+//! [`hurray_reader_next_tensor`] in wire order, where a composite head is the buffer-less
+//! tensor it is on the wire, and [`hurray_reader_next_item`] assembled, where a composite
+//! arrives whole. One core, two views, which is what step 2 of ADR-041 set up. File
+//! containers are
 //! [`crate::file`]'s: they are addressed rather than consumed, so they drive the
 //! random-access core over the vtable's `read_at` and `size` callbacks.
 
@@ -25,7 +28,9 @@ pub(crate) mod tensor;
 pub(crate) mod transport;
 mod writer;
 
-pub use reader::{hurray_reader_destroy, hurray_reader_new, hurray_reader_next_tensor};
+pub use reader::{
+    hurray_reader_destroy, hurray_reader_new, hurray_reader_next_item, hurray_reader_next_tensor,
+};
 pub use reader::{HurrayReader, HurrayReaderOptions};
 pub use tensor::HurrayTensor;
 pub use tensor::{hurray_tensor_buffers, hurray_tensor_descriptor, hurray_tensor_destroy};
@@ -33,5 +38,8 @@ pub use transport::{
     HurrayTransport, HurrayTransportReadAtFn, HurrayTransportReadFn, HurrayTransportReleaseFn,
     HurrayTransportSizeFn, HurrayTransportWriteFn,
 };
-pub use writer::{hurray_writer_destroy, hurray_writer_new, hurray_writer_write_tensor};
+pub use writer::{
+    hurray_writer_destroy, hurray_writer_new, hurray_writer_write_composite,
+    hurray_writer_write_tensor,
+};
 pub use writer::{HurrayIoSlice, HurrayWriter, HurrayWriterOptions};

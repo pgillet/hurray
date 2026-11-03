@@ -120,7 +120,7 @@ fn encode_rank3_descriptor() -> Vec<u8> {
 // ── Phase 1 — ABI version and status codes ───────────────────────────────────
 
 #[test]
-fn abi_version_is_8() {
+fn abi_version_is_9() {
     // Raised 2 -> 3 by ADR-030: the native protocol capsule now wraps a
     // HurrayBufferList, so a v2 consumer must be told rather than dereference it.
     // Raised 3 -> 4 by ADR-034: the capsule context became HurrayTensorContext, so
@@ -136,7 +136,9 @@ fn abi_version_is_8() {
     // Raised 7 -> 8 by ADR-041 step 4b: the transport vtable grew read_at and size for
     // the file container's absolute ranges, and HurrayFileReader/HurrayFileWriter were
     // added, so a v7 consumer's HurrayTransport is a struct short of two fields.
-    assert_eq!(hurray_c_abi_version(), 8);
+    // Raised 8 -> 9 by ADR-041 step 6: HurrayReaderOptions gained max_composite_depth, so
+    // a v8 consumer's struct is a field short of the one the library reads.
+    assert_eq!(hurray_c_abi_version(), 9);
 }
 
 #[test]
@@ -163,6 +165,7 @@ fn status_codes_have_expected_values() {
     assert_eq!(HURRAY_ERR_INVALID_STREAM, -19);
     assert_eq!(HURRAY_ERR_NOT_FOUND, -20);
     assert_eq!(HURRAY_ERR_INVALID_FILE, -21);
+    assert_eq!(hurray_ffi::HURRAY_ERR_NOT_COMPOSITE, -22);
 
     // The one positive status: a stream ending is not a failure, which is why `status < 0`
     // is the error test and not `status != HURRAY_OK`.

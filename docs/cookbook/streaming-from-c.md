@@ -9,11 +9,18 @@ port, and without an async runtime in the library.
 ```c
 typedef struct HurrayTransport {
     void*                    ctx;
-    HurrayTransportReadFn    read;     /* required by a reader */
+    HurrayTransportReadFn    read;     /* required by a stream reader */
     HurrayTransportWriteFn   write;    /* required by a writer */
     HurrayTransportReleaseFn release;  /* optional; frees ctx */
+    HurrayTransportReadAtFn  read_at;  /* required by a file reader */
+    HurrayTransportSizeFn    size;     /* required by a file reader */
 } HurrayTransport;
 ```
+
+One struct serves both surfaces; a caller populates only the callbacks its transport has.
+A stream needs the first three — `read_at` and `size` are the file container's, because it
+is addressed rather than consumed
+([Random access without a runtime](random-access-without-a-runtime.md)).
 
 Every call is synchronous and returns a `HurrayStatus`. The callbacks are allowed to block
 — that is the point of them — and nothing inside Hurray does.
@@ -262,15 +269,18 @@ for received in hurray.StreamReader(wire):
 
 </div>
 
+## Beyond a flat stream
+
+- **Composite tensors.** `hurray_reader_next_tensor` is the flat view: a composite head
+  arrives as the buffer-less tensor it is on the wire, and its members as the tensors that
+  follow. For the assembled view — one item, walked in preorder — see
+  [Streaming Composite Tensors](composite-streaming.md), which has the C tab for
+  `hurray_reader_next_item` and `hurray_writer_write_composite`.
+- **File containers.** `HRRYFILE` is addressed rather than consumed, so it asks the same
+  vtable for absolute ranges through `read_at` and `size` instead of a byte feed:
+  [Random Access Without a Runtime](random-access-without-a-runtime.md).
+
 ## Not here yet
 
-- **Composite tensors.** A composite head reads back as the buffer-less tensor it is on
-  the wire; walking its members from C, and writing one, come with the C sum-type for a
-  composite.
-- **File containers from C.** `HRRYFILE` needs random access — the trailer sits at
-  `file_size - 40` — so it needs a range-request protocol and two more vtable entries
-  (`seek`, `size`), not a byte feed. The range-request core itself exists: see
-  [Random Access Without a Runtime](random-access-without-a-runtime.md), which drives it
-  from blocking `std::io` today. Only the C surface over it is still to come.
 - **Building a descriptor in C.** A writer can emit descriptors it decoded; originating
   one from C needs an encode surface of its own.

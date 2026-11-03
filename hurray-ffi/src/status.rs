@@ -124,6 +124,13 @@ pub const HURRAY_ERR_NOT_FOUND: HurrayStatus = -20;
 /// more.
 pub const HURRAY_ERR_INVALID_FILE: HurrayStatus = -21;
 
+/// A composite was asked for where there is none, or offered where one is required.
+///
+/// Its own code for the reason [`HURRAY_ERR_NOT_FOUND`] has one: a composite read on a
+/// plain tensor, or a plain tensor at the head of a composite write, is a question the
+/// caller asked wrongly — nothing about the stream or the file is wrong.
+pub const HURRAY_ERR_NOT_COMPOSITE: HurrayStatus = -22;
+
 // ── Non-error outcomes ────────────────────────────────────────────────────────
 
 /// Input ended cleanly at a tensor boundary: there is no next tensor.
@@ -165,7 +172,26 @@ pub(crate) fn status_from_core_error(e: &Error) -> HurrayStatus {
         | Error::AlignmentNotPowerOfTwo { .. }
         | Error::AlignmentBelowMinimum { .. }
         | Error::AlignmentError { .. }
-        | Error::InvalidShape(_) => HURRAY_ERR_INVALID_LAYOUT,
+        | Error::InvalidShape(_)
+        // The composite family is layout-structural too: every one of them is the
+        // composite layout's contract with its members, broken. They became reachable
+        // from C with step 6's composite writes — before that no C entry point could run
+        // the validator, and they fell through to `HURRAY_ERR_INTERNAL`, which would have
+        // blamed the library for a caller's tree.
+        | Error::CompositeHeadHasBuffers { .. }
+        | Error::CompositeHeadHasByteOffset { .. }
+        | Error::CompositeHeadHasQuantization
+        | Error::OpenCompositeReserved
+        | Error::CompositeMemberFlagMismatch { .. }
+        | Error::CompositeMemberCountMismatch { .. }
+        | Error::CompositeMemberMissingShard { .. }
+        | Error::CompositeMemberParentShapeMismatch { .. }
+        | Error::CompositeMemberTypeMismatch { .. }
+        | Error::CompositeOverlayBaseNotFirst
+        | Error::CompositeOverlayBaseNotSpanning
+        | Error::CompositeOverlayEmpty
+        | Error::CompositePartitionGap
+        | Error::CompositePartitionOverlap { .. } => HURRAY_ERR_INVALID_LAYOUT,
 
         // Type / device / memory class errors
         Error::InvalidTypeTag(_)
@@ -206,8 +232,11 @@ pub(crate) fn status_from_io_error(e: &hurray_io::Error) -> HurrayStatus {
         | E::InvalidCrossMachineSyncMode { .. }
         | E::UnallocatableBuffer { .. }
         | E::TornComposite { .. }
-        | E::NotAComposite(_)
         | E::CoreFailed => HURRAY_ERR_INVALID_STREAM,
+
+        // Not a malformed stream or file: the caller asked for a composite read on a
+        // tensor that is not one, which the index or the wire answered correctly.
+        E::NotAComposite(_) => HURRAY_ERR_NOT_COMPOSITE,
 
         // A driver bug, not a caller error: this crate's driver always reports a count it
         // was offered. Reachable only if that invariant breaks, and never silently.
