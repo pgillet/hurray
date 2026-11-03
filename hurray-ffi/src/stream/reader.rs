@@ -6,9 +6,10 @@
 //! progress API never blocks, so the blocking happens entirely inside the caller's own
 //! read callback.
 
-use hurray_io::stream::{ReadStep, StreamReaderCore, StreamReaderOptions};
+use hurray_io::stream::{CompositeAssembler, ReadStep, StreamReaderCore, StreamReaderOptions};
 
 use crate::{
+    item::{item_handle, HurrayItem},
     panic::{catch, null_check},
     status::{
         status_from_io_error, HurrayStatus, HURRAY_END_OF_STREAM, HURRAY_ERR_INTERNAL,
@@ -39,19 +40,29 @@ pub struct HurrayReaderOptions {
     /// crosses a machine boundary, where a device-local synchronization handle means
     /// nothing.
     pub enforce_cross_machine_sync: bool,
+    /// Maximum composite nesting depth accepted by [`hurray_reader_next_item`].
+    /// Default: 64. Pass `0` for that default.
+    ///
+    /// Bounds the assembler, not the byte machine: the core reassembles nothing, so
+    /// [`hurray_reader_next_tensor`] is unaffected by this field.
+    pub max_composite_depth: usize,
 }
 
 impl HurrayReaderOptions {
     /// Translates the C struct into `hurray-io`'s options.
-    ///
-    /// Composite nesting depth is deliberately absent: the read core assembles no
-    /// composites, and the C surface does not reach them yet.
     fn to_io(&self) -> StreamReaderOptions {
+        let defaults = StreamReaderOptions::default();
         StreamReaderOptions {
             max_descriptor_bytes: self.max_descriptor_bytes,
             max_buffer_bytes: self.max_buffer_bytes,
             enforce_cross_machine_sync: self.enforce_cross_machine_sync,
-            ..StreamReaderOptions::default()
+            // Zero is the request for the default rather than a limit of zero: a depth of
+            // zero would refuse every composite, which no caller means by `{0}`.
+            max_composite_depth: if self.max_composite_depth == 0 {
+                defaults.max_composite_depth
+            } else {
+                self.max_composite_depth
+            },
         }
     }
 }
@@ -67,6 +78,9 @@ impl HurrayReaderOptions {
 pub struct HurrayReader {
     core: StreamReaderCore,
     transport: Transport,
+    /// Held across calls, not created per call: a composite spans several tensors, so a
+    /// half-assembled one has to survive between them.
+    assembler: CompositeAssembler,
 }
 
 // ── Construction / destruction ────────────────────────────────────────────────
@@ -111,9 +125,12 @@ pub unsafe extern "C" fn hurray_reader_new(
             (*options).to_io()
         };
 
+        // The core ignores `max_composite_depth` — it bounds the assembler (ADR-041 § 10).
+        let max_composite_depth = io_options.max_composite_depth;
         let reader = HurrayReader {
             core: StreamReaderCore::with_options(io_options),
             transport,
+            assembler: CompositeAssembler::new(max_composite_depth),
         };
         // SAFETY: Box::into_raw transfers ownership to the caller, who must call
         // hurray_reader_destroy exactly once.
@@ -165,8 +182,9 @@ pub unsafe extern "C" fn hurray_reader_destroy(handle: *mut *mut HurrayReader) -
 ///   intact in that case — the transport contract says a failing callback moved no bytes —
 ///   so **the same call MAY be retried** and will resume mid-tensor rather than restart it.
 ///
-/// A composite head arrives as the buffer-less tensor it is on the wire; walking a
-/// composite's members from C is not yet supported.
+/// A composite head arrives as the buffer-less tensor it is on the wire, and its members
+/// as the tensors that follow it. Use [`hurray_reader_next_item`] to have them assembled
+/// into one walkable item instead.
 ///
 /// Every buffer in the returned tensor points at memory the read core allocated at the
 /// alignment its buffer handle *declares*, and the transport wrote into it directly — so a
@@ -208,6 +226,91 @@ pub unsafe extern "C" fn hurray_reader_next_tensor(
                         // No bytes moved, so no report is owed and the position still
                         // matches the transport's: § 6's LostReadCount is unreachable from
                         // here, and the call is retryable.
+                        Err(status) => return status,
+                    };
+                    if let Err(e) = reader.core.report_filled(filled) {
+                        return status_from_io_error(&e);
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Reads the next *item*: one tensor, or a composite and everything under it.
+///
+/// The assembled view of the same bytes [`hurray_reader_next_tensor`] reads flat. A
+/// composite head and its members arrive as one [`HurrayItem`] whose nodes a caller walks
+/// in preorder — see [`crate::item`] for the shape, and `hurray_item_node` for the walk.
+///
+/// Returns:
+///
+/// - [`HURRAY_OK`] — `*out_item` is a new [`HurrayItem`], to be released with
+///   [`hurray_item_destroy`][crate::hurray_item_destroy].
+/// - [`HURRAY_END_OF_STREAM`] — input ended cleanly at an item boundary. `*out_item` is
+///   untouched.
+/// - [`HURRAY_ERR_INVALID_STREAM`][crate::HURRAY_ERR_INVALID_STREAM] — the stream ended
+///   with a composite head still owed members, or a group failed validation (member
+///   count, partition coverage, overlay ordering).
+/// - [`HURRAY_ERR_LIMIT_EXCEEDED`][crate::HURRAY_ERR_LIMIT_EXCEEDED] — nesting exceeded
+///   `max_composite_depth`.
+/// - Whatever status the read callback returned, if it failed. The reader's position is
+///   intact, so the same call MAY be retried and resumes mid-tensor.
+///
+/// Both views come from one core, and the assembly happens on this side of it. So mixing
+/// the two calls on one reader is allowed but rarely meant: a
+/// [`hurray_reader_next_tensor`] issued while a composite head is open takes the member
+/// that head was waiting for, and the group stays open for the rest of the stream.
+///
+/// # Safety
+///
+/// - `handle` MUST point to a live [`HurrayReader`].
+/// - `out_item` MUST be a valid, non-null, writable pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hurray_reader_next_item(
+    handle: *mut HurrayReader,
+    out_item: *mut *mut HurrayItem,
+) -> HurrayStatus {
+    catch(|| {
+        null_check!(handle, out_item);
+        // SAFETY: handle is non-null and points to a live HurrayReader, which the C ABI's
+        // one-handle-one-thread rule says nothing else is touching.
+        let reader = &mut *handle;
+
+        loop {
+            match reader.core.step() {
+                Err(e) => return status_from_io_error(&e),
+                Ok(ReadStep::Finished) => {
+                    // A head still owed members at end of input is a torn composite, not a
+                    // clean end of stream.
+                    if let Err(e) = reader.assembler.finish() {
+                        return status_from_io_error(&e);
+                    }
+                    return HURRAY_END_OF_STREAM;
+                }
+                Ok(ReadStep::Tensor) => {
+                    let Some(tensor) = reader.core.take_tensor() else {
+                        // step() said Tensor; the core cannot then have none.
+                        return HURRAY_ERR_INTERNAL;
+                    };
+                    match reader.assembler.push(tensor) {
+                        Err(e) => return status_from_io_error(&e),
+                        // Still filling a composite: nothing to hand back yet.
+                        Ok(None) => continue,
+                        Ok(Some(item)) => {
+                            *out_item = Box::into_raw(item_handle(item));
+                            return HURRAY_OK;
+                        }
+                    }
+                }
+                Ok(ReadStep::Input { .. }) => {
+                    // Disjoint fields: the core lends out its destination while the
+                    // transport fills it.
+                    let dst = reader.core.input_dst();
+                    let filled = match reader.transport.read(dst) {
+                        Ok(n) => n,
+                        // No bytes moved, so no report is owed and the position still
+                        // matches the transport's: the call is retryable.
                         Err(status) => return status,
                     };
                     if let Err(e) = reader.core.report_filled(filled) {

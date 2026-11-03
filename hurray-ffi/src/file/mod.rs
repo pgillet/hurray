@@ -12,11 +12,14 @@
 //! - the **transport** moves them and MAY block,
 //! - these handles carry counts between the two.
 //!
-//! Scope: flat tensors and the KV metadata section. A composite head reads back as the
-//! buffer-less tensor it is in the file, and writing a composite from C is not supported
-//! yet — that arrives with the C sum type for a composite.
+//! Scope: flat tensors, composites, and the KV metadata section. A composite is addressed
+//! by its head's name, read back whole by
+//! [`hurray_file_reader_read_composite`], and written from the preorder node array
+//! [`HurrayCompositeNode`][crate::HurrayCompositeNode] describes.
 
-mod kv;
+// `pub(crate)`: its pointer helpers (`bytes_from_c`, `str_from_c`) are the boundary's,
+// not the KV section's, and `crate::composite` needs the same ones.
+pub(crate) mod kv;
 mod reader;
 mod writer;
 
@@ -26,10 +29,12 @@ pub use kv::{
 };
 pub use reader::{
     hurray_file_reader_destroy, hurray_file_reader_kv_count, hurray_file_reader_kv_entry,
-    hurray_file_reader_new, hurray_file_reader_read_descriptor, hurray_file_reader_read_tensor,
-    hurray_file_reader_tensor_count, hurray_file_reader_tensor_name, HurrayFileReader,
+    hurray_file_reader_new, hurray_file_reader_read_composite, hurray_file_reader_read_descriptor,
+    hurray_file_reader_read_tensor, hurray_file_reader_tensor_count,
+    hurray_file_reader_tensor_name, HurrayFileReader,
 };
 pub use writer::{
     hurray_file_writer_destroy, hurray_file_writer_finish, hurray_file_writer_new,
-    hurray_file_writer_write_tensor, HurrayFileWriter, HurrayFileWriterOptions,
+    hurray_file_writer_write_composite, hurray_file_writer_write_tensor, HurrayFileWriter,
+    HurrayFileWriterOptions,
 };

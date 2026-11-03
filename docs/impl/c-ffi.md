@@ -301,10 +301,12 @@ These are ABI surface, and none of them may be left to inference.
 | Function | Contract |
 |---|---|
 | `hurray_reader_new(transport, options, out_reader)` | `transport->read` MUST be non-null. `options` MAY be `NULL` for the documented defaults. |
-| `hurray_reader_next_tensor(reader, out_tensor)` | Returns `HURRAY_OK` with a new `HurrayTensor*`, `HURRAY_END_OF_STREAM` at a clean tensor boundary, `HURRAY_ERR_UNEXPECTED_EOF` if input ended inside a descriptor or buffer, or the read callback's own status. |
+| `hurray_reader_next_tensor(reader, out_tensor)` | Returns `HURRAY_OK` with a new `HurrayTensor*`, `HURRAY_END_OF_STREAM` at a clean tensor boundary, `HURRAY_ERR_UNEXPECTED_EOF` if input ended inside a descriptor or buffer, or the read callback's own status. A composite head arrives as the buffer-less tensor it is on the wire. |
+| `hurray_reader_next_item(reader, out_item)` | The same bytes, assembled: returns a new `HurrayItem*` holding one tensor or one whole composite. `HURRAY_END_OF_STREAM` only at an **item** boundary — input that ends with a head still owed members is `HURRAY_ERR_INVALID_STREAM`, not a clean end. See [Composites](#composites). |
 | `hurray_reader_destroy(&reader)` | Destroys the reader, releases the transport context, writes `NULL` through the argument. Tensors already produced are unaffected. |
 | `hurray_writer_new(transport, options, out_writer)` | `transport->write` MUST be non-null. `options` MAY be `NULL`. |
-| `hurray_writer_write_tensor(writer, descriptor, payloads, count)` | `payloads` MUST have one `HurrayIoSlice` per buffer in the descriptor's buffer table, in that order, each of the declared `byte_size`. The tensor is validated before any byte reaches the sink. |
+| `hurray_writer_write_tensor(writer, descriptor, payloads, count)` | `payloads` MUST have one `HurrayIoSlice` per buffer in the descriptor's buffer table, in that order, each of the declared `byte_size`. The tensor is validated before any byte reaches the sink. A composite head is refused: a head alone is not a tensor. |
+| `hurray_writer_write_composite(writer, nodes, count)` | One composite, as the preorder node array of [Composites](#composites). `nodes[0]` MUST be a head. The whole tree is validated before any byte reaches the sink. |
 | `hurray_writer_destroy(&writer)` | Destroys the writer and releases the transport context. There is nothing to flush. |
 
 A writer whose sink failed **after** the first byte of a tensor MUST be poisoned: a
@@ -322,9 +324,72 @@ A `HurrayTensor` owns its descriptor and its buffers. `hurray_tensor_descriptor`
 `hurray_tensor_destroy`, which releases both halves in one call so the teardown order is
 not the caller's problem.
 
-> **Note (non-normative):** composite tensors are not reachable from this surface yet. A
-> composite head arrives as the buffer-less tensor it is on the wire, and writing one is
-> refused. File containers need random access and are a separate surface.
+### Composites
+
+A composite is a tensor or a composite head with members, and C has no sum type to receive
+that in. It therefore crosses this boundary as the sequence the **format itself** carries:
+a head followed by its members, in preorder, with every node declaring how many of the
+nodes after it are its direct members. Nesting is in that one column, and the array is
+structurally acyclic — a pointer tree crossing an ABI is not.
+
+Reads produce an opaque `HurrayItem`; writes consume an array of `HurrayCompositeNode`.
+Both use the same two kind tags, which are **not** wire values: the wire has no
+tensor-or-composite tag, it has a composite *layout*. The tags exist so that walking an
+item needs no descriptor decode, and because a head with `member_count == 0` — which the
+layout permits — would otherwise be indistinguishable from a tensor.
+
+```c
+#define HURRAY_ITEM_TENSOR     0
+#define HURRAY_ITEM_COMPOSITE  1
+
+typedef struct HurrayItemNode {         /* read: borrowed from the HurrayItem */
+    uint8_t        kind;
+    const uint8_t* name;                /* NULL on a stream; UTF-8, no NUL, in a file */
+    size_t         name_len;
+    HurrayTensor*  tensor;              /* borrowed; a head's buffer list is empty */
+    uint32_t       member_count;
+} HurrayItemNode;
+
+typedef struct HurrayCompositeNode {    /* write: borrowed from the caller */
+    uint8_t              kind;
+    const uint8_t*       name;          /* required in a file; ignored on a stream */
+    size_t               name_len;
+    const HurrayDescriptor* descriptor;
+    const HurrayIoSlice* payloads;      /* ignored for a head: it owns no data */
+    size_t               payload_count;
+    uint32_t             member_count;
+} HurrayCompositeNode;
+```
+
+| Function | Contract |
+|---|---|
+| `hurray_item_kind(item, out_kind)` | The kind of node `0`, for a caller that only needs to know whether a composite arrived. |
+| `hurray_item_node_count(item, out_count)` | Total nodes, root and every nested member included. `1` for a plain tensor. |
+| `hurray_item_node(item, index, out_node)` | Copies node `index` out in preorder. Its pointers borrow from the item. `HURRAY_ERR_INDEX_OUT_OF_BOUNDS` past the end. |
+| `hurray_item_destroy(&item)` | Destroys the item, every tensor and name it owns, and writes `NULL`. |
+
+Implementations MUST order the nodes so that a node's direct members begin at the next
+index and each is followed immediately by its own subtree, and MUST set `member_count` from
+the members actually present — a count that disagrees with its head is rejected by
+validation, not reported here.
+
+A node's `tensor` is **borrowed**: it MUST NOT be passed to `hurray_tensor_destroy`, which
+`hurray_item_destroy` does for every node in one call.
+
+A write MUST refuse, before any byte reaches the sink:
+
+- a `count` of `0`, or a `nodes[0]` that is not a head — `HURRAY_ERR_NOT_COMPOSITE`, the
+  caller asking for a composite where there is none;
+- member counts that do not describe the array, whether a head declares members the array
+  does not carry or nodes trail after the root's subtree completes —
+  `HURRAY_ERR_INDEX_OUT_OF_BOUNDS`, a count that does not fit what it indexes;
+- a tree that is not a valid composite at any level, member count, partition exact-cover
+  and overlay base-first ordering included — `HURRAY_ERR_INVALID_LAYOUT`, the composite
+  layout's contract with its members being what was broken.
+
+A stream composite is **one item**: the failure contract above therefore applies to the
+whole group, and a sink that stops accepting bytes part-way through it poisons the writer
+like any other torn item.
 
 ## File Containers Over a Transport Vtable
 
@@ -342,11 +407,13 @@ through `write` alone and never seeks back.
 | `hurray_file_reader_tensor_count(reader, out_count)` | Number of footer-index entries. Every tensor is individually addressable, composite heads and members included. |
 | `hurray_file_reader_tensor_name(reader, index, out_name, out_len)` | Borrows entry `index`'s name as UTF-8 bytes, **not** NUL-terminated, valid until the reader is destroyed. `HURRAY_ERR_INDEX_OUT_OF_BOUNDS` past the end. |
 | `hurray_file_reader_read_descriptor(reader, name, name_len, out_descriptor)` | Decodes one descriptor and reads no buffer data. The descriptor handle is **owned** by the caller. |
-| `hurray_file_reader_read_tensor(reader, name, name_len, out_tensor)` | Reads a descriptor and every buffer, as an owned `HurrayTensor*`. `HURRAY_ERR_NOT_FOUND` if the name is not in the index. |
+| `hurray_file_reader_read_tensor(reader, name, name_len, out_tensor)` | Reads a descriptor and every buffer, as an owned `HurrayTensor*`. `HURRAY_ERR_NOT_FOUND` if the name is not in the index. A composite head reads back as the buffer-less tensor it is in the file. |
+| `hurray_file_reader_read_composite(reader, name, name_len, out_item)` | Reads the composite headed by `name` — its members and theirs — as an owned `HurrayItem*` ([Composites](#composites)). `HURRAY_ERR_NOT_FOUND` for a name not in the index; `HURRAY_ERR_NOT_COMPOSITE` for a name whose descriptor is not a head, refused at descriptor time before any data region is read. |
 | `hurray_file_reader_kv_count(reader, out_count)` / `hurray_file_reader_kv_entry(reader, index, out_entry)` | The file-level KV section, in file order. An entry's pointers borrow from the reader. |
 | `hurray_file_reader_destroy(&reader)` | Destroys the reader, releases the transport context, writes `NULL`. Tensors already produced are unaffected; borrowed name and KV pointers are not. |
 | `hurray_file_writer_new(transport, options, out_writer)` | `transport->write` MUST be non-null. Writes the 64-byte header during the call. `options` MAY be `NULL` for 4096-byte data alignment and an index in write order. |
 | `hurray_file_writer_write_tensor(writer, name, name_len, descriptor, payloads, count)` | As the stream writer's, plus the name that becomes the footer-index entry: non-empty, at most 65 535 bytes, unique within the file. |
+| `hurray_file_writer_write_composite(writer, nodes, count)` | One composite, as the same preorder node array, written head first then each member in order. Every node's name is REQUIRED: a reader recovers membership from the head's `member_count` and the file order of the entries after it, so each tensor needs an entry to be found by. |
 | `hurray_file_writer_finish(writer, kv, kv_count)` | Writes the KV section, the footer index and the trailer. `kv` MAY be `NULL` with a count of `0`. Until this returns `HURRAY_OK` the bytes are not a container. Calling it twice **after it returned `HURRAY_OK`** MUST fail; a footer that failed before its first byte MAY be retried. |
 | `hurray_file_writer_destroy(&writer)` | Destroys the writer and releases the transport context. Any flush or close belongs to the transport's release callback. |
 
@@ -398,9 +465,18 @@ tag does not select MUST be zero on a read and are ignored on a write. An array'
 MUST be scalars — the format forbids an array of arrays, and a nested one MUST be refused
 with `HURRAY_ERR_INVALID_FILE` rather than flattened.
 
-> **Note (non-normative):** composite tensors are not reachable from this surface yet. A
-> composite head reads back as the buffer-less tensor it is in the file, and writing one is
-> refused.
+### File Composites
+
+The node array of [Composites](#composites), with the names filled in. One difference from
+a stream matters and it is not cosmetic: a file composite is **several items**, one index
+entry per tensor, not one item.
+
+So a group that begins and does not finish leaves a head with fewer members after it than
+it declares, which `file-format.md` § Composite Tensors calls invalid, and no footer can
+rescue it. Implementations MUST therefore poison the writer when a composite group begins
+and does not complete — including when the defect is a **member's** name rather than a
+transport failure, since the head is already on the sink by then. Only a failure on the
+head itself, the first node, leaves the writer usable and the file completable.
 
 ## Panic Safety
 
@@ -443,6 +519,7 @@ typedef int32_t HurrayStatus;
 #define HURRAY_ERR_INVALID_STREAM      -19
 #define HURRAY_ERR_NOT_FOUND           -20
 #define HURRAY_ERR_INVALID_FILE        -21
+#define HURRAY_ERR_NOT_COMPOSITE       -22
 
 #define HURRAY_END_OF_STREAM             1
 ```

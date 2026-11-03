@@ -5,10 +5,13 @@
 //! The footer index is accumulated as tensors go out and emitted last, which is why no
 //! offset is ever patched.
 
-use hurray_io::file::{FileWriteOp, FileWriterCore, FileWriterOptions};
-use hurray_io::stream::WriteStep;
+use hurray_io::file::{
+    flatten_composite, FileCompositeNode, FileWriteOp, FileWriterCore, FileWriterOptions,
+};
+use hurray_io::stream::{Unusable, WriteStep};
 
 use crate::{
+    composite::{file_tree, HurrayCompositeNode, TreeArena},
     descriptor::HurrayDescriptor,
     file::kv::{kv_from_c, HurrayKvEntry},
     panic::{catch, null_check},
@@ -176,8 +179,8 @@ pub unsafe extern "C" fn hurray_file_writer_destroy(
 ///   same name, which the failed attempt did not consume — and the file is still
 ///   completable (ADR-041 § 6b).
 ///
-/// Composite tensors are not yet writable from C; a composite head alone is not a valid
-/// tensor and is refused.
+/// A composite is written with [`hurray_file_writer_write_composite`]; a composite head
+/// offered here is refused, because a head alone is not a valid tensor.
 ///
 /// # Safety
 ///
@@ -235,6 +238,114 @@ pub unsafe extern "C" fn hurray_file_writer_write_tensor(
             Err(e) => return status_from_io_error(&e),
         };
         drain(&mut op, transport)
+    })
+}
+
+/// Writes a composite: its head, then every member in order, each with its own name and
+/// its own footer-index entry.
+///
+/// `nodes` is the composite in preorder: `nodes[0]` is the head, and each node declares
+/// how many of the nodes after it are its direct members. [`crate::composite`] has the
+/// shape and an example layout. Unlike the stream surface, **every node's name is
+/// required** — a reader recovers membership from the head's `member_count` and the file
+/// order of the entries after it, so each tensor needs an entry to be found by.
+///
+/// The whole tree is validated and flattened into write order before a byte goes out, so
+/// an invalid composite never reaches the sink.
+///
+/// Returns:
+///
+/// - [`HURRAY_OK`] — the composite is entirely written and the payload pointers are no
+///   longer held.
+/// - [`HURRAY_ERR_NOT_COMPOSITE`][crate::HURRAY_ERR_NOT_COMPOSITE] — `count` is `0`, or
+///   `nodes[0]` is not a composite head. Use [`hurray_file_writer_write_tensor`] for a
+///   tensor.
+/// - [`HURRAY_ERR_INDEX_OUT_OF_BOUNDS`][crate::HURRAY_ERR_INDEX_OUT_OF_BOUNDS] — the
+///   member counts do not describe the array: a head declares members the array does not
+///   carry, or nodes trail after the head's subtree is complete.
+/// - [`HURRAY_ERR_INVALID_FILE`][crate::HURRAY_ERR_INVALID_FILE] — a name is empty, too
+///   long, or already used in this file. The head's name is checked before any byte goes
+///   out, so the file is still completable; a **member's** name is checked when that
+///   member is submitted, by which point the head is on the sink, so the writer is
+///   poisoned — the group can no longer be completed and no index may be written over it.
+///   Check names before calling if that distinction matters.
+/// - [`HURRAY_ERR_INVALID_LAYOUT`][crate::HURRAY_ERR_INVALID_LAYOUT] — the tree is not a
+///   valid composite: a member count that disagrees with its head, a partition that does
+///   not cover its index space, an overlay whose base is not first.
+/// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes, or a write callback
+///   failed, once part of the group was already out. The writer is poisoned: a head with
+///   fewer members after it than it declares is not a file any reader may open, and a
+///   forward-only writer cannot go back to fix it.
+/// - Whatever status the write callback returned, if it failed **before any byte of the
+///   group reached the sink**. Nothing was emitted, so the call MAY be retried and the
+///   file is still completable (ADR-041 § 6b).
+///
+/// # Safety
+///
+/// - `handle` MUST point to a live [`HurrayFileWriter`].
+/// - If `count` is non-zero, `nodes` MUST point to `count` readable
+///   [`HurrayCompositeNode`] values, each satisfying that type's own pointer contract.
+/// - All of that memory MUST stay valid and unmodified until this call returns.
+#[no_mangle]
+pub unsafe extern "C" fn hurray_file_writer_write_composite(
+    handle: *mut HurrayFileWriter,
+    nodes: *const HurrayCompositeNode,
+    count: usize,
+) -> HurrayStatus {
+    catch(|| {
+        null_check!(handle);
+        if count > 0 {
+            null_check!(nodes);
+        }
+
+        // SAFETY: non-null and caller-guaranteed to describe `count` readable nodes.
+        let nodes = if count == 0 {
+            &[][..]
+        } else {
+            std::slice::from_raw_parts(nodes, count)
+        };
+
+        // Outlives the ops below: the borrowed tree points into it.
+        let mut arena: TreeArena<FileCompositeNode<'static>> = TreeArena::default();
+        // SAFETY: delegated to this function's contract on `nodes`.
+        let (head_name, head, members) = match file_tree(&mut arena, nodes) {
+            Ok(tree) => tree,
+            Err(status) => return status,
+        };
+
+        // SAFETY: handle is non-null and points to a live HurrayFileWriter.
+        let HurrayFileWriter { core, transport } = &mut *handle;
+
+        // Validated and flattened first, so a torn or invalid composite never reaches the
+        // sink. One op per tensor, because a file item is one tensor — the grouping lives
+        // in the index, not in a frame.
+        let order = match flatten_composite(head_name, head, members) {
+            Ok(order) => order,
+            Err(e) => return status_from_io_error(&e),
+        };
+        for (index, node) in order.into_iter().enumerate() {
+            // The op is bound to a local and dropped before the poison below: it borrows
+            // the core mutably for its whole life.
+            let status = match core.tensor(node.name, node.descriptor, node.buffers) {
+                Ok(mut op) => drain(&mut op, transport),
+                Err(e) => status_from_io_error(&e),
+            };
+            if status != HURRAY_OK {
+                // A group that began and did not finish leaves a head with fewer than
+                // `member_count` members after it, which `file-format.md § Composite
+                // Tensors` calls invalid. No `finish` can rescue that, so the writer must
+                // not go on to write a clean index over it. `index > 0` is exactly "an
+                // earlier node completed": the loop returns on the first failure.
+                if index > 0 {
+                    core.poison(Unusable::IncompleteOutput);
+                }
+                // The status says what actually happened — a torn item is already
+                // `SINK_CLOSED` from `drain`, and a refused submission keeps its own
+                // reason. Relabelling the second as the first would hide which it was.
+                return status;
+            }
+        }
+        HURRAY_OK
     })
 }
 

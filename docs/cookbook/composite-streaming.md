@@ -74,6 +74,22 @@ with hurray.StreamWriter(destination) as writer:
     writer.write(weight)     # takes a composite exactly as it takes a tensor
 ```
 
+```c
+/* C has no sum type, so the tree crosses as the format's own shape: the head, then its
+   members, in preorder, each node saying how many of the nodes after it are its own. */
+HurrayCompositeNode nodes[3] = {
+    { .kind = HURRAY_ITEM_COMPOSITE, .descriptor = head, .member_count = 2 },
+    { .kind = HURRAY_ITEM_TENSOR, .descriptor = left,
+      .payloads = &left_slice,  .payload_count = 1 },
+    { .kind = HURRAY_ITEM_TENSOR, .descriptor = right,
+      .payloads = &right_slice, .payload_count = 1 },
+};
+
+/* Validated whole before a byte goes out: a torn or invalid composite never reaches the
+   wire. Names are ignored here — the stream format carries none. */
+HurrayStatus s = hurray_writer_write_composite(writer, nodes, 3);
+```
+
 </div>
 
 ## Reading a composite
@@ -116,6 +132,37 @@ for item in hurray.StreamReader(source):
         print(item.shape)
 ```
 
+```c
+HurrayItem *item = NULL;
+HurrayStatus s = hurray_reader_next_item(reader, &item);
+if (s == HURRAY_END_OF_STREAM) return 0;   /* positive: not an error */
+if (s < 0) return -1;
+
+/* One item, however many tensors it took on the wire. Walking it is a loop with a stack
+   of outstanding member counts — `remaining` below is the whole algorithm. */
+uint64_t count = 0;
+hurray_item_node_count(item, &count);
+
+uint32_t remaining[64];
+size_t depth = 0;
+for (uint64_t i = 0; i < count; i++) {
+    HurrayItemNode node = {0};
+    hurray_item_node(item, i, &node);
+
+    if (depth > 0) { remaining[depth - 1]--; }
+    size_t level = depth;
+    while (depth > 0 && remaining[depth - 1] == 0) { depth--; }
+    if (node.member_count > 0) { remaining[depth++] = node.member_count; }
+
+    /* node.tensor is borrowed: its descriptor and buffers are the item's, and a head's
+       buffer list is empty. node.name is NULL here — a stream carries no names. */
+    printf("%*s%s\n", (int)(2 * level), "",
+           node.kind == HURRAY_ITEM_COMPOSITE ? "composite head" : "tensor");
+}
+
+hurray_item_destroy(&item);   /* one call for the whole subtree */
+```
+
 </div>
 
 A stream carrying one composite of two members yields **one** item, not three. The Python
@@ -134,12 +181,14 @@ an untrusted stream cannot exhaust the stack.
 
 | You want… | Use |
 |-----------|-----|
-| Composites grouped and validated for you | `next_item` → `StreamItem` |
-| Every descriptor flat, composition-agnostic | `next_tensor` → `StreamTensor` |
+| Composites grouped and validated for you | `next_item` → `StreamItem` (C: `hurray_reader_next_item` → `HurrayItem`) |
+| Every descriptor flat, composition-agnostic | `next_tensor` → `StreamTensor` (C: `hurray_reader_next_tensor` → `HurrayTensor`) |
 
 `next_tensor` is unchanged: it still yields the head (with no buffers) and then each member
 as individual tensors, leaving composition to the caller. `next_item` is the
-composite-aware layer on top.
+composite-aware layer on top. Both views come from one core and the assembly happens above
+it, so mixing them on one reader is allowed but rarely meant: a flat read taken while a
+head is open consumes the member that head was waiting for, and the group stays open.
 
 ## Errors
 
@@ -154,7 +203,10 @@ composite-aware layer on top.
 ```text
 cargo run --example composite_stream --features tokio -p hurray-io
 python hurray-python/examples/composites.py
+cargo run --example composite_vtable -p hurray-ffi
 ```
 
-See `hurray-io/examples/composite_stream.rs` and
-`hurray-python/examples/composites.py` for the full programs.
+See `hurray-io/examples/composite_stream.rs`, `hurray-python/examples/composites.py`, and
+`hurray-ffi/examples/composite_vtable.rs` for the full programs. The last one drives the C
+entry points, over a transport vtable and with no runtime linked
+([Streaming from C](streaming-from-c.md)).

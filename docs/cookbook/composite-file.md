@@ -60,6 +60,26 @@ import hurray
 hurray.save("model.hrry", {"weight": weight, "bias": bias})
 ```
 
+```c
+/* The same preorder array the stream surface takes, with the names filled in: a file
+   gives every tensor its own index entry, so each node needs one. */
+HurrayCompositeNode nodes[3] = {
+    { .kind = HURRAY_ITEM_COMPOSITE, .name = "weight", .name_len = 6,
+      .descriptor = head, .member_count = 2 },
+    { .kind = HURRAY_ITEM_TENSOR, .name = "weight.left", .name_len = 11,
+      .descriptor = left,  .payloads = &left_slice,  .payload_count = 1 },
+    { .kind = HURRAY_ITEM_TENSOR, .name = "weight.right", .name_len = 12,
+      .descriptor = right, .payloads = &right_slice, .payload_count = 1 },
+};
+
+HurrayStatus s = hurray_file_writer_write_composite(writer, nodes, 3);
+/* A group spans several index entries, so a failure part-way through leaves a head with
+   fewer members after it than it declares — not a file any reader may open. The writer is
+   poisoned rather than left to write a clean index over it. */
+if (s < 0) return -1;
+hurray_file_writer_finish(writer, NULL, 0);
+```
+
 </div>
 
 Every tensor in a file gets an index entry, head and member alike, so a composite's
@@ -108,7 +128,36 @@ loaded["weight"].members    # its tiles, in write order
 tile = hurray.load("model.hrry", names=["weight.0"])["weight.0"]
 ```
 
+```c
+HurrayItem *item = NULL;
+HurrayStatus s = hurray_file_reader_read_composite(reader, "weight", 6, &item);
+if (s == HURRAY_ERR_NOT_COMPOSITE) { /* the name is in the index, but it is a tensor */ }
+if (s == HURRAY_ERR_NOT_FOUND)     { /* no such name */ }
+if (s < 0) return -1;
+
+uint64_t count = 0;
+hurray_item_node_count(item, &count);
+for (uint64_t i = 0; i < count; i++) {
+    HurrayItemNode node = {0};
+    hurray_item_node(item, i, &node);
+    /* Named, unlike on a stream: every tensor of the group has its own index entry.
+       The name is UTF-8 and NOT NUL-terminated, so name_len is not optional. */
+    printf("%.*s: %u member(s)\n", (int)node.name_len, (const char *)node.name,
+           node.member_count);
+}
+
+hurray_item_destroy(&item);   /* one call for the whole subtree */
+
+/* Or just one member, by name — a composite's members stay individually addressable. */
+HurrayTensor *left = NULL;
+hurray_file_reader_read_tensor(reader, "weight.left", 11, &left);
+```
+
 </div>
+
+The C walk is the same loop the [stream page](composite-streaming.md) shows: nodes in
+preorder, nesting in the `member_count` column. One shape for both surfaces, because a
+composite read out of a file is the same tree as one read off a wire.
 
 ## Recovery is independent of index sort order
 
@@ -125,7 +174,9 @@ a maliciously deep composite.
 
 ## Errors
 
-- `Error::NotAComposite` — the named tensor exists but its head is not a composite.
+- `Error::NotAComposite` — the named tensor exists but its head is not a composite. In C
+  this is `HURRAY_ERR_NOT_COMPOSITE`, its own status for the reason `HURRAY_ERR_NOT_FOUND`
+  has one: it is a question the caller asked wrongly, not a defect in the file.
 - `Error::TornComposite` — fewer tensors follow the head than its `member_count` declares.
 - `Error::CompositeNestingTooDeep` — nesting exceeded the configured maximum.
 - `Error::Core` — composite validation failed (member-count mismatch, partition coverage,
@@ -143,7 +194,13 @@ cargo run --example composite_file --features tokio -p hurray-io
 python hurray-python/examples/composites.py
 ```
 
+```text
+cargo run --example composite_vtable -p hurray-ffi
+```
+
 </div>
 
-See `hurray-io/examples/composite_file.rs` and `hurray-python/examples/composites.py` for
-the full programs.
+See `hurray-io/examples/composite_file.rs`, `hurray-python/examples/composites.py`, and
+`hurray-ffi/examples/composite_vtable.rs` for the full programs. The last one writes the
+same composite to a stream and to a file through the C entry points, which is the shortest
+way to see what the two surfaces share and where they differ.

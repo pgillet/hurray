@@ -15,6 +15,39 @@ workspace share one version and are released together.
 
 ### Added
 
+- **`hurray-ffi` — composites across the C stream and file surfaces**
+  ([#258](https://github.com/pgillet/hurray/issues/258), ADR-041 § 10, closing the last
+  open question that ADR carried). C has no sum type, and a composite is one: a tensor, or
+  a head whose members are composites in turn. It now crosses the boundary as the shape the
+  **format itself** carries — a head followed by its members, in preorder, with every node
+  declaring how many of the nodes after it are its direct members. Nesting is that one
+  column, and walking a composite from C is a loop with a stack of counts.
+
+  `hurray_reader_next_item` is the assembled view of a stream, beside the flat
+  `hurray_reader_next_tensor` that is unchanged — one core, two views.
+  `hurray_file_reader_read_composite` reads a group by its head's name.
+  `hurray_writer_write_composite` and `hurray_file_writer_write_composite` take the node
+  array; the whole tree is validated before a byte reaches the sink, and the payload slices
+  stay borrowed from the caller throughout. `HurrayItem` owns a whole subtree and
+  `hurray_item_destroy` releases it in one call.
+
+  A preorder array rather than a tree of pointers, and the reason is not ergonomics: a
+  pointer tree crossing an ABI can be cyclic, and a walker on either side loops forever on
+  one, while an array with member counts cannot describe a cycle. The `kind` tag is not
+  redundant with the count, because the composite layout permits a head declaring zero
+  members. Flat tagged structs rather than unions, as `HurrayKvValue` already is.
+
+  With this, every row of the streaming and file table is ✅ in all three columns.
+
+- **`hurray-ffi` — `HURRAY_ERR_NOT_COMPOSITE`**, for a composite read of a name that is a
+  plain tensor, and for a composite write headed by one. Its own code for the reason
+  `HURRAY_ERR_NOT_FOUND` has one: it is a question the caller asked wrongly, and nothing
+  about the stream or the file is wrong.
+
+- **`hurray-ffi` — `HurrayReaderOptions::max_composite_depth`**, the nesting limit a reader
+  enforces on an untrusted stream. Pass `0` for the default of 64. It bounds the assembler
+  rather than the byte machine, so `hurray_reader_next_tensor` is unaffected by it.
+
 - **`hurray-python` — an `asyncio` surface: `hurray.aio.StreamReader` and
   `hurray.aio.StreamWriter`** ([#252](https://github.com/pgillet/hurray/issues/252),
   ADR-041 § 9, ADR-042). `async for item in hurray.aio.StreamReader(sock)` and
@@ -149,6 +182,11 @@ workspace share one version and are released together.
 
 ### Changed
 
+- **C ABI 8 → 9.** `HurrayReaderOptions` gained `max_composite_depth`, so a v8 consumer's
+  struct is one field short of what the library reads. The composite entry points,
+  `HurrayItem`, `HurrayItemNode`, `HurrayCompositeNode` and `HURRAY_ERR_NOT_COMPOSITE` are
+  additive; the struct is not.
+
 - **`hurray-python` drives the sans-io cores directly; no async runtime is linked into
   the extension** (ADR-041 § 9). `hurray.StreamReader`, `hurray.StreamWriter`,
   `hurray.load`, `hurray.load_kv` and `hurray.save` used to drive `hurray-io`'s Tokio
@@ -224,6 +262,14 @@ workspace share one version and are released together.
   header evidence specific to each one.
 
 ### Fixed
+
+- **`hurray-ffi` no longer reports a caller's invalid composite as an internal error.**
+  Every composite-validation variant of `hurray_core::Error` — a member count that
+  disagrees with its head, a partition that does not cover its index space, an overlay
+  whose base is not first, a head carrying buffers — mapped to `HURRAY_ERR_INTERNAL`, which
+  blames the library for the caller's tree. They are layout-structural errors and now
+  report `HURRAY_ERR_INVALID_LAYOUT`. No C entry point could run the composite validator
+  before composite writes existed, which is why nothing had caught it.
 
 - **`hurray-python` no longer copies a payload out of the core's destination, and no
   longer under-aligns it** ([#253](https://github.com/pgillet/hurray/issues/253)). Every

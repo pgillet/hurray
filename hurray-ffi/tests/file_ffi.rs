@@ -13,7 +13,7 @@ use std::ffi::c_void;
 
 use hurray_core::{
     buffer_size_bytes,
-    layout::{CooLayout, LayoutDescriptor},
+    layout::{CompositeLayout, CompositionRule, CooLayout, LayoutDescriptor},
     BufferHandle, DeviceTag, ElementType, Shape, SyncMode, TensorDescriptor, MIN_BUFFER_ALIGNMENT,
 };
 use hurray_ffi::{
@@ -21,17 +21,21 @@ use hurray_ffi::{
     buffer_list::{hurray_buffer_list_get, hurray_buffer_list_len},
     descriptor::{hurray_descriptor_destroy, hurray_descriptor_element_type_tag},
     hurray_descriptor_decode, hurray_file_reader_destroy, hurray_file_reader_kv_count,
-    hurray_file_reader_kv_entry, hurray_file_reader_new, hurray_file_reader_read_descriptor,
-    hurray_file_reader_read_tensor, hurray_file_reader_tensor_count,
-    hurray_file_reader_tensor_name, hurray_file_writer_destroy, hurray_file_writer_finish,
-    hurray_file_writer_new, hurray_file_writer_write_tensor, hurray_tensor_buffers,
-    hurray_tensor_destroy, HurrayBuffer, HurrayBufferList, HurrayDescriptor, HurrayFileReader,
-    HurrayFileWriter, HurrayFileWriterOptions, HurrayIoSlice, HurrayKvEntry, HurrayKvValue,
-    HurrayStatus, HurrayTensor, HurrayTransport, HURRAY_ERR_INDEX_OUT_OF_BOUNDS,
-    HURRAY_ERR_INVALID_FILE, HURRAY_ERR_INVALID_MAGIC, HURRAY_ERR_NOT_FOUND,
+    hurray_file_reader_kv_entry, hurray_file_reader_new, hurray_file_reader_read_composite,
+    hurray_file_reader_read_descriptor, hurray_file_reader_read_tensor,
+    hurray_file_reader_tensor_count, hurray_file_reader_tensor_name, hurray_file_writer_destroy,
+    hurray_file_writer_finish, hurray_file_writer_new, hurray_file_writer_write_composite,
+    hurray_file_writer_write_tensor, hurray_item_destroy, hurray_item_kind, hurray_item_node,
+    hurray_item_node_count, hurray_tensor_buffers, hurray_tensor_descriptor, hurray_tensor_destroy,
+    HurrayBuffer, HurrayBufferList, HurrayCompositeNode, HurrayDescriptor, HurrayFileReader,
+    HurrayFileWriter, HurrayFileWriterOptions, HurrayIoSlice, HurrayItem, HurrayItemNode,
+    HurrayKvEntry, HurrayKvValue, HurrayStatus, HurrayTensor, HurrayTransport,
+    HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INVALID_FILE, HURRAY_ERR_INVALID_LAYOUT,
+    HURRAY_ERR_INVALID_MAGIC, HURRAY_ERR_NOT_COMPOSITE, HURRAY_ERR_NOT_FOUND,
     HURRAY_ERR_NULL_POINTER, HURRAY_ERR_SINK_CLOSED, HURRAY_ERR_TRANSPORT,
-    HURRAY_ERR_UNEXPECTED_EOF, HURRAY_KV_ARRAY, HURRAY_KV_BOOL, HURRAY_KV_BYTES, HURRAY_KV_FLOAT64,
-    HURRAY_KV_INT64, HURRAY_KV_STRING, HURRAY_KV_UINT64, HURRAY_OK,
+    HURRAY_ERR_UNEXPECTED_EOF, HURRAY_ITEM_COMPOSITE, HURRAY_ITEM_TENSOR, HURRAY_KV_ARRAY,
+    HURRAY_KV_BOOL, HURRAY_KV_BYTES, HURRAY_KV_FLOAT64, HURRAY_KV_INT64, HURRAY_KV_STRING,
+    HURRAY_KV_UINT64, HURRAY_OK,
 };
 
 // ── An in-memory file transport ───────────────────────────────────────────────
@@ -1249,5 +1253,449 @@ fn a_file_footer_that_fails_before_its_first_byte_may_be_retried() {
         assert_eq!(count, 1);
         let mut r = reader;
         assert_eq!(hurray_file_reader_destroy(&mut r), HURRAY_OK);
+    }
+}
+
+// ── Composites ────────────────────────────────────────────────────────────────
+
+/// A group head of `member_count` members. Group is the permissive rule: members may
+/// differ arbitrarily, which keeps these tests about the C surface rather than about
+/// partition coverage.
+fn group_head(member_count: u32) -> TensorDescriptor {
+    TensorDescriptor::new(
+        1,
+        0,
+        ElementType::Float32,
+        Shape::new(vec![1u64]).unwrap(),
+        0,
+        LayoutDescriptor::Composite(
+            CompositeLayout::new(CompositionRule::Group, member_count).unwrap(),
+        ),
+        vec![],
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap()
+}
+
+fn slice_of(payload: &[u8]) -> HurrayIoSlice {
+    HurrayIoSlice {
+        ptr: payload.as_ptr(),
+        len: payload.len(),
+    }
+}
+
+/// One composite node, named: every tensor in a file carries its own index entry.
+fn node(
+    kind: u8,
+    name: &str,
+    descriptor: *mut HurrayDescriptor,
+    payloads: &[HurrayIoSlice],
+    member_count: u32,
+) -> HurrayCompositeNode {
+    HurrayCompositeNode {
+        kind,
+        name: name.as_ptr(),
+        name_len: name.len(),
+        descriptor,
+        payloads: payloads.as_ptr(),
+        payload_count: payloads.len(),
+        member_count,
+    }
+}
+
+/// Every node of an item, in preorder.
+unsafe fn item_nodes(item: *mut HurrayItem) -> Vec<HurrayItemNode> {
+    let mut count: u64 = 0;
+    assert_eq!(hurray_item_node_count(item, &mut count), HURRAY_OK);
+    (0..count)
+        .map(|index| {
+            let mut out = HurrayItemNode::default();
+            assert_eq!(hurray_item_node(item, index, &mut out), HURRAY_OK);
+            out
+        })
+        .collect()
+}
+
+unsafe fn name_of(n: &HurrayItemNode) -> &str {
+    assert!(!n.name.is_null(), "a file names every tensor");
+    std::str::from_utf8(std::slice::from_raw_parts(n.name, n.name_len)).unwrap()
+}
+
+unsafe fn read_composite(reader: *mut HurrayFileReader, name: &str) -> *mut HurrayItem {
+    let mut item: *mut HurrayItem = std::ptr::null_mut();
+    let status = hurray_file_reader_read_composite(reader, name.as_ptr(), name.len(), &mut item);
+    assert_eq!(status, HURRAY_OK, "reading composite {name}");
+    item
+}
+
+#[test]
+fn a_nested_composite_written_through_c_reads_back_as_one_item() {
+    unsafe {
+        // group { inner { m0 }, m1 } — preorder: head, inner, m0, m1.
+        let head = group_head(2);
+        let inner = group_head(1);
+        let m0 = row_major();
+        let m1 = plain_2x2();
+        let d0 = payload(256, 0x11);
+        let d1 = payload(16, 0x22);
+
+        let (hh, hi, h0, h1) = (
+            descriptor_handle(&head),
+            descriptor_handle(&inner),
+            descriptor_handle(&m0),
+            descriptor_handle(&m1),
+        );
+        let p0 = [slice_of(&d0)];
+        let p1 = [slice_of(&d1)];
+        let nodes = [
+            node(HURRAY_ITEM_COMPOSITE, "group", hh, &[], 2),
+            node(HURRAY_ITEM_COMPOSITE, "group.0", hi, &[], 1),
+            node(HURRAY_ITEM_TENSOR, "group.0.0", h0, &p0, 0),
+            node(HURRAY_ITEM_TENSOR, "group.1", h1, &p1, 0),
+        ];
+
+        let mut sink = MemFile::writing();
+        let mut writer = writer_over(&mut sink, None);
+        assert_eq!(
+            hurray_file_writer_write_composite(writer, nodes.as_ptr(), nodes.len()),
+            HURRAY_OK
+        );
+        assert_eq!(
+            hurray_file_writer_finish(writer, std::ptr::null(), 0),
+            HURRAY_OK
+        );
+        assert_eq!(hurray_file_writer_destroy(&mut writer), HURRAY_OK);
+
+        let mut file = MemFile::reading(std::mem::take(&mut sink.output));
+        let mut reader = reader_over(&mut file);
+
+        // Every tensor is in the index on its own, heads included.
+        assert_eq!(
+            tensor_names(reader),
+            vec!["group", "group.0", "group.0.0", "group.1"]
+        );
+
+        let mut item = read_composite(reader, "group");
+        let mut kind: u8 = 0;
+        assert_eq!(hurray_item_kind(item, &mut kind), HURRAY_OK);
+        assert_eq!(kind, HURRAY_ITEM_COMPOSITE);
+
+        let read = item_nodes(item);
+        assert_eq!(
+            read.iter().map(|n| name_of(n)).collect::<Vec<_>>(),
+            vec!["group", "group.0", "group.0.0", "group.1"]
+        );
+        assert_eq!(
+            read.iter().map(|n| n.kind).collect::<Vec<_>>(),
+            vec![
+                HURRAY_ITEM_COMPOSITE,
+                HURRAY_ITEM_COMPOSITE,
+                HURRAY_ITEM_TENSOR,
+                HURRAY_ITEM_TENSOR
+            ]
+        );
+        assert_eq!(
+            read.iter().map(|n| n.member_count).collect::<Vec<_>>(),
+            vec![2, 1, 0, 0]
+        );
+        // The heads own no data; the members own theirs, at their declared alignment.
+        assert_eq!(buffer_count(read[0].tensor), 0);
+        assert_eq!(buffer_count(read[1].tensor), 0);
+        assert_eq!(buffer_of(read[2].tensor, 0).0, &d0[..]);
+        assert_eq!(buffer_of(read[3].tensor, 0).0, &d1[..]);
+        for n in &read[2..] {
+            let (bytes, declared) = buffer_of(n.tensor, 0);
+            assert_eq!(bytes.as_ptr() as usize % declared as usize, 0);
+        }
+
+        assert_eq!(hurray_item_destroy(&mut item), HURRAY_OK);
+        assert_eq!(hurray_file_reader_destroy(&mut reader), HURRAY_OK);
+        for handle in [hh, hi, h0, h1] {
+            hurray_descriptor_destroy(handle);
+        }
+    }
+}
+
+#[test]
+fn the_frozen_nested_composite_reads_back_as_one_item() {
+    unsafe {
+        let mut file = MemFile::reading(fixture("nested_composite.hrry"));
+        file.chunk = 7;
+        let mut reader = reader_over(&mut file);
+
+        let mut item = read_composite(reader, "group");
+        let nodes = item_nodes(item);
+        // A group of two whose first member is a partition of two.
+        assert_eq!(
+            nodes.iter().map(|n| name_of(n)).collect::<Vec<_>>(),
+            vec!["group", "part", "part.0", "part.1", "group.1"]
+        );
+        assert_eq!(
+            nodes.iter().map(|n| n.kind).collect::<Vec<_>>(),
+            vec![
+                HURRAY_ITEM_COMPOSITE,
+                HURRAY_ITEM_COMPOSITE,
+                HURRAY_ITEM_TENSOR,
+                HURRAY_ITEM_TENSOR,
+                HURRAY_ITEM_TENSOR
+            ]
+        );
+        assert_eq!(
+            nodes.iter().map(|n| n.member_count).collect::<Vec<_>>(),
+            vec![2, 2, 0, 0, 0]
+        );
+        for n in &nodes {
+            let count = buffer_count(n.tensor);
+            assert_eq!(count == 0, n.kind == HURRAY_ITEM_COMPOSITE);
+            for index in 0..count {
+                let (bytes, declared) = buffer_of(n.tensor, index);
+                assert_eq!(bytes.as_ptr() as usize % declared as usize, 0);
+            }
+        }
+
+        assert_eq!(hurray_item_destroy(&mut item), HURRAY_OK);
+        assert_eq!(hurray_file_reader_destroy(&mut reader), HURRAY_OK);
+    }
+}
+
+#[test]
+fn a_composite_written_by_0_1_0_still_reads_through_c() {
+    // The pre-#243 bytes: the 0.1.0 writer padded a composite head's descriptor to
+    // `data_buffer_alignment`, which the spec forbids. A file written then must still read
+    // now, and this corpus is the only place that can show it.
+    unsafe {
+        let mut file = MemFile::reading(fixture("nested_composite_padded_head.hrry"));
+        let mut reader = reader_over(&mut file);
+        let mut item = read_composite(reader, "group");
+        assert_eq!(item_nodes(item).len(), 5);
+        assert_eq!(hurray_item_destroy(&mut item), HURRAY_OK);
+        assert_eq!(hurray_file_reader_destroy(&mut reader), HURRAY_OK);
+    }
+}
+
+#[test]
+fn a_frozen_composite_read_through_c_writes_back_through_c() {
+    // The byte-compatibility check for the composite write path, and the relay a C
+    // consumer actually performs: the item read from the frozen file goes straight back
+    // out as a node array, with no descriptor and no name re-stated in this test.
+    let original = fixture("nested_composite.hrry");
+    unsafe {
+        let mut file = MemFile::reading(original.clone());
+        let mut reader = reader_over(&mut file);
+        let mut item = read_composite(reader, "group");
+        let read = item_nodes(item);
+
+        // One slice array per node, kept alive for the write call.
+        let payloads: Vec<Vec<HurrayIoSlice>> = read
+            .iter()
+            .map(|n| {
+                (0..buffer_count(n.tensor))
+                    .map(|i| slice_of(buffer_of(n.tensor, i).0))
+                    .collect()
+            })
+            .collect();
+        let nodes: Vec<HurrayCompositeNode> = read
+            .iter()
+            .zip(payloads.iter())
+            .map(|(n, slices)| {
+                let mut descriptor: *mut HurrayDescriptor = std::ptr::null_mut();
+                assert_eq!(
+                    hurray_tensor_descriptor(n.tensor, &mut descriptor),
+                    HURRAY_OK
+                );
+                node(n.kind, name_of(n), descriptor, slices, n.member_count)
+            })
+            .collect();
+
+        let mut sink = MemFile::writing();
+        let mut writer = writer_over(&mut sink, None);
+        assert_eq!(
+            hurray_file_writer_write_composite(writer, nodes.as_ptr(), nodes.len()),
+            HURRAY_OK
+        );
+        assert_eq!(
+            hurray_file_writer_finish(writer, std::ptr::null(), 0),
+            HURRAY_OK
+        );
+        assert_eq!(hurray_file_writer_destroy(&mut writer), HURRAY_OK);
+
+        assert_eq!(sink.output, original, "the composite file bytes moved");
+
+        assert_eq!(hurray_item_destroy(&mut item), HURRAY_OK);
+        assert_eq!(hurray_file_reader_destroy(&mut reader), HURRAY_OK);
+    }
+}
+
+#[test]
+fn a_composite_read_of_a_plain_tensor_is_a_question_not_a_defect() {
+    unsafe {
+        let mut file = MemFile::reading(fixture("row_major.hrry"));
+        let mut reader = reader_over(&mut file);
+
+        let mut item: *mut HurrayItem = std::ptr::null_mut();
+        let name = "embeddings";
+        assert_eq!(
+            hurray_file_reader_read_composite(reader, name.as_ptr(), name.len(), &mut item),
+            HURRAY_ERR_NOT_COMPOSITE
+        );
+        assert!(item.is_null());
+
+        let missing = "nope";
+        assert_eq!(
+            hurray_file_reader_read_composite(reader, missing.as_ptr(), missing.len(), &mut item),
+            HURRAY_ERR_NOT_FOUND
+        );
+
+        // Neither failure touched the reader: every request is an absolute range, so a
+        // failed job leaves nothing to recover and the next read works.
+        let mut tensor = read_tensor(reader, "embeddings");
+        assert_eq!(hurray_tensor_destroy(&mut tensor), HURRAY_OK);
+        assert_eq!(hurray_file_reader_destroy(&mut reader), HURRAY_OK);
+    }
+}
+
+#[test]
+fn a_composite_write_needs_a_head_and_a_well_formed_array() {
+    unsafe {
+        let head = group_head(1);
+        let member = row_major();
+        let hh = descriptor_handle(&head);
+        let hm = descriptor_handle(&member);
+        let data = payload(256, 0x33);
+        let p = [slice_of(&data)];
+
+        let mut sink = MemFile::writing();
+        let mut writer = writer_over(&mut sink, None);
+        let header = sink.output.len();
+
+        // No nodes.
+        assert_eq!(
+            hurray_file_writer_write_composite(writer, std::ptr::null(), 0),
+            HURRAY_ERR_NOT_COMPOSITE
+        );
+        // A plain tensor as the root.
+        let flat = [node(HURRAY_ITEM_TENSOR, "w", hm, &p, 0)];
+        assert_eq!(
+            hurray_file_writer_write_composite(writer, flat.as_ptr(), flat.len()),
+            HURRAY_ERR_NOT_COMPOSITE
+        );
+        // A head declaring a member the array does not carry.
+        let short = [node(HURRAY_ITEM_COMPOSITE, "g", hh, &[], 1)];
+        assert_eq!(
+            hurray_file_writer_write_composite(writer, short.as_ptr(), short.len()),
+            HURRAY_ERR_INDEX_OUT_OF_BOUNDS
+        );
+        // A tree whose head disagrees with its members.
+        let head_2 = group_head(2);
+        let hh2 = descriptor_handle(&head_2);
+        let mismatched = [
+            node(HURRAY_ITEM_COMPOSITE, "g", hh2, &[], 1),
+            node(HURRAY_ITEM_TENSOR, "g.0", hm, &p, 0),
+        ];
+        assert_eq!(
+            hurray_file_writer_write_composite(writer, mismatched.as_ptr(), mismatched.len()),
+            HURRAY_ERR_INVALID_LAYOUT
+        );
+
+        // Not one of them put a byte past the header, and the file is still completable.
+        assert_eq!(sink.output.len(), header);
+        let good = [
+            node(HURRAY_ITEM_COMPOSITE, "g", hh, &[], 1),
+            node(HURRAY_ITEM_TENSOR, "g.0", hm, &p, 0),
+        ];
+        assert_eq!(
+            hurray_file_writer_write_composite(writer, good.as_ptr(), good.len()),
+            HURRAY_OK
+        );
+        assert_eq!(
+            hurray_file_writer_finish(writer, std::ptr::null(), 0),
+            HURRAY_OK
+        );
+        assert_eq!(hurray_file_writer_destroy(&mut writer), HURRAY_OK);
+
+        for handle in [hh, hh2, hm] {
+            hurray_descriptor_destroy(handle);
+        }
+    }
+}
+
+#[test]
+fn a_group_that_stops_midway_poisons_the_writer() {
+    // A head with fewer members after it than it declares is not a file any reader may
+    // open, and a forward-only writer cannot go back to fix it. So the footer must not be
+    // written over it — which is why the driver poisons the core itself (ADR-041 § 6b,
+    // and the reason `FileWriterCore::poison` is public).
+    unsafe {
+        let head = group_head(2);
+        let member = row_major();
+        let hh = descriptor_handle(&head);
+        let hm = descriptor_handle(&member);
+        let data = payload(256, 0x44);
+        let p = [slice_of(&data)];
+        let nodes = [
+            node(HURRAY_ITEM_COMPOSITE, "g", hh, &[], 2),
+            node(HURRAY_ITEM_TENSOR, "g.0", hm, &p, 0),
+            node(HURRAY_ITEM_TENSOR, "g.1", hm, &p, 0),
+        ];
+
+        let mut sink = MemFile::writing();
+        let mut writer = writer_over(&mut sink, None);
+        // Stop accepting bytes once the head and part of the first member are out.
+        sink.close_write_at = Some(sink.output.len() + 128);
+
+        assert_eq!(
+            hurray_file_writer_write_composite(writer, nodes.as_ptr(), nodes.len()),
+            HURRAY_ERR_SINK_CLOSED
+        );
+        // The footer is refused too: there is no valid index over a half-written group.
+        assert_ne!(
+            hurray_file_writer_finish(writer, std::ptr::null(), 0),
+            HURRAY_OK
+        );
+        assert_eq!(hurray_file_writer_destroy(&mut writer), HURRAY_OK);
+
+        for handle in [hh, hm] {
+            hurray_descriptor_destroy(handle);
+        }
+    }
+}
+
+#[test]
+fn a_member_name_defect_after_the_head_poisons_the_writer() {
+    // The head's name is checked before a byte goes out; a member's is checked when that
+    // member is submitted, by which point the head is already on the sink. The group can
+    // no longer be completed, so the writer is retired rather than left to write a clean
+    // index over a head with no members.
+    unsafe {
+        let head = group_head(1);
+        let member = row_major();
+        let hh = descriptor_handle(&head);
+        let hm = descriptor_handle(&member);
+        let data = payload(256, 0x55);
+        let p = [slice_of(&data)];
+        let nodes = [
+            node(HURRAY_ITEM_COMPOSITE, "g", hh, &[], 1),
+            // No name: nothing in the index could ever find this tensor.
+            node(HURRAY_ITEM_TENSOR, "", hm, &p, 0),
+        ];
+
+        let mut sink = MemFile::writing();
+        let mut writer = writer_over(&mut sink, None);
+        assert_eq!(
+            hurray_file_writer_write_composite(writer, nodes.as_ptr(), nodes.len()),
+            HURRAY_ERR_INVALID_FILE
+        );
+        assert_ne!(
+            hurray_file_writer_finish(writer, std::ptr::null(), 0),
+            HURRAY_OK
+        );
+        assert_eq!(hurray_file_writer_destroy(&mut writer), HURRAY_OK);
+
+        for handle in [hh, hm] {
+            hurray_descriptor_destroy(handle);
+        }
     }
 }

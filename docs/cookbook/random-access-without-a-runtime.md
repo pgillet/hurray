@@ -346,7 +346,10 @@ read from the head's `member_count` plus file-offset adjacency. `flatten_composi
 validates the whole tree — member counts, partition exact-cover, overlay ordering, at every
 level — and returns the order its tensors go on disk, so a torn group never reaches the
 sink. The nesting is walked with an explicit stack rather than by recursing, which is what
-lets a state machine do it at all (§ 10):
+lets a state machine do it at all (§ 10). The C surface over this is
+[Composite Tensors in a File](composite-file.md) —
+`hurray_file_writer_write_composite` and `hurray_file_reader_read_composite`, over the same
+vtable:
 
 ```rust,no_run
 use hurray_io::file::{flatten_composite, FileCompositeNode, FileWriterCore};

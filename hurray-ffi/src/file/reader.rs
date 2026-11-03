@@ -6,11 +6,12 @@
 //! needs a positional read rather than a cursor — and why a failed call here is simply
 //! retryable.
 
-use hurray_io::file::{FileReaderCore, FileStep};
+use hurray_io::file::{FileItem, FileReaderCore, FileStep};
 
 use crate::{
     descriptor::HurrayDescriptor,
     file::kv::{HurrayKvEntry, KvTable},
+    item::{file_item_handle, HurrayItem},
     panic::{catch, null_check},
     status::{
         status_from_io_error, HurrayStatus, HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INTERNAL,
@@ -256,7 +257,7 @@ pub unsafe extern "C" fn hurray_file_reader_read_descriptor(
 ///
 /// Returns [`HURRAY_ERR_NOT_FOUND`][crate::HURRAY_ERR_NOT_FOUND] for a name that is not
 /// in the index. A composite head reads back as the buffer-less tensor it is in the file;
-/// walking its members from C is not supported yet.
+/// [`hurray_file_reader_read_composite`] reads it with its members instead.
 ///
 /// # Safety
 ///
@@ -293,6 +294,75 @@ pub unsafe extern "C" fn hurray_file_reader_read_tensor(
                     HURRAY_OK
                 }
                 // step() said Tensor; the core cannot then have none.
+                None => HURRAY_ERR_INTERNAL,
+            },
+            Ok(_) => HURRAY_ERR_INTERNAL,
+            Err(status) => status,
+        }
+    })
+}
+
+/// Reads the composite headed by `name`: its head, its members, and their members.
+///
+/// Membership is recovered from the head's declared `member_count` and the file order of
+/// the index entries that follow it, then validated — member count, partition exact-cover,
+/// overlay base-first ordering, at every level of nesting.
+///
+/// `*out_item` is **owned** by the caller and released with
+/// [`hurray_item_destroy`][crate::hurray_item_destroy], which frees every tensor in the
+/// subtree. Its nodes are in preorder, with each node declaring how many of the nodes
+/// after it are its members — see [`crate::item`] for the walk. Every member carries its
+/// own name, because every tensor in a file has its own index entry.
+///
+/// Returns:
+///
+/// - [`HURRAY_OK`] — `*out_item` is a new [`HurrayItem`].
+/// - [`HURRAY_ERR_NOT_FOUND`][crate::HURRAY_ERR_NOT_FOUND] — no such name in the index.
+/// - [`HURRAY_ERR_NOT_COMPOSITE`][crate::HURRAY_ERR_NOT_COMPOSITE] — the name is in the
+///   index but its descriptor is not a composite head. Refused at descriptor time, before
+///   a byte of any data region is read.
+/// - [`HURRAY_ERR_INVALID_FILE`][crate::HURRAY_ERR_INVALID_FILE] — the group is torn: the
+///   head declares more members than follow it, or a level fails validation.
+/// - [`HURRAY_ERR_LIMIT_EXCEEDED`][crate::HURRAY_ERR_LIMIT_EXCEEDED] — nesting exceeded
+///   the core's maximum composite depth.
+/// - Whatever status the `read_at` callback returned, if it failed. Every request was an
+///   absolute range, so the reader stays usable and the call MAY be retried.
+///
+/// # Safety
+///
+/// - `handle` MUST point to a live [`HurrayFileReader`].
+/// - `name` MUST be readable for `name_len` bytes.
+/// - `out_item` MUST be a valid, non-null, writable pointer.
+#[no_mangle]
+pub unsafe extern "C" fn hurray_file_reader_read_composite(
+    handle: *mut HurrayFileReader,
+    name: *const u8,
+    name_len: usize,
+    out_item: *mut *mut HurrayItem,
+) -> HurrayStatus {
+    catch(|| {
+        null_check!(handle, out_item);
+        // SAFETY: caller guarantees `name_len` readable bytes at `name`.
+        let name = match crate::file::kv::str_from_c(name, name_len) {
+            Ok(name) => name,
+            Err(status) => return status,
+        };
+
+        // SAFETY: handle is non-null and points to a live HurrayFileReader.
+        let HurrayFileReader {
+            core, transport, ..
+        } = &mut *handle;
+
+        if let Err(e) = core.begin_composite(name) {
+            return status_from_io_error(&e);
+        }
+        match drive(core, transport) {
+            Ok(FileStep::Composite) => match core.take_composite() {
+                Some(composite) => {
+                    *out_item = Box::into_raw(file_item_handle(FileItem::Composite(composite)));
+                    HURRAY_OK
+                }
+                // step() said Composite; the core cannot then have none.
                 None => HURRAY_ERR_INTERNAL,
             },
             Ok(_) => HURRAY_ERR_INTERNAL,
