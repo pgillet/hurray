@@ -422,8 +422,7 @@ typedef struct HurrayIoSlice {
 // write call returns. Nothing here is copied — not the descriptors, and above all not
 // the payloads (ADR-041 § 3).
 typedef struct HurrayCompositeNode {
-    // [`HURRAY_ITEM_TENSOR`][crate::HURRAY_ITEM_TENSOR] or
-    // [`HURRAY_ITEM_COMPOSITE`][crate::HURRAY_ITEM_COMPOSITE].
+    // [`HURRAY_ITEM_TENSOR`] or [`HURRAY_ITEM_COMPOSITE`].
     uint8_t kind;
     // First byte of this node's tensor name, UTF-8 and not NUL-terminated.
     //
@@ -454,7 +453,7 @@ typedef struct HurrayCompositeNode {
 //
 // Every pointer in it **borrows** from the [`HurrayItem`] it came from and is valid
 // until [`hurray_item_destroy`]. In particular `tensor` MUST NOT be passed to
-// [`hurray_tensor_destroy`][crate::hurray_tensor_destroy] — the item owns it.
+// [`hurray_tensor_destroy`] — the item owns it.
 typedef struct HurrayItemNode {
     // [`HURRAY_ITEM_TENSOR`] or [`HURRAY_ITEM_COMPOSITE`].
     uint8_t kind;
@@ -2213,7 +2212,8 @@ HurrayStatus hurray_writer_new(const struct HurrayTransport *transport,
 //
 // - [`HURRAY_OK`] — the composite is entirely written and the payload pointers are no
 //   longer held.
-// - [`HURRAY_ERR_NOT_COMPOSITE`] — `count` is `0`, or `nodes[0]` is not a composite head.
+// - [`HURRAY_ERR_NOT_COMPOSITE`][crate::HURRAY_ERR_NOT_COMPOSITE] — `count` is `0`, or
+//   `nodes[0]` is not a composite head.
 //   Use [`hurray_writer_write_tensor`] for a tensor.
 // - [`HURRAY_ERR_INDEX_OUT_OF_BOUNDS`][crate::HURRAY_ERR_INDEX_OUT_OF_BOUNDS] — the
 //   member counts do not describe the array: a head declares members the array does not

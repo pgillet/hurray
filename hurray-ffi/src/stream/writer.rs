@@ -272,7 +272,8 @@ fn drain(op: &mut WriteOp<'_>, transport: &Transport) -> HurrayStatus {
 ///
 /// - [`HURRAY_OK`] — the composite is entirely written and the payload pointers are no
 ///   longer held.
-/// - [`HURRAY_ERR_NOT_COMPOSITE`] — `count` is `0`, or `nodes[0]` is not a composite head.
+/// - [`HURRAY_ERR_NOT_COMPOSITE`][crate::HURRAY_ERR_NOT_COMPOSITE] — `count` is `0`, or
+///   `nodes[0]` is not a composite head.
 ///   Use [`hurray_writer_write_tensor`] for a tensor.
 /// - [`HURRAY_ERR_INDEX_OUT_OF_BOUNDS`][crate::HURRAY_ERR_INDEX_OUT_OF_BOUNDS] — the
 ///   member counts do not describe the array: a head declares members the array does not
