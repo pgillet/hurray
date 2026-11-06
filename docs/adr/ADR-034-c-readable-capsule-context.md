@@ -4,6 +4,13 @@
 
 Accepted (2026-08-20), implemented 2026-08-22 (PR #173)
 
+> **§ 1 superseded by [ADR-043](ADR-043-one-hurray-tensor-handle.md):**
+> `HurrayTensorContext` is deleted, and a capsule carries one `HurrayTensor *` holding
+> both the descriptor and the buffers. §§ 2, 3 and 4 are **carried forward onto that
+> handle**, not withdrawn — opacity with accessors, the owner behind `void *`, and
+> version-read-first all survive, re-targeted at the type that now carries them. § 5
+> stands as written.
+
 Amends **ADR-023** § 5 (capsule lifetime, which owns the context) and § 8 (the ABI
 version check), and resolves the C-level question **ADR-033** deferred.
 
@@ -216,6 +223,12 @@ bytes are the cheaper and more faithful thing to carry.
   the descriptor, walk the buffer list.
 
 ## Open Questions Deferred
+
+> **Both resolved by [ADR-043](ADR-043-one-hurray-tensor-handle.md).** The combined
+> handle is adopted, at the ABI break ADR-043 spends deliberately. The streaming
+> question was answered by what shipped: ADR-041 step 3 gave a stream read a
+> `HurrayTensor`, and ADR-043 is the capsule joining it rather than a parallel type
+> persisting. The original text follows.
 
 - **A combined `HurrayTensor` handle** owning both the buffer list and the descriptor,
   so a capsule carries one handle instead of a pointer/context pair. Better shape;
