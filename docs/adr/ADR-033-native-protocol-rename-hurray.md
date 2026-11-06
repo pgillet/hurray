@@ -67,6 +67,13 @@ and would not be buffers either.
 
 ### 2. The capsule keeps a payload name
 
+> **Amended by [ADR-043](ADR-043-one-hurray-tensor-handle.md):** the capsule is named
+> `"hurray_tensor_handle"`, and `"used_hurray_tensor_handle"` once consumed, because the
+> pointer became a `HurrayTensor *` and a stale consumer must not find a familiar name on
+> an unfamiliar type. The rule below still holds: `_handle` names the payload, not a
+> version, and the ABI version still travels in the payload rather than in the string.
+> The original text follows.
+
 The PyCapsule is named `"hurray_tensor"`, and `"used_hurray_tensor"` once consumed.
 
 This is deliberately *not* symmetric with the method name, and follows DLPack exactly:

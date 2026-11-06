@@ -61,6 +61,12 @@ A single-buffer tensor is the `N = 1` case of this protocol, not a separate path
 
 ### 2. The capsule pointer is a `HurrayBufferList`
 
+> **Amended by [ADR-043](ADR-043-one-hurray-tensor-handle.md):** the capsule pointer is
+> a `HurrayTensor *`, which owns the buffer list. What this section was protecting
+> survives — a C consumer still reaches every buffer through `hurray-ffi` accessors
+> without linking PyO3, now via `hurray_tensor_buffers` — and §§ 1 and 3 stand unchanged.
+> The original text follows.
+
 `hurray-ffi` MUST gain an opaque `HurrayBufferList` handle holding an ordered
 collection of `HurrayBuffer` handles, with C accessors:
 
