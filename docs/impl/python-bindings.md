@@ -307,8 +307,8 @@ hurray-to-hurray zero-copy transfers covering `(device_tag, memory_class)`
 combinations that DLPack v1.0 cannot represent (see ADR-023).
 
 - `hurray.Tensor.__hurray__(stream=None) -> PyCapsule` — MUST return a
-  PyCapsule named `"hurray_tensor"` wrapping a `HurrayBufferList` pointer from
-  `hurray-ffi`. Available for **all** dtypes (Tier 1, Tier 2, quantized).
+  PyCapsule named `"hurray_tensor_handle"` wrapping a `HurrayTensor` pointer from
+  `hurray-ffi` (ADR-043). Available for **all** dtypes (Tier 1, Tier 2, quantized).
 - `hurray.from_hurray(obj, /) -> hurray.Tensor` — MUST accept any object
   whose `__hurray__` returns a valid capsule and reconstruct a
   `hurray.Tensor` that owns the transferred buffers.
@@ -319,13 +319,14 @@ A tensor whose descriptor references more than one buffer — per-channel / NF4 
 MXFP quantization, sparse layouts, block-paged, composite — MUST carry **every**
 buffer in a single capsule (ADR-030).
 
-- The capsule pointer MUST be a `HurrayBufferList` owning one `HurrayBuffer` per
-  buffer. A single-buffer tensor is the `N = 1` case, not a separate path.
-- Element `i` of the list MUST be the buffer at index `i` of the descriptor's
-  buffer table. Buffer indices appearing in quantization descriptors
+- The capsule pointer MUST be a `HurrayTensor` owning the descriptor and one
+  `HurrayBuffer` per buffer, reached through `hurray_tensor_buffers` (ADR-043).
+  A single-buffer tensor is the `N = 1` case, not a separate path.
+- Element `i` of that buffer list MUST be the buffer at index `i` of the
+  descriptor's buffer table. Buffer indices appearing in quantization descriptors
   (`scale_buffer_index`, `zero_point_buffer_index`), layout descriptors, and
   composite members index the list directly.
-- A producer MUST NOT emit a capsule whose list length differs from the
+- A producer MUST NOT emit a capsule whose buffer count differs from the
   descriptor's buffer count, and a consumer MUST reject such a capsule rather
   than construct a tensor whose buffer indices do not resolve.
 - `hurray.Tensor` MUST expose the descriptor's optional sections for reading:
@@ -345,16 +346,21 @@ buffer in a single capsule (ADR-030).
 
 The PyCapsule lifetime rules MUST match DLPack discipline:
 
-- **Capsule name on creation:** `"hurray_tensor"`.
-- **Capsule name after consumption:** `"used_hurray_tensor"`. The consumer MUST
-  rename the capsule before taking ownership, exactly as DLPack consumers rename
-  `"dltensor"` to `"used_dltensor"`.
+- **Capsule name on creation:** `"hurray_tensor_handle"`.
+- **Capsule name after consumption:** `"used_hurray_tensor_handle"`. The consumer
+  MUST rename the capsule before taking ownership, exactly as DLPack consumers
+  rename `"dltensor"` to `"used_dltensor"`.
 - **Capsule destructor:** if the capsule is destroyed while still named
-  `"hurray_tensor"`, the destructor MUST call `hurray_buffer_list_destroy` on the
-  wrapped pointer, which destroys every handle the list owns. If the capsule has
-  been consumed (renamed), the consumer MUST call `hurray_buffer_list_destroy`
-  exactly once. Handles obtained from `hurray_buffer_list_get` are **borrowed**
-  and MUST NOT be destroyed individually.
+  `"hurray_tensor_handle"`, the destructor MUST call `hurray_tensor_destroy` on the
+  wrapped pointer, which releases the descriptor, every buffer the tensor owns, and
+  the owner reference. If the capsule has been consumed (renamed), the consumer MUST
+  call `hurray_tensor_destroy` exactly once. That one call replaces the two-call
+  teardown the pointer/context pair required, and has no ordering requirement.
+- The consumer MUST keep the `HurrayTensor` alive for as long as it reads the
+  buffers: the descriptor and the buffer list obtained from
+  `hurray_tensor_descriptor` and `hurray_tensor_buffers`, and the handles obtained
+  from `hurray_buffer_list_get`, are **borrowed** and MUST NOT be destroyed
+  individually.
 - The source `Tensor`'s Python reference count MUST be incremented when the
   capsule is created and decremented in both the destructor and consume paths.
   See [Buffer Lifetime and Ownership](#buffer-lifetime-and-ownership).
@@ -364,24 +370,30 @@ The PyCapsule lifetime rules MUST match DLPack discipline:
 `__hurray__(stream=None)` uses the same `stream` semantics as `__dlpack__`:
 see [Stream parameter semantics](#stream-parameter-semantics).
 
-### The capsule context
+### One handle, no capsule context
 
-The capsule context MUST be a `HurrayTensorContext` from `hurray-ffi` (ADR-034),
-carrying the encoded `TensorDescriptor` and the producing build's
-`HURRAY_C_ABI_VERSION`. It MUST NOT be a structure private to `hurray-python`: the
-protocol serves consumers in other languages, and a private structure leaves them the
-buffers without the descriptor that says what the buffers are.
+There is no capsule context. The capsule carries **one** pointer — a `HurrayTensor`
+from `hurray-ffi` (ADR-043) — and the producer MUST NOT set a context on it. The
+descriptor and the producing build's `HURRAY_C_ABI_VERSION` are reached through that
+handle's accessors, so the pairing is structural: a consumer that has the pointer has
+the description of the bytes it points at, in any language, with no structure private
+to `hurray-python` in the way.
 
-The strong reference that keeps the source tensor alive MUST travel as the context's
+A producer MUST build the handle with `hurray_tensor_new`, passing the encoded
+descriptor and the finished `HurrayBufferList`. Construction decodes the descriptor, so
+a capsule whose descriptor does not parse is refused where it is created rather than
+where it is consumed.
+
+The strong reference that keeps the source tensor alive MUST travel as the handle's
 opaque `owner`, released through its `owner_release` callback, so that no Python type
 reaches the C ABI.
 
 ### ABI versioning
 
-`hurray.from_hurray` MUST read the version with
-`hurray_tensor_context_abi_version` **before** any other accessor and before
-dereferencing the buffer list; a mismatch MUST raise `hurray.UnsupportedError`. See
-[C FFI § Tensor Context](c-ffi.md#tensor-context) for why that ordering is normative.
+`hurray.from_hurray` MUST read the version with `hurray_tensor_abi_version` **before**
+any other accessor and before trusting anything else about the handle; a mismatch MUST
+raise `hurray.UnsupportedError`. See
+[C FFI § Tensor Handle](c-ffi.md#tensor-handle) for why that ordering is normative.
 
 ### Discovery
 
@@ -888,10 +900,11 @@ a composite that does not equal its own round trip is the symptom of getting thi
 
 ### Not on the native protocol
 
-`Composite` MUST NOT implement `__hurray__`. That capsule carries a buffer list and one
-descriptor; a composite is a tree, and flattening one would require wire structure the
-format does not define. `hasattr(obj, "__hurray__")` therefore keeps meaning what it
-means. Use the streaming or file path, which the format defines for exactly this.
+`Composite` MUST NOT implement `__hurray__`. That capsule carries one tensor — one
+descriptor and its buffers; a composite is a tree, and flattening one would require
+wire structure the format does not define. `hasattr(obj, "__hurray__")` therefore keeps
+meaning what it means. Use the streaming or file path, which the format defines for
+exactly this.
 
 ## Streaming
 
@@ -1044,9 +1057,9 @@ layer MUST catch panics and convert them to `hurray.InternalError` (subclass of
 
 `hurray.from_hurray` (Layer 8c) MUST raise:
 - `hurray.BufferError` if the capsule is null, already consumed (named
-  `"used_hurray_tensor"`), or otherwise invalid.
-- `hurray.UnsupportedError` if the `HURRAY_C_ABI_VERSION` embedded in the capsule
-  does not match the consumer's linked version.
+  `"used_hurray_tensor_handle"`), or otherwise invalid.
+- `hurray.UnsupportedError` if the `HURRAY_C_ABI_VERSION` the capsule's
+  `HurrayTensor` reports does not match the consumer's linked version.
 
 ## Conformance and Validation
 

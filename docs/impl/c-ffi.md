@@ -19,18 +19,20 @@ foundation for all non-Python language bindings.
 
 The C ABI carries a single `uint32` version identifier exposed via a constant
 `HURRAY_C_ABI_VERSION` and a runtime accessor `hurray_c_abi_version()`. The
-current version is `8`:
+current version is `10`:
 
 | Version | Changes |
 |---------|---------|
 | `1` | Initial C ABI: opaque handles, buffer release callbacks, panic-safe error returns. |
 | `2` | Per-mode buffer handoff sync payloads (`SYNC_PRODUCER_SYNCED`, `SYNC_EVENT`, `SYNC_CONSUMER_STREAM`) and the event-release callback. See [Buffer Handoff Synchronisation](#buffer-handoff-synchronisation). |
-| `3` | `HurrayBufferList` for multi-buffer tensors, and the native protocol capsule now wraps a list rather than a single `HurrayBuffer` (ADR-030). See [Buffer Lists](#buffer-lists). |
-| `4` | `HurrayTensorContext`, so a consumer in any language can read a capsule's descriptor and ABI version (ADR-034). See [Tensor Context](#tensor-context). |
+| `3` | `HurrayBufferList` for multi-buffer tensors, and the native protocol capsule carried a list rather than a single `HurrayBuffer` (ADR-030). Narrowed at version `10`, where a capsule carries the tensor handle that owns the list. See [Buffer Lists](#buffer-lists). |
+| `4` | A capsule's descriptor bytes and the producing build's ABI version became readable from any language, through a separate context handle, `HurrayTensorContext`, beside the capsule's buffer list (ADR-034). Folded into `HurrayTensor` at version `10`, which deletes it. See [Tensor Handle](#tensor-handle). |
 | `5` | Layout-payload field reads, so a consumer can interpret every Tier 1 layout it can decode (ADR-039). See [Descriptor Field Reads](#descriptor-field-reads). |
 | `6` | The field identifier space grew to cover all five optional descriptor sections, which renamed the three ADR-039 accessors and added two (ADR-040). See [Descriptor Field Reads](#descriptor-field-reads). |
 | `7` | `HurrayReader` and `HurrayWriter` became real handles over a transport vtable, and `HurrayTensor` pairs a descriptor with its buffers (ADR-041). See [Streaming Over a Transport Vtable](#streaming-over-a-transport-vtable). |
 | `8` | The transport vtable grew `read_at` and `size`, and `HurrayFileReader` / `HurrayFileWriter` read and write the `HRRYFILE` container (ADR-041 § 8). See [File Containers Over a Transport Vtable](#file-containers-over-a-transport-vtable). |
+| `9` | Composites cross the stream and file surfaces whole: `hurray_reader_next_item`, `hurray_file_reader_read_composite`, `hurray_writer_write_composite`, `hurray_file_writer_write_composite`, and the `HurrayItem` handle (ADR-041 step 6). See [Composites](#composites). |
+| `10` | `HurrayTensor` became the whole tensor — the ABI version and an opaque owner moved onto it, `hurray_tensor_new` constructs one, and the separate context handle is deleted. A native-protocol capsule carries one `HurrayTensor*` and no context (ADR-043). See [Tensor Handle](#tensor-handle). |
 
 A consumer of the C ABI MUST query `hurray_c_abi_version()` before invoking any
 function whose contract changed in a later version. A consumer compiled against
@@ -50,8 +52,7 @@ handles**. Callers MUST NOT dereference or inspect the pointed-to memory directl
 | `HurrayDescriptor*` | A parsed tensor descriptor |
 | `HurrayBuffer*` | A buffer handle (data + metadata) |
 | `HurrayBufferList*` | An ordered, owning collection of buffer handles |
-| `HurrayTensorContext*` | A capsule's descriptor bytes, ABI version, and owner reference |
-| `HurrayTensor*` | A tensor: a descriptor and its buffers, owned together |
+| `HurrayTensor*` | A tensor: a descriptor and its buffers, owned together. What a stream or file read produces, and what a native-protocol capsule carries |
 | `HurrayReader*` | A blocking stream reader over a caller-supplied transport |
 | `HurrayWriter*` | A blocking stream writer over a caller-supplied transport |
 
@@ -64,7 +65,11 @@ builds (e.g., via a poisoned sentinel).
 
 A tensor whose descriptor references more than one buffer — per-channel / NF4 /
 MXFP quantization, sparse layouts, block-paged, composite — needs all of its
-buffers to travel together. `HurrayBufferList` is that carrier (ADR-030).
+buffers to travel together. `HurrayBufferList` is the ordered collection that
+holds them (ADR-030), and the thing a producer accumulates them into before
+handing the finished list to `hurray_tensor_new`, which takes ownership of it
+(see [Tensor Handle](#tensor-handle)). The list builds; the tensor is the
+finished product.
 
 | Function | Contract |
 |---|---|
@@ -90,49 +95,99 @@ The following rules are normative.
   each owned slot as it goes, so that a release callback which panics or
   re-enters cannot cause a double free.
 
-## Tensor Context
+## Tensor Handle
 
-A native-protocol capsule carries two things: a `HurrayBufferList` as its pointer,
-and a `HurrayTensorContext` as its context (ADR-034). The list holds the bytes; the
-context holds the **encoded tensor descriptor** that says what those bytes are, plus
-the ABI version of the build that produced them.
+A tensor is a descriptor and the buffers that descriptor describes. `HurrayTensor` is
+that pair as **one** owned handle (ADR-043), and every path that produces a tensor
+produces it: a stream read, a file read, and a native-protocol capsule, which carries
+one `HurrayTensor*` and nothing else.
 
-Before ADR-034 the context was a structure private to `hurray-python`, so the buffers
-crossed the language boundary and the descriptor did not. A consumer in any other
-language received element bytes with no element type, shape, layout, or quantization.
+Before ADR-043 a capsule carried its buffers as its pointer and everything else — the
+encoded descriptor, the producing build's ABI version, the owner reference — in a
+separate context handle. Nothing enforced the pairing: two independent fetches returned
+two unrelated handles, so a consumer that read one without the other got either bytes it
+could not interpret or a description of bytes it did not have. Teardown was two calls in
+a required order. Pairing the two halves inside one handle makes both problems
+structural rather than documentary.
 
 ```c
-HurrayStatus hurray_tensor_context_new(uint32_t abi_version,
-                                       const uint8_t *descriptor_bytes,
-                                       uint64_t descriptor_len,
-                                       void *owner,
-                                       HurrayOwnerReleaseFn owner_release,
-                                       struct HurrayTensorContext **out_ctx);
+typedef struct HurrayTensor HurrayTensor;
+typedef void (*HurrayOwnerReleaseFn)(void *owner);
 
-HurrayStatus hurray_tensor_context_abi_version(const struct HurrayTensorContext *ctx,
-                                               uint32_t *out);
-HurrayStatus hurray_tensor_context_descriptor(const struct HurrayTensorContext *ctx,
-                                              const uint8_t **out_bytes,
-                                              uint64_t *out_len);
-HurrayStatus hurray_tensor_context_destroy(struct HurrayTensorContext **ctx);
+HurrayStatus hurray_tensor_new(uint32_t abi_version,
+                               const uint8_t *descriptor_bytes,
+                               uint64_t descriptor_len,
+                               struct HurrayBufferList *buffers,  /* ownership transferred */
+                               void *owner,
+                               HurrayOwnerReleaseFn owner_release,
+                               struct HurrayTensor **out_tensor);
+
+HurrayStatus hurray_tensor_abi_version(const struct HurrayTensor *tensor, uint32_t *out);
+HurrayStatus hurray_tensor_descriptor(const struct HurrayTensor *tensor,
+                                      struct HurrayDescriptor **out_descriptor);
+HurrayStatus hurray_tensor_buffers(const struct HurrayTensor *tensor,
+                                   struct HurrayBufferList **out_buffers);
+HurrayStatus hurray_tensor_destroy(struct HurrayTensor **tensor);
 ```
 
-- A consumer MUST call `hurray_tensor_context_abi_version` **first** and compare the
-  result against its own `HURRAY_C_ABI_VERSION` before calling any other accessor.
-  That ordering is what allows later ABI versions to add accessors without breaking
-  older consumers: a consumer that checked the version knows which ones exist.
-- `hurray_tensor_context_descriptor` returns a **borrow** owned by the context, valid
-  until the context is destroyed. A caller that needs it longer MUST copy it. An empty
-  descriptor reports a null pointer and a zero length.
-- The context owns a copy of the descriptor bytes; a borrow would tie its validity to
-  a buffer the producer may drop.
-- `owner` and `owner_release` are opaque and never interpreted. They exist so a
-  producer can keep whatever owns the tensor's memory alive for the capsule's
-  lifetime — `hurray-python` parks a Python object reference there, which is how a
-  Python type is kept out of the C ABI entirely. `owner_release` is invoked exactly
-  once, during `hurray_tensor_context_destroy`.
-- Destroying a null handle is a no-op returning `HURRAY_OK`, so cleanup paths may call
-  it unconditionally. Destroy nulls the caller's pointer.
+### Construction
+
+- `hurray_tensor_new` MUST decode `descriptor_bytes` during the call and MUST store
+  only the decoded form. A producer therefore cannot export a tensor whose descriptor
+  does not parse: bytes that fail to decode MUST be rejected with the status the decode
+  failed with, and MUST NOT produce a handle.
+- A null `descriptor_bytes`, or a `descriptor_len` of `0`, MUST be rejected with
+  `HURRAY_ERR_NULL_POINTER`. A tensor with no descriptor is a carrier for bytes nothing
+  can interpret, and eager decoding rules it out in any case.
+- The encoded bytes MUST NOT be retained and are not reachable from C. Every descriptor
+  *field* is read through the field accessors of
+  [Descriptor Field Reads](#descriptor-field-reads) on the borrowed
+  `HurrayDescriptor*`, which is the one shape the capsule path and the read path share —
+  a tensor from a stream or file read has no descriptor bytes to offer, because the
+  decode happens out of a staging buffer the reader drops.
+- `buffers` MUST be a list built with `hurray_buffer_list_new` and
+  `hurray_buffer_list_push` (see [Buffer Lists](#buffer-lists)). On success its
+  ownership **transfers** to the tensor, and the caller MUST NOT thereafter push into
+  it, destroy it, or use the handle at all. On failure ownership stays with the caller,
+  who MUST destroy it.
+- `abi_version` is what the producing build's `HURRAY_C_ABI_VERSION` constant says. A
+  tensor produced by a stream or file read MUST report this library's
+  `HURRAY_C_ABI_VERSION` and MUST carry no owner; one produced by `hurray_tensor_new`
+  MUST report what its producer passed.
+- `owner` and `owner_release` are opaque and MUST NOT be interpreted by this crate. They
+  exist so a producer can keep whatever owns the tensor's memory alive for the handle's
+  lifetime — `hurray-python` parks a Python object reference there, which is how a Python
+  type is kept out of the C ABI entirely. Both MAY be null, which is a tensor with no
+  owner to release.
+
+### Reading
+
+- `hurray_tensor_abi_version` MUST be callable on a `HurrayTensor*` produced by **any**
+  version of this ABI, and a consumer MUST call it before any other accessor and before
+  trusting anything else about the handle. Its signature MUST NOT change. Every other
+  accessor MAY assume the version has been checked.
+- That ordering is what makes the handle extensible, and what makes the capsule's name a
+  one-time matter rather than a counter: fields added in a later ABI version are reached
+  only through accessors added in that version, and a consumer that checked the version
+  knows which ones exist, so additive growth never invalidates a dereference.
+- `hurray_tensor_descriptor` and `hurray_tensor_buffers` return **borrowed** pointers,
+  owned by the tensor and valid until it is destroyed. A caller MUST NOT call
+  `hurray_descriptor_destroy` or `hurray_buffer_list_destroy` on them, and MUST NOT
+  destroy either half individually — the discipline `hurray_buffer_list_get` already
+  follows.
+- Element `i` of the borrowed list is buffer index `i` of the descriptor's buffer table,
+  so every buffer index appearing in a quantization, layout, or composite-member
+  descriptor indexes it directly.
+
+### Teardown
+
+- `hurray_tensor_destroy` MUST release the descriptor, every buffer the list owns, and
+  the owner reference — invoking `owner_release(owner)` exactly once — and MUST then
+  write null through the caller's pointer, so the caller's variable is observably dead.
+- One call ends the whole tensor. There is no teardown order for a caller to get wrong
+  and no second call to omit on an error path.
+- A consumer MUST keep the handle alive for as long as it reads the buffers. Taking the
+  halves out and destroying the carrier is use-after-free: the halves are borrows.
 
 ## Descriptor Field Reads
 
@@ -319,10 +374,11 @@ transport MUST write into that allocation directly: a consumer is entitled to re
 declared alignment for SIMD loads, and no copy of a payload may happen after the transport
 writes it.
 
-A `HurrayTensor` owns its descriptor and its buffers. `hurray_tensor_descriptor` and
-`hurray_tensor_buffers` hand back **borrowed** handles, valid until
-`hurray_tensor_destroy`, which releases both halves in one call so the teardown order is
-not the caller's problem.
+A read produces the handle of [Tensor Handle](#tensor-handle): a `HurrayTensor` owning
+its descriptor and its buffers, reporting this library's `HURRAY_C_ABI_VERSION` and
+carrying no owner. `hurray_tensor_descriptor` and `hurray_tensor_buffers` hand back
+**borrowed** handles, valid until `hurray_tensor_destroy`, which releases both halves in
+one call so the teardown order is not the caller's problem.
 
 ### Composites
 
