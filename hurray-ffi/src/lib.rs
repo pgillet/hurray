@@ -32,7 +32,9 @@ pub(crate) mod panic;
 pub mod status;
 pub mod stream;
 pub mod sync;
-pub mod tensor_context;
+// A tensor handle at the crate root, not under `stream`: every path produces one — a
+// stream read, a file read, and a native-protocol capsule (ADR-043) — so no surface owns it.
+pub mod tensor;
 
 // ── Re-exports ────────────────────────────────────────────────────────────────
 
@@ -70,14 +72,16 @@ pub use status::{
 };
 pub use stream::{
     hurray_reader_destroy, hurray_reader_new, hurray_reader_next_item, hurray_reader_next_tensor,
-    hurray_tensor_buffers, hurray_tensor_descriptor, hurray_tensor_destroy, hurray_writer_destroy,
-    hurray_writer_new, hurray_writer_write_composite, hurray_writer_write_tensor, HurrayIoSlice,
-    HurrayReader, HurrayReaderOptions, HurrayTensor, HurrayTransport, HurrayTransportReadAtFn,
-    HurrayTransportReadFn, HurrayTransportReleaseFn, HurrayTransportSizeFn, HurrayTransportWriteFn,
-    HurrayWriter, HurrayWriterOptions,
+    hurray_writer_destroy, hurray_writer_new, hurray_writer_write_composite,
+    hurray_writer_write_tensor, HurrayIoSlice, HurrayReader, HurrayReaderOptions, HurrayTransport,
+    HurrayTransportReadAtFn, HurrayTransportReadFn, HurrayTransportReleaseFn,
+    HurrayTransportSizeFn, HurrayTransportWriteFn, HurrayWriter, HurrayWriterOptions,
 };
 pub use sync::{HurrayEventReleaseFn, HurraySyncConsumerStreamPayload, HurraySyncEventPayload};
-pub use tensor_context::{hurray_tensor_context_new, HurrayOwnerReleaseFn, HurrayTensorContext};
+pub use tensor::{
+    hurray_tensor_abi_version, hurray_tensor_buffers, hurray_tensor_descriptor,
+    hurray_tensor_destroy, hurray_tensor_new, HurrayOwnerReleaseFn, HurrayTensor,
+};
 
 // ── ABI version ───────────────────────────────────────────────────────────────
 
@@ -91,9 +95,9 @@ pub use tensor_context::{hurray_tensor_context_new, HurrayOwnerReleaseFn, Hurray
 /// ```
 /// use hurray_ffi::HURRAY_C_ABI_VERSION;
 ///
-/// assert_eq!(HURRAY_C_ABI_VERSION, 9);
+/// assert_eq!(HURRAY_C_ABI_VERSION, 10);
 /// ```
-pub const HURRAY_C_ABI_VERSION: u32 = 9;
+pub const HURRAY_C_ABI_VERSION: u32 = 10;
 
 /// Returns the [`HURRAY_C_ABI_VERSION`] constant.
 ///
@@ -102,7 +106,7 @@ pub const HURRAY_C_ABI_VERSION: u32 = 9;
 /// # Examples
 ///
 /// ```
-/// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 9);
+/// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 10);
 /// ```
 #[no_mangle]
 pub extern "C" fn hurray_c_abi_version() -> u32 {

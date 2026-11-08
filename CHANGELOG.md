@@ -182,6 +182,41 @@ workspace share one version and are released together.
 
 ### Changed
 
+- **BREAKING: C ABI 9 → 10 — one `HurrayTensor` handle; the capsule carries a tensor, not
+  a pair** ([#174](https://github.com/pgillet/hurray/issues/174), ADR-043). A tensor is a
+  descriptor plus its buffers, and until now the ABI carried two shapes for that: the
+  `HurrayTensor` a stream or file read produces, and a `HurrayBufferList` pointer paired
+  with a `HurrayTensorContext` context on the native-protocol capsule side. The capsule
+  now carries the same handle every other path produces.
+
+  - `HurrayTensor` gained `hurray_tensor_new` (a public constructor), an `abi_version`
+    and an opaque `owner` with its release callback, and `hurray_tensor_abi_version`.
+  - **`HurrayTensorContext` is deleted**, with `hurray_tensor_context_new`,
+    `_abi_version`, `_descriptor` and `_destroy`. That deletion is the break.
+  - **The capsule is renamed** `"hurray_tensor_handle"` (consumed:
+    `"used_hurray_tensor_handle"`), carries one pointer and **no context**. The rename is
+    not optional and is not a counter: the pointer's type changed, and the version that
+    would let a consumer detect that now lives inside the pointer, so a shared name would
+    be undefined behaviour for a consumer that dereferences before checking.
+    `hurray_tensor_abi_version` is normatively the stable first accessor, which is what
+    keeps every later version additive and the name one-time.
+  - **Teardown is one call.** `hurray_tensor_destroy` releases the descriptor, every
+    buffer, and the owner reference. The ordered `hurray_tensor_context_destroy`-then-
+    `hurray_buffer_list_destroy` pair is gone, and both halves obtained from
+    `hurray_tensor_descriptor` / `hurray_tensor_buffers` are borrows — keep the handle
+    alive while reading them.
+  - `HurrayBufferList` survives as the **builder**: `new`/`push` accumulates, and
+    `hurray_tensor_new` takes ownership of the finished list (on failure it stays the
+    caller's).
+  - **The descriptor is decoded at construction and only the decoded form is kept.**
+    Construction therefore validates — a producer can no longer export a tensor whose
+    descriptor does not parse — a null or zero-length descriptor is refused, and the
+    encoded bytes are no longer reachable from C. Every descriptor *field* stays readable
+    through ADR-039/ADR-040 on the borrowed `HurrayDescriptor *`; what goes is verbatim
+    byte forwarding, which a read-produced tensor never had to offer anyway.
+  - For Python callers nothing changes: `__hurray__` and `hurray.from_hurray` behave as
+    before. For a C consumer or another binding, this is a rebuild and a port.
+
 - **C ABI 8 → 9.** `HurrayReaderOptions` gained `max_composite_depth`, so a v8 consumer's
   struct is one field short of what the library reads. The composite entry points,
   `HurrayItem`, `HurrayItemNode`, `HurrayCompositeNode` and `HURRAY_ERR_NOT_COMPOSITE` are

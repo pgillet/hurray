@@ -13,29 +13,33 @@ use hurray_ffi::{
         hurray_buffer_destroy, hurray_buffer_device_tag, hurray_buffer_memory_class,
         hurray_buffer_sync_mode,
     },
+    buffer_list::{
+        hurray_buffer_list_destroy, hurray_buffer_list_get, hurray_buffer_list_len,
+        hurray_buffer_list_push,
+    },
     descriptor::{
         hurray_descriptor_buffer_count, hurray_descriptor_byte_offset, hurray_descriptor_destroy,
         hurray_descriptor_element_type_tag, hurray_descriptor_layout_tag, hurray_descriptor_rank,
         hurray_descriptor_shape,
     },
-    hurray_buffer_from_ptr, hurray_c_abi_version, hurray_descriptor_decode,
+    hurray_buffer_from_ptr, hurray_buffer_list_new, hurray_c_abi_version, hurray_descriptor_decode,
     sync::{
         hurray_buffer_handoff_consumer_stream, hurray_buffer_handoff_event,
         hurray_buffer_handoff_producer_synced, HurraySyncConsumerStreamPayload,
         HurraySyncEventPayload,
     },
-    tensor_context::{
-        hurray_tensor_context_abi_version, hurray_tensor_context_descriptor,
-        hurray_tensor_context_destroy, hurray_tensor_context_new,
+    tensor::{
+        hurray_tensor_abi_version, hurray_tensor_buffers, hurray_tensor_descriptor,
+        hurray_tensor_destroy, hurray_tensor_new,
     },
-    HurrayBuffer, HurrayTensorContext, HURRAY_END_OF_STREAM, HURRAY_ERR_BUFFER_TOO_SMALL,
-    HURRAY_ERR_CORE_UNUSABLE, HURRAY_ERR_FIELD_NOT_APPLICABLE, HURRAY_ERR_FIELD_NOT_PRESENT,
-    HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INTERNAL, HURRAY_ERR_INTERNAL_PANIC,
-    HURRAY_ERR_INVALID_FILE, HURRAY_ERR_INVALID_LAYOUT, HURRAY_ERR_INVALID_MAGIC,
-    HURRAY_ERR_INVALID_STREAM, HURRAY_ERR_INVALID_SYNC_MODE, HURRAY_ERR_INVALID_TYPE,
-    HURRAY_ERR_LIMIT_EXCEEDED, HURRAY_ERR_NOT_FOUND, HURRAY_ERR_NULL_POINTER,
-    HURRAY_ERR_SINK_CLOSED, HURRAY_ERR_SYNC_MODE_MISMATCH, HURRAY_ERR_TRANSPORT,
-    HURRAY_ERR_UNEXPECTED_EOF, HURRAY_ERR_VERSION_MISMATCH, HURRAY_OK,
+    HurrayBuffer, HurrayBufferList, HurrayTensor, HURRAY_END_OF_STREAM,
+    HURRAY_ERR_BUFFER_TOO_SMALL, HURRAY_ERR_CORE_UNUSABLE, HURRAY_ERR_FIELD_NOT_APPLICABLE,
+    HURRAY_ERR_FIELD_NOT_PRESENT, HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INTERNAL,
+    HURRAY_ERR_INTERNAL_PANIC, HURRAY_ERR_INVALID_FILE, HURRAY_ERR_INVALID_LAYOUT,
+    HURRAY_ERR_INVALID_MAGIC, HURRAY_ERR_INVALID_STREAM, HURRAY_ERR_INVALID_SYNC_MODE,
+    HURRAY_ERR_INVALID_TYPE, HURRAY_ERR_LIMIT_EXCEEDED, HURRAY_ERR_NOT_FOUND,
+    HURRAY_ERR_NULL_POINTER, HURRAY_ERR_SINK_CLOSED, HURRAY_ERR_SYNC_MODE_MISMATCH,
+    HURRAY_ERR_TRANSPORT, HURRAY_ERR_UNEXPECTED_EOF, HURRAY_ERR_VERSION_MISMATCH, HURRAY_OK,
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -120,7 +124,7 @@ fn encode_rank3_descriptor() -> Vec<u8> {
 // ── Phase 1 — ABI version and status codes ───────────────────────────────────
 
 #[test]
-fn abi_version_is_9() {
+fn abi_version_is_10() {
     // Raised 2 -> 3 by ADR-030: the native protocol capsule now wraps a
     // HurrayBufferList, so a v2 consumer must be told rather than dereference it.
     // Raised 3 -> 4 by ADR-034: the capsule context became HurrayTensorContext, so
@@ -138,7 +142,11 @@ fn abi_version_is_9() {
     // added, so a v7 consumer's HurrayTransport is a struct short of two fields.
     // Raised 8 -> 9 by ADR-041 step 6: HurrayReaderOptions gained max_composite_depth, so
     // a v8 consumer's struct is a field short of the one the library reads.
-    assert_eq!(hurray_c_abi_version(), 9);
+    // Raised 9 -> 10 by ADR-043: HurrayTensorContext is deleted and HurrayTensor carries
+    // what it carried, so a v9 consumer must relink rather than resolve
+    // hurray_tensor_context_* symbols that no longer exist — and a v9 capsule's pointer is
+    // a different type from a v10 one.
+    assert_eq!(hurray_c_abi_version(), 10);
 }
 
 #[test]
@@ -576,58 +584,67 @@ fn sync_handoff_consumer_stream_null_stream() {
     unsafe { hurray_buffer_destroy(buf) };
 }
 
-// ── Phase 8 — Tensor context (ADR-034) ───────────────────────────────────────
+// ── Phase 8 — The tensor handle (ADR-043) ────────────────────────────────────
 
-/// The claim ADR-034 exists to make true: a consumer that is **not**
+/// Builds an empty buffer list, for a tensor whose buffers are not what is under test.
+///
+/// A list is required — `hurray_tensor_new` refuses a null one — but its contents are
+/// irrelevant to the descriptor and version questions these tests ask.
+unsafe fn empty_list() -> *mut HurrayBufferList {
+    let mut list: *mut HurrayBufferList = std::ptr::null_mut();
+    assert_eq!(hurray_buffer_list_new(0, &mut list), HURRAY_OK);
+    list
+}
+
+/// Builds a tensor over `descriptor_bytes` with no owner.
+unsafe fn tensor_over(descriptor_bytes: &[u8], abi_version: u32) -> *mut HurrayTensor {
+    let mut tensor: *mut HurrayTensor = std::ptr::null_mut();
+    let status = hurray_tensor_new(
+        abi_version,
+        descriptor_bytes.as_ptr(),
+        descriptor_bytes.len() as u64,
+        empty_list(),
+        std::ptr::null_mut(),
+        None,
+        &mut tensor,
+    );
+    assert_eq!(status, HURRAY_OK);
+    tensor
+}
+
+/// The claim ADR-034 made true and ADR-043 keeps: a consumer that is **not**
 /// `hurray-python` can read a capsule's descriptor.
 ///
-/// Before ADR-034 the descriptor lived in a Rust struct private to the Python
-/// binding, so the buffers crossed the language boundary and the descriptor did
-/// not — which made the protocol's full-fidelity promise hold between two Python
-/// peers and nowhere else. Nothing in this test touches Python; it walks the same
-/// path a Go or Julia binding would.
+/// Before ADR-034 the descriptor lived in a Rust struct private to the Python binding, so
+/// the buffers crossed the language boundary and the descriptor did not — which made the
+/// protocol's full-fidelity promise hold between two Python peers and nowhere else.
+/// ADR-043 folded that context into the tensor handle, so the descriptor now arrives as a
+/// borrowed `HurrayDescriptor*` with no decode step for the consumer at all. Nothing in
+/// this test touches Python; it walks the same path a Go or Julia binding would.
 #[test]
 fn a_non_python_consumer_reads_the_descriptor_back() {
     let encoded = encode_simple_descriptor();
 
-    // Producer side: stash the encoded descriptor in a context.
-    let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
-    let status = unsafe {
-        hurray_tensor_context_new(
-            hurray_c_abi_version(),
-            encoded.as_ptr(),
-            encoded.len() as u64,
-            std::ptr::null_mut(),
-            None,
-            &mut ctx,
-        )
-    };
-    assert_eq!(status, HURRAY_OK);
+    // Producer side: one handle carries the descriptor and the buffers together.
+    let mut tensor = unsafe { tensor_over(&encoded, hurray_c_abi_version()) };
 
     // Consumer side, step 1: check the version before trusting anything else.
     let mut abi_version: u32 = 0;
     assert_eq!(
-        unsafe { hurray_tensor_context_abi_version(ctx, &mut abi_version) },
+        unsafe { hurray_tensor_abi_version(tensor, &mut abi_version) },
         HURRAY_OK
     );
     assert_eq!(abi_version, hurray_c_abi_version());
 
-    // Step 2: borrow the descriptor bytes.
-    let mut bytes: *const u8 = std::ptr::null();
-    let mut len: u64 = 0;
-    assert_eq!(
-        unsafe { hurray_tensor_context_descriptor(ctx, &mut bytes, &mut len) },
-        HURRAY_OK
-    );
-    assert!(!bytes.is_null());
-
-    // Step 3: decode them, and read what the tensor actually is.
+    // Step 2: borrow the descriptor — already decoded, because construction decoded it.
     let mut decoded: *mut hurray_ffi::HurrayDescriptor = std::ptr::null_mut();
     assert_eq!(
-        unsafe { hurray_descriptor_decode(bytes, len as usize, &mut decoded) },
+        unsafe { hurray_tensor_descriptor(tensor, &mut decoded) },
         HURRAY_OK
     );
+    assert!(!decoded.is_null());
 
+    // Step 3: read what the tensor actually is.
     let mut type_tag: u8 = 0;
     let mut rank: u32 = 0;
     assert_eq!(
@@ -649,32 +666,75 @@ fn a_non_python_consumer_reads_the_descriptor_back() {
     );
     assert_eq!(dims, [2, 3], "shape survived the C boundary");
 
-    unsafe { hurray_descriptor_destroy(decoded) };
+    // Both halves were borrows: one destroy ends the tensor, and neither half is
+    // destroyed separately.
+    assert_eq!(unsafe { hurray_tensor_destroy(&mut tensor) }, HURRAY_OK);
+    assert!(tensor.is_null());
+}
+
+/// The buffers arrive through the same handle that described them.
+#[test]
+fn the_buffers_and_the_descriptor_cannot_be_separated() {
+    let encoded = encode_simple_descriptor();
+
+    let mut payload = vec![0u8; 24];
+    let handle = unsafe { make_cpu_buffer(&mut payload) };
+
+    let mut list: *mut HurrayBufferList = std::ptr::null_mut();
+    assert_eq!(unsafe { hurray_buffer_list_new(1, &mut list) }, HURRAY_OK);
+    assert_eq!(unsafe { hurray_buffer_list_push(list, handle) }, HURRAY_OK);
+
+    let mut tensor: *mut HurrayTensor = std::ptr::null_mut();
     assert_eq!(
-        unsafe { hurray_tensor_context_destroy(&mut ctx) },
+        unsafe {
+            hurray_tensor_new(
+                hurray_c_abi_version(),
+                encoded.as_ptr(),
+                encoded.len() as u64,
+                list,
+                std::ptr::null_mut(),
+                None,
+                &mut tensor,
+            )
+        },
         HURRAY_OK
     );
-    assert!(ctx.is_null());
+
+    // The descriptor declares one buffer; the list carries exactly it.
+    let mut decoded: *mut hurray_ffi::HurrayDescriptor = std::ptr::null_mut();
+    unsafe { hurray_tensor_descriptor(tensor, &mut decoded) };
+    let mut declared: u32 = 0;
+    unsafe { hurray_descriptor_buffer_count(decoded, &mut declared) };
+
+    let mut borrowed_list: *mut HurrayBufferList = std::ptr::null_mut();
+    assert_eq!(
+        unsafe { hurray_tensor_buffers(tensor, &mut borrowed_list) },
+        HURRAY_OK
+    );
+    let mut carried: u64 = 0;
+    unsafe { hurray_buffer_list_len(borrowed_list, &mut carried) };
+    assert_eq!(carried, u64::from(declared));
+
+    let mut borrowed: *mut HurrayBuffer = std::ptr::null_mut();
+    unsafe { hurray_buffer_list_get(borrowed_list, 0, &mut borrowed) };
+    let mut size: u64 = 0;
+    unsafe { hurray_buffer_byte_size(borrowed, &mut size) };
+    assert_eq!(size, 24);
+
+    assert_eq!(unsafe { hurray_tensor_destroy(&mut tensor) }, HURRAY_OK);
+    assert!(tensor.is_null());
 }
 
 /// A consumer built against a different ABI must be able to find that out.
 #[test]
 fn a_version_mismatch_is_visible_before_anything_else_is_read() {
-    let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
-    unsafe {
-        hurray_tensor_context_new(
-            hurray_c_abi_version() - 1, // pretend an older producer
-            std::ptr::null(),
-            0,
-            std::ptr::null_mut(),
-            None,
-            &mut ctx,
-        );
-    }
+    let encoded = encode_simple_descriptor();
+    // Pretend an older producer.
+    let mut tensor = unsafe { tensor_over(&encoded, hurray_c_abi_version() - 1) };
 
     let mut abi_version: u32 = 0;
     assert_eq!(
-        unsafe { hurray_tensor_context_abi_version(ctx, &mut abi_version) },
+        unsafe { hurray_tensor_abi_version(tensor, &mut abi_version) },
         HURRAY_OK
     );
     assert_ne!(
@@ -683,7 +743,100 @@ fn a_version_mismatch_is_visible_before_anything_else_is_read() {
         "the mismatch is readable, which is the whole point of checking first"
     );
 
-    unsafe { hurray_tensor_context_destroy(&mut ctx) };
+    unsafe { hurray_tensor_destroy(&mut tensor) };
+}
+
+/// Construction validates: a producer cannot export a tensor nobody can interpret.
+///
+/// The failure used to be the consumer's, one process or one machine later.
+#[test]
+fn an_unparseable_descriptor_is_refused_at_construction() {
+    let mut list = unsafe { empty_list() };
+    let garbage = b"not a descriptor";
+
+    let mut tensor: *mut HurrayTensor = std::ptr::null_mut();
+    let status = unsafe {
+        hurray_tensor_new(
+            hurray_c_abi_version(),
+            garbage.as_ptr(),
+            garbage.len() as u64,
+            list,
+            std::ptr::null_mut(),
+            None,
+            &mut tensor,
+        )
+    };
+    assert_eq!(
+        status, HURRAY_ERR_INVALID_MAGIC,
+        "the decode error, not a generic one"
+    );
+    assert!(tensor.is_null(), "no handle on failure");
+
+    // Ownership of the list stayed with the caller, so destroying it here is correct and
+    // not a double free.
+    assert_eq!(unsafe { hurray_buffer_list_destroy(&mut list) }, HURRAY_OK);
+}
+
+/// A tensor with no descriptor would be a carrier for bytes nothing can interpret.
+///
+/// `hurray_tensor_context_new` accepted both of these; eager decoding rules them out.
+#[test]
+fn a_missing_descriptor_is_refused() {
+    let mut tensor: *mut HurrayTensor = std::ptr::null_mut();
+
+    let mut list = unsafe { empty_list() };
+    assert_eq!(
+        unsafe {
+            hurray_tensor_new(
+                hurray_c_abi_version(),
+                std::ptr::null(),
+                0,
+                list,
+                std::ptr::null_mut(),
+                None,
+                &mut tensor,
+            )
+        },
+        HURRAY_ERR_NULL_POINTER,
+        "a null descriptor"
+    );
+
+    let encoded = encode_simple_descriptor();
+    assert_eq!(
+        unsafe {
+            hurray_tensor_new(
+                hurray_c_abi_version(),
+                encoded.as_ptr(),
+                0,
+                list,
+                std::ptr::null_mut(),
+                None,
+                &mut tensor,
+            )
+        },
+        HURRAY_ERR_NULL_POINTER,
+        "a zero-length descriptor"
+    );
+
+    assert!(tensor.is_null());
+    assert_eq!(unsafe { hurray_buffer_list_destroy(&mut list) }, HURRAY_OK);
+
+    // A null buffer list is refused too: a tensor is a descriptor *and* its buffers.
+    assert_eq!(
+        unsafe {
+            hurray_tensor_new(
+                hurray_c_abi_version(),
+                encoded.as_ptr(),
+                encoded.len() as u64,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                None,
+                &mut tensor,
+            )
+        },
+        HURRAY_ERR_NULL_POINTER,
+        "a null buffer list"
+    );
 }
 
 /// The owner callback is what keeps a producer's memory alive; it must fire once.
@@ -691,27 +844,65 @@ fn a_version_mismatch_is_visible_before_anything_else_is_read() {
 fn the_owner_release_runs_exactly_once() {
     static RELEASED: AtomicU32 = AtomicU32::new(0);
 
-    unsafe extern "C" fn on_release(_owner: *mut c_void) {
+    unsafe extern "C" fn on_release(owner: *mut c_void) {
+        assert_eq!(owner as usize, 0xABCD, "owner arrives unchanged");
         RELEASED.fetch_add(1, Ordering::SeqCst);
     }
 
-    let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
-    unsafe {
-        hurray_tensor_context_new(
+    let encoded = encode_simple_descriptor();
+    let mut tensor: *mut HurrayTensor = std::ptr::null_mut();
+    let status = unsafe {
+        hurray_tensor_new(
             hurray_c_abi_version(),
-            std::ptr::null(),
-            0,
-            std::ptr::null_mut(),
+            encoded.as_ptr(),
+            encoded.len() as u64,
+            empty_list(),
+            0xABCD as *mut c_void,
             Some(on_release),
-            &mut ctx,
-        );
-    }
+            &mut tensor,
+        )
+    };
+    assert_eq!(status, HURRAY_OK);
     assert_eq!(RELEASED.load(Ordering::SeqCst), 0);
 
-    unsafe { hurray_tensor_context_destroy(&mut ctx) };
+    assert_eq!(unsafe { hurray_tensor_destroy(&mut tensor) }, HURRAY_OK);
     assert_eq!(RELEASED.load(Ordering::SeqCst), 1);
 
-    // Destroy nulled the handle, so a defensive second call must not release twice.
-    unsafe { hurray_tensor_context_destroy(&mut ctx) };
+    // Destroy nulled the handle, so a defensive second call reports the error rather
+    // than releasing twice.
+    assert_eq!(
+        unsafe { hurray_tensor_destroy(&mut tensor) },
+        HURRAY_ERR_INTERNAL
+    );
     assert_eq!(RELEASED.load(Ordering::SeqCst), 1);
+}
+
+/// Every required pointer is checked rather than dereferenced.
+#[test]
+fn null_arguments_are_rejected_rather_than_dereferenced() {
+    let mut version = 0u32;
+    assert_eq!(
+        unsafe { hurray_tensor_abi_version(std::ptr::null(), &mut version) },
+        HURRAY_ERR_NULL_POINTER
+    );
+    assert_eq!(
+        unsafe { hurray_tensor_destroy(std::ptr::null_mut()) },
+        HURRAY_ERR_NULL_POINTER
+    );
+
+    let encoded = encode_simple_descriptor();
+    assert_eq!(
+        unsafe {
+            hurray_tensor_new(
+                hurray_c_abi_version(),
+                encoded.as_ptr(),
+                encoded.len() as u64,
+                empty_list(),
+                std::ptr::null_mut(),
+                None,
+                std::ptr::null_mut(), // no out-pointer
+            )
+        },
+        HURRAY_ERR_NULL_POINTER
+    );
 }

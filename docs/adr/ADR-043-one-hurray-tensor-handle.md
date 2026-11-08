@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-11-06)
+Accepted (2026-11-06), implemented 2026-11-08
 
 Closes [issue #174](https://github.com/pgillet/hurray/issues/174) and both of
 **ADR-034**'s deferred open questions. Amends **ADR-030** § 2 (the capsule pointer) and

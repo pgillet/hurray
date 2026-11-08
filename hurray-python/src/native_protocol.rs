@@ -1,32 +1,36 @@
 //! Native Hurray buffer interchange protocol: `__hurray__` / `from_hurray`.
 //!
 //! Implements a PyCapsule-based protocol for zero-copy tensor buffer sharing between
-//! Hurray-aware Python extensions. The capsule wraps a `HurrayBufferList` pointer from
-//! `hurray-ffi`, validated by an ABI version check before the pointer is used.
+//! Hurray-aware Python extensions. The capsule wraps a single `HurrayTensor` pointer from
+//! `hurray-ffi`, validated by an ABI version check before anything else is read.
 //!
-//! ## Design decisions (see also ADR-023, ADR-030)
+//! ## Design decisions (see also ADR-023, ADR-030, ADR-043)
 //!
-//! **D-NB1 — Capsule pointer = `*mut HurrayBufferList`:** Allows C consumers to call
-//! `hurray-ffi` accessor functions without linking PyO3. ADR-030 widened this from a
-//! single `*mut HurrayBuffer` so that multi-buffer tensors — per-channel / NF4 / MXFP
-//! quantization, sparse, block-paged — travel whole. Element `i` of the list is
-//! descriptor buffer index `i`.
+//! **D-NB1 — Capsule pointer = `*mut HurrayTensor`, and nothing else:** a tensor is a
+//! descriptor and its buffers, and the handle owns both, so a C consumer reaches either
+//! half through `hurray-ffi` accessors without linking PyO3 — and cannot reach one half
+//! without the other. ADR-030 widened the pointer from a single `*mut HurrayBuffer` to a
+//! `HurrayBufferList` so multi-buffer tensors travel whole; ADR-043 narrowed it again to
+//! the handle that owns that list. Element `i` of the list is descriptor buffer index `i`.
 //!
-//! **D-NB2 — Capsule context = `*mut NativeBufferContext`:** Carries the encoded
-//! `TensorDescriptor` (for round-trip reconstruction) and a strong Python reference
-//! to the source `Tensor` (keeps the buffer alive for the capsule's lifetime).
+//! **D-NB2 — No capsule context:** the encoded descriptor and the producing build's ABI
+//! version used to ride in a separate `HurrayTensorContext` fetched with
+//! `PyCapsule_GetContext`, paired with the pointer only by convention. Both now live in
+//! the handle (ADR-043), so the producer sets no context and teardown is one call.
 //!
-//! **D-NB3 — Python consumer reuses `BufferStore::Borrowed`:** After consuming the
-//! capsule, `from_hurray` extracts ptr/len, calls `hurray_buffer_destroy` (the
-//! handle has no release callback, so this only frees the struct), and creates a
-//! `BufferStore::Borrowed` whose `base` is the source `Tensor`. C consumer interop
-//! requiring a persistent `HurrayBuffer` is deferred to a future layer.
+//! **D-NB3 — The strong reference travels as the handle's opaque `owner`:** released
+//! through `owner_release`, so no Python type reaches the C ABI.
+//!
+//! **D-NB4 — Python consumer reuses `BufferStore::Borrowed`:** after consuming the
+//! capsule, `from_hurray` reads every buffer's ptr/len, clones the decoded descriptor,
+//! calls `hurray_tensor_destroy` once, and creates one `BufferStore::Borrowed` per
+//! buffer whose `base` is the source `Tensor`.
 
 use std::ffi::CStr;
 
 use hurray_core::{DeviceTag, MemoryClass, SyncMode, TensorDescriptor};
 use hurray_ffi::{
-    HurrayBuffer, HurrayBufferList, HurrayTensorContext, HURRAY_C_ABI_VERSION, HURRAY_OK,
+    HurrayBuffer, HurrayBufferList, HurrayTensor, HURRAY_C_ABI_VERSION, HURRAY_OK,
 };
 use pyo3::prelude::*;
 
@@ -39,34 +43,34 @@ use crate::tensor::Tensor;
 // ── Capsule names ─────────────────────────────────────────────────────────────
 
 /// Capsule name for a fresh (unconsumed) native protocol capsule.
-const HURRAY_TENSOR_CAPSULE_NAME: &CStr = c"hurray_tensor";
+///
+/// Renamed from `"hurray_tensor"` by ADR-043 § 5, once: the pointer's *type* changed, and
+/// the version that would let a consumer detect that now lives inside the thing whose type
+/// changed. A name mismatch is a hard `TypeError` in every consumer, in every language,
+/// with no cooperation required; a stale consumer reading the pointer first would
+/// otherwise get undefined behaviour.
+const HURRAY_TENSOR_CAPSULE_NAME: &CStr = c"hurray_tensor_handle";
 
 /// Capsule name after consumption — prevents destructor from double-destroying.
-const HURRAY_TENSOR_CAPSULE_USED: &CStr = c"used_hurray_tensor";
+const HURRAY_TENSOR_CAPSULE_USED: &CStr = c"used_hurray_tensor_handle";
 
-// ── Capsule context ───────────────────────────────────────────────────────────
+// ── The handle's owner ────────────────────────────────────────────────────────
 
-/// The capsule context is a [`HurrayTensorContext`] from `hurray-ffi` (ADR-034).
-///
-/// It carries the encoded `TensorDescriptor` and the producing build's ABI version,
-/// both readable through the C accessors — so a consumer that is not `hurray-python`
-/// can read them too. Before ADR-034 this was a private Rust struct, which meant the
-/// buffers crossed the language boundary and the descriptor did not.
-///
-/// The strong Python reference to the source `Tensor` rides along as the context's
-/// opaque `owner`, released by [`release_owner`]. `hurray-ffi` never interprets it,
-/// which is what keeps Python types out of the C ABI.
+/// What the tensor handle's opaque `owner` pointer actually is: a strong Python
+/// reference to the source `Tensor`, keeping its buffers alive for the capsule's
+/// lifetime. Released by [`release_owner`]; `hurray-ffi` never interprets it, which is
+/// what keeps Python types out of the C ABI (ADR-043 § 1).
 type CapsuleOwner = Py<PyAny>;
 
 // ── Capsule destructor ────────────────────────────────────────────────────────
 
 /// Called by the Python GC when the capsule object is collected.
 ///
-/// - If still named `"hurray_tensor"` (not consumed): destroys the `HurrayBufferList`
-///   — and with it every `HurrayBuffer` it owns — and drops the context (releasing
-///   the source Tensor reference).
-/// - If renamed to `"used_hurray_tensor"`: consumer already destroyed the list
-///   and freed the context — nothing to do.
+/// - If still named `"hurray_tensor_handle"` (not consumed): destroys the
+///   `HurrayTensor` — its descriptor, every `HurrayBuffer` its list owns, and the owner
+///   reference to the source `Tensor`.
+/// - If renamed to `"used_hurray_tensor_handle"`: the consumer already destroyed it —
+///   nothing to do.
 ///
 /// # Safety
 ///
@@ -84,29 +88,23 @@ unsafe extern "C" fn hurray_tensor_capsule_destructor(capsule: *mut pyo3::ffi::P
     let name_bytes = CStr::from_ptr(name_ptr).to_bytes();
 
     if name_bytes == HURRAY_TENSOR_CAPSULE_NAME.to_bytes() {
-        // Unconsumed — destroy the list, which destroys every handle it owns.
-        let mut list = pyo3::ffi::PyCapsule_GetPointer(capsule, name_ptr) as *mut HurrayBufferList;
-        if !list.is_null() {
-            // SAFETY: created by hurray_buffer_list_new; this is the first and only destroy.
-            hurray_ffi::buffer_list::hurray_buffer_list_destroy(&mut list);
-        }
-
-        // Destroy the context, which invokes release_owner and DECREFs the source.
-        let mut ctx = pyo3::ffi::PyCapsule_GetContext(capsule) as *mut HurrayTensorContext;
-        if !ctx.is_null() {
-            // SAFETY: created by hurray_tensor_context_new and destroyed exactly once —
+        // Unconsumed — one destroy releases the descriptor, every buffer handle, and the
+        // owner reference, in an order the caller cannot get wrong (ADR-043 § 7).
+        let mut tensor = pyo3::ffi::PyCapsule_GetPointer(capsule, name_ptr) as *mut HurrayTensor;
+        if !tensor.is_null() {
+            // SAFETY: created by HurrayTensor::from_core and destroyed exactly once —
             // either here or by the consumer, which renames the capsule first.
-            hurray_ffi::tensor_context::hurray_tensor_context_destroy(&mut ctx);
+            hurray_ffi::tensor::hurray_tensor_destroy(&mut tensor);
         }
     }
-    // "used_hurray_tensor": consumer already destroyed the list and freed the context.
+    // "used_hurray_tensor_handle": the consumer already destroyed the handle.
 }
 
 /// Releases the source-tensor reference a capsule context owns.
 ///
-/// Handed to `hurray_tensor_context_new` as the context's `owner_release`, so this is
-/// the only Python-touching code on the capsule path — which is why the finalization
-/// guard lives here and nowhere else.
+/// Handed to the tensor handle as its `owner_release`, so this is the only
+/// Python-touching code on the capsule path — which is why the finalization guard lives
+/// here and nowhere else.
 ///
 /// Deliberately does **not** go through `Python::attach`. A capsule finalizer can run
 /// while the interpreter is being torn down, where `Python::attach` asserts that the
@@ -144,21 +142,20 @@ pub(crate) struct CapsuleBuffer {
     pub memory_class: MemoryClass,
 }
 
-/// Build a `"hurray_tensor"` PyCapsule for the given tensor.
+/// Build a `"hurray_tensor_handle"` PyCapsule for the given tensor.
 ///
-/// The capsule pointer is a heap-allocated `HurrayBufferList` owning one
-/// `HurrayBuffer` per entry of `buffers`, in descriptor buffer-table order
-/// (ADR-030 § 2–3). No release callbacks are registered; buffer lifetime is
-/// managed by the `tensor_ref` in the context. The capsule context is a
-/// heap-allocated `NativeBufferContext` carrying the encoded descriptor and a
-/// strong Python reference to the source tensor.
+/// The capsule pointer is a heap-allocated `HurrayTensor` owning the descriptor and a
+/// `HurrayBufferList` with one `HurrayBuffer` per entry of `buffers`, in descriptor
+/// buffer-table order (ADR-030 § 3, ADR-043 § 3). No buffer release callbacks are
+/// registered; buffer lifetime is managed by the strong reference to the source tensor,
+/// which travels as the handle's opaque `owner`. The capsule carries no context.
 ///
 /// ## Ownership
-/// - **Consumed** via [`from_hurray`]: caller reads every buffer's ptr/len,
-///   destroys the list, and moves `tensor_ref` into the new `BufferStore::Borrowed`
-///   bases.
-/// - **GC'd without consumption**: the capsule destructor destroys the list — and
-///   with it every handle it owns — and drops the context.
+/// - **Consumed** via [`from_hurray`]: caller reads every buffer's ptr/len, clones the
+///   descriptor, destroys the handle, and holds its own reference to the source in the
+///   new `BufferStore::Borrowed` bases.
+/// - **GC'd without consumption**: the capsule destructor destroys the handle, which
+///   releases both halves and the owner reference.
 pub(crate) fn build_capsule(
     py: Python<'_>,
     tensor_obj: Py<PyAny>,
@@ -186,12 +183,7 @@ pub(crate) fn build_capsule(
         )));
     }
 
-    // 1. Encode descriptor for round-trip reconstruction on the consumer side.
-    let descriptor_bytes = descriptor.encode().map_err(|e| {
-        InvalidDescriptorError::new_err(format!("failed to encode descriptor: {e}"))
-    })?;
-
-    // 2. Build the owning list, then push one handle per buffer in order.
+    // 1. Build the owning list, then push one handle per buffer in order.
     let mut list_ptr: *mut HurrayBufferList = std::ptr::null_mut();
     // SAFETY: out-pointer is a valid stack variable.
     let status = unsafe { hurray_buffer_list_new(buffers.len() as u64, &mut list_ptr) };
@@ -241,65 +233,42 @@ pub(crate) fn build_capsule(
         }
     }
 
-    // 3. Build the context through hurray-ffi, so a consumer in any language can
-    //    read the descriptor and the ABI version back out (ADR-034).
-    //    The source-tensor reference rides along as the opaque owner.
+    // 2. Fold the list into the tensor handle, which takes ownership of it. The
+    //    descriptor goes in as the decoded type this binding already holds: the C
+    //    constructor's encode-then-decode round trip buys validation a Python `Tensor`
+    //    already has, since its descriptor was built type-checked rather than parsed
+    //    (ADR-043 § 1). The source-tensor reference rides along as the opaque owner.
     let owner = Box::into_raw(Box::new(tensor_obj)) as *mut std::ffi::c_void;
-    let mut ctx_ptr: *mut HurrayTensorContext = std::ptr::null_mut();
-    // SAFETY: descriptor_bytes is a live Vec; owner comes from Box::into_raw and stays
-    // valid until release_owner runs; out-pointer is a valid stack variable.
-    let status = unsafe {
-        hurray_ffi::tensor_context::hurray_tensor_context_new(
+    // SAFETY: list_ptr is a live list nothing else owns; owner comes from Box::into_raw
+    // and stays valid until release_owner runs.
+    let mut tensor_ptr = unsafe {
+        HurrayTensor::from_core(
             HURRAY_C_ABI_VERSION,
-            descriptor_bytes.as_ptr(),
-            descriptor_bytes.len() as u64,
+            descriptor.clone(),
+            list_ptr,
             owner,
             Some(release_owner),
-            &mut ctx_ptr,
         )
     };
-    if status != HURRAY_OK || ctx_ptr.is_null() {
-        // The context never took the owner, so release it here rather than leak the
-        // reference; the list is ours to destroy too.
-        // SAFETY: owner came from Box::into_raw and has not been reclaimed.
-        unsafe { release_owner(owner) };
-        // SAFETY: list_ptr is live and owned by us.
-        unsafe { hurray_buffer_list_destroy(&mut list_ptr) };
-        return Err(BufferError::new_err(format!(
-            "failed to build the capsule context (status {status})"
-        )));
-    }
-    let ctx_raw = ctx_ptr as *mut std::ffi::c_void;
 
-    // 4. Create PyCapsule named "hurray_tensor".
-    // SAFETY: list_ptr is non-null; destructor handles cleanup on both consume and GC paths.
+    // 3. Create the PyCapsule, named for the handle it wraps (ADR-043 § 5). No context:
+    //    a capsule carries one pointer, and both halves are reachable through it.
+    // SAFETY: tensor_ptr is non-null; the destructor handles cleanup on both the consume
+    // and the GC path.
     let capsule = unsafe {
         pyo3::ffi::PyCapsule_New(
-            list_ptr as *mut std::ffi::c_void,
+            tensor_ptr as *mut std::ffi::c_void,
             HURRAY_TENSOR_CAPSULE_NAME.as_ptr(),
             Some(hurray_tensor_capsule_destructor),
         )
     };
     if capsule.is_null() {
-        // Free allocations to avoid a leak before propagating OOM.
-        unsafe {
-            hurray_ffi::tensor_context::hurray_tensor_context_destroy(&mut ctx_ptr);
-            hurray_buffer_list_destroy(&mut list_ptr);
-        }
+        // One destroy frees the handle, its buffers and the owner reference, before the
+        // OOM propagates.
+        // SAFETY: created by HurrayTensor::from_core; first and only destroy.
+        unsafe { hurray_ffi::tensor::hurray_tensor_destroy(&mut tensor_ptr) };
         return Err(pyo3::exceptions::PyMemoryError::new_err(
-            "failed to create hurray_tensor capsule",
-        ));
-    }
-
-    // 5. Attach context to the capsule.
-    // SAFETY: capsule is non-null and freshly created; ctx_raw is non-null.
-    if unsafe { pyo3::ffi::PyCapsule_SetContext(capsule, ctx_raw) } != 0 {
-        unsafe {
-            hurray_ffi::tensor_context::hurray_tensor_context_destroy(&mut ctx_ptr);
-            pyo3::ffi::Py_DECREF(capsule);
-        }
-        return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "failed to attach context to hurray_tensor capsule",
+            "failed to create hurray_tensor_handle capsule",
         ));
     }
 
@@ -309,27 +278,30 @@ pub(crate) fn build_capsule(
 
 // ── Consumer ──────────────────────────────────────────────────────────────────
 
-/// Accept any object whose `__hurray__()` returns a valid `"hurray_tensor"`
+/// Accept any object whose `__hurray__()` returns a valid `"hurray_tensor_handle"`
 /// capsule and return a new [`hurray.Tensor`](Tensor) that shares the buffer
 /// without copying.
 ///
 /// ## Protocol
 ///
 /// 1. Calls `obj.__hurray__()` to obtain the capsule.
-/// 2. Verifies the capsule name is `"hurray_tensor"` and the ABI version matches.
-/// 3. Renames the capsule to `"used_hurray_tensor"` (prevents double-destroy).
-/// 4. Extracts the data pointer and byte size from the `HurrayBuffer` handle.
-/// 5. Calls `hurray_buffer_destroy` (frees the handle; no release callback was set).
-/// 6. Decodes the `TensorDescriptor` from the capsule context.
+/// 2. Verifies the capsule name is `"hurray_tensor_handle"` and the ABI version matches.
+/// 3. Renames the capsule to `"used_hurray_tensor_handle"` (prevents double-destroy).
+/// 4. Reads every buffer's data pointer and byte size through the handle's borrowed
+///    buffer list.
+/// 5. Clones the handle's decoded `TensorDescriptor` — no bytes, no decode step.
+/// 6. Calls `hurray_tensor_destroy` once, which releases both halves and the producer's
+///    owner reference.
 /// 7. Creates a new `Tensor` with `BufferStore::Borrowed` whose `base` keeps the
-///    source `Tensor` alive (D-NB3).
+///    source `Tensor` alive (D-NB4).
 ///
 /// ## Errors
 ///
 /// - `TypeError` — `obj` does not expose `__hurray__`.
 /// - `hurray.BufferError` — capsule is null, malformed, or already consumed.
 /// - `hurray.UnsupportedError` — ABI version mismatch between producer and consumer.
-/// - `hurray.InvalidDescriptorError` — descriptor bytes could not be decoded.
+/// - `hurray.InvalidDescriptorError` — the capsule's buffer count disagrees with its
+///   descriptor.
 ///
 /// ## Examples
 ///
@@ -355,7 +327,7 @@ pub fn from_hurray(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
     let capsule_bound = obj.call_method0("__hurray__")?;
     let cap_ptr = capsule_bound.as_ptr();
 
-    // 3. Verify it is a valid PyCapsule named "hurray_tensor".
+    // 3. Verify it is a valid PyCapsule named "hurray_tensor_handle".
     // SAFETY: cap_ptr is a live borrowed Python object.
     let is_valid =
         unsafe { pyo3::ffi::PyCapsule_IsValid(cap_ptr, HURRAY_TENSOR_CAPSULE_NAME.as_ptr()) };
@@ -372,38 +344,34 @@ pub fn from_hurray(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
                 .to_string_lossy()
                 .into_owned()
         };
-        if name_msg == "used_hurray_tensor" {
+        if name_msg == "used_hurray_tensor_handle" {
             return Err(BufferError::new_err(
-                "hurray_tensor capsule has already been consumed; \
+                "hurray_tensor_handle capsule has already been consumed; \
                  call __hurray__() again to get a fresh capsule",
             ));
         }
         return Err(BufferError::new_err(format!(
-            "expected a 'hurray_tensor' PyCapsule, got '{name_msg}'"
+            "expected a 'hurray_tensor_handle' PyCapsule, got '{name_msg}'"
         )));
     }
 
-    // 4. Extract list and context.
-    // SAFETY: PyCapsule_IsValid confirmed this is a live "hurray_tensor" capsule.
-    let mut list =
+    // 4. Take the one pointer the capsule carries.
+    // SAFETY: PyCapsule_IsValid confirmed this is a live "hurray_tensor_handle" capsule.
+    let mut tensor =
         unsafe { pyo3::ffi::PyCapsule_GetPointer(cap_ptr, HURRAY_TENSOR_CAPSULE_NAME.as_ptr()) }
-            as *mut HurrayBufferList;
-    let mut ctx_ptr =
-        unsafe { pyo3::ffi::PyCapsule_GetContext(cap_ptr) } as *mut HurrayTensorContext;
+            as *mut HurrayTensor;
 
-    if list.is_null() || ctx_ptr.is_null() {
+    if tensor.is_null() {
         return Err(BufferError::new_err(
-            "hurray_tensor capsule is malformed (null list or context)",
+            "hurray_tensor_handle capsule is malformed (null pointer)",
         ));
     }
 
-    // 5. Verify ABI version — the first thing read from any context, and the only
-    //    accessor guaranteed to work across versions (ADR-034 § 4).
+    // 5. Verify the ABI version — the first thing read from any handle, and the only
+    //    accessor guaranteed to work across versions (ADR-043 § 5).
     let mut abi_version: u32 = 0;
-    // SAFETY: ctx_ptr is non-null and points to a live HurrayTensorContext.
-    unsafe {
-        hurray_ffi::tensor_context::hurray_tensor_context_abi_version(ctx_ptr, &mut abi_version)
-    };
+    // SAFETY: tensor is non-null and points to a live HurrayTensor.
+    unsafe { hurray_ffi::tensor::hurray_tensor_abi_version(tensor, &mut abi_version) };
     if abi_version != HURRAY_C_ABI_VERSION {
         return Err(UnsupportedError::new_err(format!(
             "ABI version mismatch: capsule was produced with hurray ABI v{abi_version}, \
@@ -412,22 +380,28 @@ pub fn from_hurray(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         )));
     }
 
-    // 6. Rename capsule → "used_hurray_tensor" before modifying any shared state.
-    //    This prevents the capsule destructor from calling hurray_buffer_destroy a
-    //    second time if the capsule outlives this function's stack frame.
+    // 6. Rename capsule → "used_hurray_tensor_handle" before modifying any shared state.
+    //    This prevents the capsule destructor from destroying the handle a second time if
+    //    the capsule outlives this function's stack frame.
     // SAFETY: cap_ptr is a valid live PyCapsule; we are the sole consumer.
     if unsafe { pyo3::ffi::PyCapsule_SetName(cap_ptr, HURRAY_TENSOR_CAPSULE_USED.as_ptr()) } != 0 {
         return Err(pyo3::exceptions::PyRuntimeError::new_err(
-            "failed to mark hurray_tensor capsule as consumed",
+            "failed to mark hurray_tensor_handle capsule as consumed",
         ));
     }
 
-    // 7. Read every buffer's pointer and size, in list order, before the list is
-    //    destroyed. Handles from hurray_buffer_list_get are borrowed — the list owns
-    //    them (ADR-030 § 2) — so they are read here and never destroyed individually.
+    // 7. Read every buffer's pointer and size, in list order, before the handle is
+    //    destroyed. Both the list and the handles in it are borrowed — the tensor owns
+    //    them (ADR-043 § 1) — so they are read here and never destroyed individually.
+    let mut list: *mut HurrayBufferList = std::ptr::null_mut();
+    // SAFETY: tensor is live; out-pointer is a valid stack variable.
+    unsafe { hurray_ffi::tensor::hurray_tensor_buffers(tensor, &mut list) };
+
     let mut buffer_count: u64 = 0;
-    // SAFETY: list is non-null and live; out-pointer is a valid stack variable.
-    unsafe { hurray_ffi::buffer_list::hurray_buffer_list_len(list, &mut buffer_count) };
+    if !list.is_null() {
+        // SAFETY: list is a live borrow owned by the tensor.
+        unsafe { hurray_ffi::buffer_list::hurray_buffer_list_len(list, &mut buffer_count) };
+    }
 
     let mut raw_buffers: Vec<(*mut std::ffi::c_void, u64)> =
         Vec::with_capacity(buffer_count as usize);
@@ -437,12 +411,12 @@ pub fn from_hurray(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         let status =
             unsafe { hurray_ffi::buffer_list::hurray_buffer_list_get(list, index, &mut borrowed) };
         if status != HURRAY_OK || borrowed.is_null() {
-            // SAFETY: list is live and owned by us now that the capsule is consumed.
-            unsafe { hurray_ffi::buffer_list::hurray_buffer_list_destroy(&mut list) };
-            // SAFETY: created by hurray_tensor_context_new and not yet destroyed.
-            unsafe { hurray_ffi::tensor_context::hurray_tensor_context_destroy(&mut ctx_ptr) };
+            // SAFETY: the capsule is consumed, so the handle is ours to destroy; one call
+            // releases the list and the owner reference too.
+            unsafe { hurray_ffi::tensor::hurray_tensor_destroy(&mut tensor) };
             return Err(BufferError::new_err(format!(
-                "hurray_tensor capsule: buffer {index} could not be read (status {status})"
+                "hurray_tensor_handle capsule: buffer {index} could not be read \
+                 (status {status})"
             )));
         }
         let mut data_ptr: *mut std::ffi::c_void = std::ptr::null_mut();
@@ -455,44 +429,33 @@ pub fn from_hurray(py: Python<'_>, obj: &Bound<'_, PyAny>) -> PyResult<Tensor> {
         raw_buffers.push((data_ptr, byte_size));
     }
 
-    // 8. Copy the descriptor out of the context, then destroy it. The accessor hands
-    //    back a borrow owned by the context, so it must be copied before the destroy
-    //    below frees it — and the destroy must happen here rather than at the end,
-    //    because it also releases the producer's reference to the source tensor.
-    let mut descriptor_ptr: *const u8 = std::ptr::null();
-    let mut descriptor_len: u64 = 0;
-    // SAFETY: ctx_ptr is non-null and live; both out-pointers are valid stack variables.
-    unsafe {
-        hurray_ffi::tensor_context::hurray_tensor_context_descriptor(
-            ctx_ptr,
-            &mut descriptor_ptr,
-            &mut descriptor_len,
-        )
+    // 8. Clone the handle's decoded descriptor. There are no encoded bytes to decode:
+    //    the handle keeps only the decoded form (ADR-043 § 6), and cloning is what
+    //    outlives the destroy below. A live handle always has one.
+    // SAFETY: tensor is non-null and points to a live HurrayTensor.
+    let descriptor = match unsafe { (*tensor).core_descriptor() } {
+        Some(descriptor) => descriptor.clone(),
+        None => {
+            // SAFETY: the capsule is consumed, so the handle is ours to destroy.
+            unsafe { hurray_ffi::tensor::hurray_tensor_destroy(&mut tensor) };
+            return Err(BufferError::new_err(
+                "hurray_tensor_handle capsule is malformed (no descriptor)",
+            ));
+        }
     };
-    let descriptor_bytes = if descriptor_ptr.is_null() {
-        Vec::new()
-    } else {
-        // SAFETY: the accessor returned a live borrow of descriptor_len bytes.
-        unsafe { std::slice::from_raw_parts(descriptor_ptr, descriptor_len as usize) }.to_vec()
-    };
-    // SAFETY: created by hurray_tensor_context_new; first and only destroy.
-    unsafe { hurray_ffi::tensor_context::hurray_tensor_context_destroy(&mut ctx_ptr) };
 
     // The new tensor borrows from the source, so it holds its own reference to it.
     // `obj` is that source: from_hurray called `obj.__hurray__()` to get this capsule.
     let tensor_ref: Py<PyAny> = obj.clone().unbind();
 
-    // 9. Destroy the list and every handle it owns (no release callbacks were
-    //    registered, so this only frees the handle structs).
-    // SAFETY: created by hurray_buffer_list_new; first and only destroy.
-    unsafe { hurray_ffi::buffer_list::hurray_buffer_list_destroy(&mut list) };
+    // 9. One destroy ends the handle: the descriptor, every buffer handle (no release
+    //    callbacks were registered, so this only frees the structs), and the producer's
+    //    reference to the source tensor. The payload stays alive because `tensor_ref`
+    //    above is this consumer's own reference to it.
+    // SAFETY: created by HurrayTensor::from_core; first and only destroy.
+    unsafe { hurray_ffi::tensor::hurray_tensor_destroy(&mut tensor) };
 
-    // 10. Decode TensorDescriptor.
-    let descriptor = TensorDescriptor::decode(&descriptor_bytes).map_err(|e| {
-        InvalidDescriptorError::new_err(format!("failed to decode descriptor: {e}"))
-    })?;
-
-    // A length mismatch means the descriptor's buffer indices cannot all resolve to a
+    // 10. A length mismatch means the descriptor's buffer indices cannot all resolve to a
     // transported buffer — reject rather than build a tensor with a dangling index
     // (ADR-030 § 3).
     if raw_buffers.len() != descriptor.buffers.len() {
@@ -616,8 +579,11 @@ mod tests {
 
     #[test]
     fn capsule_name_constants_are_correct() {
-        assert_eq!(HURRAY_TENSOR_CAPSULE_NAME.to_bytes(), b"hurray_tensor");
-        assert_eq!(HURRAY_TENSOR_CAPSULE_USED.to_bytes(), b"used_hurray_tensor");
+        assert_eq!(HURRAY_TENSOR_CAPSULE_NAME.to_bytes(), b"hurray_tensor_handle");
+        assert_eq!(
+            HURRAY_TENSOR_CAPSULE_USED.to_bytes(),
+            b"used_hurray_tensor_handle"
+        );
     }
 
     // ── Multi-buffer capsule (ADR-030) ────────────────────────────────────────
@@ -691,17 +657,34 @@ mod tests {
 
             let capsule = Tensor::__hurray__(&bound, None).unwrap();
 
-            // The capsule pointer is a HurrayBufferList holding both buffers.
-            let list = unsafe {
+            // The capsule pointer is a HurrayTensor owning both buffers and the
+            // descriptor that indexes them.
+            let handle = unsafe {
                 pyo3::ffi::PyCapsule_GetPointer(
                     capsule.as_ptr(),
                     HURRAY_TENSOR_CAPSULE_NAME.as_ptr(),
                 )
-            } as *mut HurrayBufferList;
+            } as *mut HurrayTensor;
+            assert!(!handle.is_null());
+
+            // And nothing rides in a context: there is no second fetch to forget
+            // (ADR-043 § 3).
+            let context = unsafe { pyo3::ffi::PyCapsule_GetContext(capsule.as_ptr()) };
+            assert!(context.is_null(), "a capsule carries one pointer, no context");
+
+            let mut list: *mut HurrayBufferList = std::ptr::null_mut();
+            unsafe { hurray_ffi::tensor::hurray_tensor_buffers(handle, &mut list) };
             assert!(!list.is_null());
             let mut len = 0u64;
             unsafe { hurray_ffi::buffer_list::hurray_buffer_list_len(list, &mut len) };
             assert_eq!(len, 2, "both buffers must travel in one capsule");
+
+            // The descriptor arrives through the same handle, already decoded.
+            let declared = unsafe { (*handle).core_descriptor() }
+                .expect("a live handle has a descriptor")
+                .buffers
+                .len();
+            assert_eq!(declared, 2, "the pairing is structural, not conventional");
 
             // Consuming it reconstructs a two-buffer tensor with identical bytes.
             let rebuilt = from_hurray(py, &bound).unwrap();

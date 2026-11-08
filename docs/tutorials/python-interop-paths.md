@@ -134,14 +134,17 @@ back a `PyCapsule`.
 The contract, in full:
 
 1. Expose `__hurray__(stream=None)` returning a `PyCapsule` named
-   `"hurray_tensor"`.
-2. The capsule pointer is a `HurrayBufferList` — build it with
-   `hurray_buffer_list_new` and one `hurray_buffer_list_push` per buffer, in
-   descriptor buffer-table order.
-3. The capsule context carries your encoded `TensorDescriptor` and
-   `HURRAY_C_ABI_VERSION`.
-4. Consumers rename the capsule to `"used_hurray_tensor"` on consumption; your
-   destructor calls `hurray_buffer_list_destroy` if it was never consumed.
+   `"hurray_tensor_handle"`.
+2. The capsule pointer is a `HurrayTensor`, and there is no context. Accumulate your
+   buffers with `hurray_buffer_list_new` and one `hurray_buffer_list_push` per buffer, in
+   descriptor buffer-table order, then hand the finished list to `hurray_tensor_new`
+   along with your encoded `TensorDescriptor`, `HURRAY_C_ABI_VERSION`, and whatever
+   reference keeps your memory alive (as the opaque `owner`).
+3. `hurray_tensor_new` decodes the descriptor, so a descriptor that does not parse is
+   refused where you create the capsule rather than where it is consumed.
+4. Consumers rename the capsule to `"used_hurray_tensor_handle"` on consumption; your
+   destructor calls `hurray_tensor_destroy` if it was never consumed — one call, which
+   releases the descriptor, every buffer, and your owner reference.
 
 Discovery is duck-typed. Nothing registers anything:
 
@@ -156,7 +159,7 @@ else:
 
 For `sparselib`, this is the path that makes its **sparse** types first-class: a COO
 matrix is values plus coordinates, two buffers, which DLPack cannot express as one
-object but a `HurrayBufferList` carries natively.
+object but one `HurrayTensor` carries natively.
 
 **What you get.** Full fidelity — every element type, every device tag and memory
 class, quantization with its scale buffers, multi-buffer layouts.

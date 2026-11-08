@@ -17,12 +17,12 @@ use hurray_ffi::{
     descriptor::{hurray_descriptor_buffer_count, hurray_descriptor_shape},
     hurray_descriptor_decode, hurray_item_destroy, hurray_item_kind, hurray_item_node,
     hurray_item_node_count, hurray_reader_destroy, hurray_reader_new, hurray_reader_next_item,
-    hurray_reader_next_tensor, hurray_tensor_buffers, hurray_tensor_descriptor,
-    hurray_tensor_destroy, hurray_writer_destroy, hurray_writer_new, hurray_writer_write_composite,
-    hurray_writer_write_tensor, HurrayBuffer, HurrayBufferList, HurrayCompositeNode,
-    HurrayDescriptor, HurrayIoSlice, HurrayItem, HurrayItemNode, HurrayReader, HurrayReaderOptions,
-    HurrayStatus, HurrayTensor, HurrayTransport, HurrayWriter, HurrayWriterOptions,
-    HURRAY_END_OF_STREAM, HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INTERNAL,
+    hurray_reader_next_tensor, hurray_tensor_abi_version, hurray_tensor_buffers,
+    hurray_tensor_descriptor, hurray_tensor_destroy, hurray_writer_destroy, hurray_writer_new,
+    hurray_writer_write_composite, hurray_writer_write_tensor, HurrayBuffer, HurrayBufferList,
+    HurrayCompositeNode, HurrayDescriptor, HurrayIoSlice, HurrayItem, HurrayItemNode, HurrayReader,
+    HurrayReaderOptions, HurrayStatus, HurrayTensor, HurrayTransport, HurrayWriter,
+    HurrayWriterOptions, HURRAY_END_OF_STREAM, HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INTERNAL,
     HURRAY_ERR_INVALID_STREAM, HURRAY_ERR_LIMIT_EXCEEDED, HURRAY_ERR_NOT_COMPOSITE,
     HURRAY_ERR_NULL_POINTER, HURRAY_ERR_SINK_CLOSED, HURRAY_ERR_TRANSPORT,
     HURRAY_ERR_UNEXPECTED_EOF, HURRAY_ITEM_COMPOSITE, HURRAY_ITEM_TENSOR, HURRAY_OK,
@@ -259,6 +259,15 @@ fn a_tensor_written_through_c_reads_back_through_c() {
 
         let mut tensor: *mut HurrayTensor = std::ptr::null_mut();
         assert_eq!(hurray_reader_next_tensor(reader, &mut tensor), HURRAY_OK);
+
+        // A read-produced tensor reports this build's ABI version, so a consumer can run
+        // the version-first check on every tensor whatever produced it (ADR-043 § 1).
+        let mut abi_version: u32 = 0;
+        assert_eq!(
+            hurray_tensor_abi_version(tensor, &mut abi_version),
+            HURRAY_OK
+        );
+        assert_eq!(abi_version, hurray_ffi::HURRAY_C_ABI_VERSION);
 
         let (bytes, _) = buffer_of(tensor, 0);
         assert_eq!(bytes, &payload[..]);

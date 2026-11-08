@@ -57,7 +57,10 @@ is not an Array API construct and falls outside the modes' jurisdiction.
 
 > **Amended by [ADR-033](ADR-033-native-protocol-rename-hurray.md):** the protocol is
 > named `__hurray__` / `from_hurray`, and the capsule is named `"hurray_tensor"` /
-> `"used_hurray_tensor"`. The original text follows unchanged.
+> `"used_hurray_tensor"` — renamed once more to `"hurray_tensor_handle"` /
+> `"used_hurray_tensor_handle"` by
+> [ADR-043](ADR-043-one-hurray-tensor-handle.md) § 5, when the pointer's type changed.
+> The original text follows unchanged.
 
 `hurray.Tensor` MUST expose a dunder method
 `__hurray_buffer__(stream=None) -> PyCapsule`. The `hurray` module MUST expose
@@ -125,6 +128,11 @@ Justification:
 > **Amended by [ADR-034](ADR-034-c-readable-capsule-context.md):** the capsule context is
 > a `HurrayTensorContext` from `hurray-ffi`, readable from any language, and the ABI
 > version is read through `hurray_tensor_context_abi_version`. C ABI version 4.
+>
+> **Superseded in turn by [ADR-043](ADR-043-one-hurray-tensor-handle.md):** there is no
+> capsule context. The capsule carries one `HurrayTensor *` owning both halves, the ABI
+> version is read through `hurray_tensor_abi_version`, and teardown is one
+> `hurray_tensor_destroy`. C ABI version 10.
 
 The PyCapsule lifetime rules MUST match DLPack semantics:
 
@@ -166,7 +174,10 @@ same semantics as `__dlpack__(stream=None)` in § Stream parameter semantics:
 
 > **Amended by [ADR-033](ADR-033-native-protocol-rename-hurray.md):** the protocol is
 > named `__hurray__` / `from_hurray`, and the capsule is named `"hurray_tensor"` /
-> `"used_hurray_tensor"`. The original text follows unchanged.
+> `"used_hurray_tensor"` — renamed once more to `"hurray_tensor_handle"` /
+> `"used_hurray_tensor_handle"` by
+> [ADR-043](ADR-043-one-hurray-tensor-handle.md) § 5, when the pointer's type changed.
+> The original text follows unchanged.
 
 Consumers MUST discover support by probing `hasattr(obj, '__hurray_buffer__')`. There
 MUST NOT be a capability flag on the `hurray` namespace. This matches the discovery
@@ -179,10 +190,18 @@ link `hurray-ffi`. The two probes are independent.
 > **Amended by [ADR-034](ADR-034-c-readable-capsule-context.md):** the capsule context is
 > a `HurrayTensorContext` from `hurray-ffi`, readable from any language, and the ABI
 > version is read through `hurray_tensor_context_abi_version`. C ABI version 4.
+>
+> **Superseded in turn by [ADR-043](ADR-043-one-hurray-tensor-handle.md):** there is no
+> capsule context. The capsule carries one `HurrayTensor *` owning both halves, the ABI
+> version is read through `hurray_tensor_abi_version`, and teardown is one
+> `hurray_tensor_destroy`. C ABI version 10.
 
 > **Amended by [ADR-033](ADR-033-native-protocol-rename-hurray.md):** the protocol is
 > named `__hurray__` / `from_hurray`, and the capsule is named `"hurray_tensor"` /
-> `"used_hurray_tensor"`. The original text follows unchanged.
+> `"used_hurray_tensor"` — renamed once more to `"hurray_tensor_handle"` /
+> `"used_hurray_tensor_handle"` by
+> [ADR-043](ADR-043-one-hurray-tensor-handle.md) § 5, when the pointer's type changed.
+> The original text follows unchanged.
 
 - A consumer receiving an object lacking `__hurray_buffer__` MUST raise `TypeError`.
 - If the wrapped `HurrayBuffer` pointer is null or the capsule name is not

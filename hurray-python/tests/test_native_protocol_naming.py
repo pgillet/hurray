@@ -64,10 +64,24 @@ def test_the_capsule_is_named_for_its_payload():
     Deliberately not symmetric with the method name (ADR-033 § 2): brevity in the
     call, precision on the wire — the same split DLPack makes with ``__dlpack__``
     returning a ``"dltensor_versioned"`` capsule.
+
+    The name is ``hurray_tensor_handle`` since ADR-043 § 5: the pointer's type changed
+    from a buffer list to the tensor handle that owns it, and the version a consumer
+    would check first now lives inside the thing whose type changed. A name mismatch is
+    a hard ``TypeError`` in every consumer; the old name would have been undefined
+    behaviour for one that dereferences before checking. No ``_v2`` — the suffix names
+    what the pointer *is*, not a counter that would read ``v2`` against an ABI of 10.
     """
     capsule = _tensor().__hurray__()
-    assert "hurray_tensor" in repr(capsule)
+    assert '"hurray_tensor_handle"' in repr(capsule)
     assert "hurray_buffer" not in repr(capsule)
+
+
+def test_the_pre_adr_043_capsule_name_is_not_produced():
+    """A v9 capsule and a v10 one must not share a name while pointing at
+    different types."""
+    capsule = _tensor().__hurray__()
+    assert '"hurray_tensor"' not in repr(capsule)
 
 
 # ── A non-participant is still rejected by type ───────────────────────────────

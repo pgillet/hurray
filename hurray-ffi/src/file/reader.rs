@@ -17,7 +17,8 @@ use crate::{
         status_from_io_error, HurrayStatus, HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INTERNAL,
         HURRAY_ERR_NULL_POINTER, HURRAY_OK,
     },
-    stream::{tensor::tensor_handle, transport::Transport, HurrayTensor, HurrayTransport},
+    stream::{transport::Transport, HurrayTransport},
+    tensor::{tensor_handle, HurrayTensor},
 };
 
 // ── HurrayFileReader ──────────────────────────────────────────────────────────

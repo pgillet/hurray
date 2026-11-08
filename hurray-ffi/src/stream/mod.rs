@@ -22,9 +22,8 @@
 //! random-access core over the vtable's `read_at` and `size` callbacks.
 
 mod reader;
-// `pub(crate)`: the file surface in `crate::file` is a second driver over the same vtable
-// and hands out the same tensor handle, so it shares these two internals.
-pub(crate) mod tensor;
+// `pub(crate)`: the file surface in `crate::file` is a second driver over the same vtable,
+// so it shares this internal.
 pub(crate) mod transport;
 mod writer;
 
@@ -32,8 +31,6 @@ pub use reader::{
     hurray_reader_destroy, hurray_reader_new, hurray_reader_next_item, hurray_reader_next_tensor,
 };
 pub use reader::{HurrayReader, HurrayReaderOptions};
-pub use tensor::HurrayTensor;
-pub use tensor::{hurray_tensor_buffers, hurray_tensor_descriptor, hurray_tensor_destroy};
 pub use transport::{
     HurrayTransport, HurrayTransportReadAtFn, HurrayTransportReadFn, HurrayTransportReleaseFn,
     HurrayTransportSizeFn, HurrayTransportWriteFn,

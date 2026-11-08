@@ -1039,8 +1039,8 @@ impl Tensor {
 
     // ── Native protocol ───────────────────────────────────────────────────────
 
-    /// Return a `"hurray_tensor"` PyCapsule for zero-copy buffer sharing between
-    /// Hurray-aware Python extensions (ADR-023, Layer 8c).
+    /// Return a `"hurray_tensor_handle"` PyCapsule for zero-copy buffer sharing between
+    /// Hurray-aware Python extensions (ADR-023, ADR-043).
     ///
     /// Unlike `__dlpack__`, this protocol preserves the full Hurray descriptor
     /// (device tag, memory class, sync mode, element type, shape, layout) without
@@ -1054,7 +1054,8 @@ impl Tensor {
     /// ## Errors
     ///
     /// - `hurray.BufferError` — tensor has no buffer handles (should not occur in practice).
-    /// - `hurray.InvalidDescriptorError` — descriptor could not be encoded.
+    /// - `hurray.InvalidDescriptorError` — the buffers supplied disagree in count with
+    ///   the descriptor's buffer table (should not occur in practice).
     ///
     /// ## Examples
     ///
@@ -2030,9 +2031,9 @@ pub(crate) mod tests {
                 .expect("__hurray__ must not raise");
             // SAFETY: capsule is a borrowed Python object from the call above.
             let is_valid = unsafe {
-                pyo3::ffi::PyCapsule_IsValid(capsule.as_ptr(), c"hurray_tensor".as_ptr())
+                pyo3::ffi::PyCapsule_IsValid(capsule.as_ptr(), c"hurray_tensor_handle".as_ptr())
             };
-            assert_eq!(is_valid, 1, "capsule must be named 'hurray_tensor'");
+            assert_eq!(is_valid, 1, "capsule must be named 'hurray_tensor_handle'");
         });
     }
 
