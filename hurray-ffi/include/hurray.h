@@ -20,9 +20,9 @@
 // ```
 // use hurray_ffi::HURRAY_C_ABI_VERSION;
 //
-// assert_eq!(HURRAY_C_ABI_VERSION, 9);
+// assert_eq!(HURRAY_C_ABI_VERSION, 10);
 // ```
-#define HURRAY_C_ABI_VERSION 9
+#define HURRAY_C_ABI_VERSION 10
 
 // UTF-8 string: `data` and `data_len`. Not NUL-terminated.
 #define HURRAY_KV_STRING 1
@@ -123,16 +123,6 @@ typedef struct HurrayReader HurrayReader;
 // pointers — valid until [`hurray_tensor_destroy`], and never to be destroyed
 // individually.
 typedef struct HurrayTensor HurrayTensor;
-
-// Opaque handle to a capsule's tensor context: descriptor bytes, ABI version,
-// and an owner reference.
-//
-// Like every other handle in this ABI, this struct is **not** `#[repr(C)]`; its
-// layout is an implementation detail and callers MUST treat it as a black-box
-// pointer. Publishing the layout would buy nothing — a caller holding a capsule
-// already links this library to read its buffer list — and would freeze the
-// layout for the life of the major version (ADR-034 § 2).
-typedef struct HurrayTensorContext HurrayTensorContext;
 
 // Opaque handle to a blocking stream writer.
 //
@@ -497,14 +487,14 @@ typedef struct HurrayReaderOptions {
     uintptr_t max_composite_depth;
 } HurrayReaderOptions;
 
-// Callback invoked exactly once by [`hurray_tensor_context_destroy`] to release
-// whatever keeps the tensor's memory alive.
+// Callback invoked exactly once by [`hurray_tensor_destroy`] to release whatever keeps
+// the tensor's memory alive.
 //
-// The argument is the `owner` pointer passed to [`hurray_tensor_context_new`],
-// with the exact value provided at construction time.
+// The argument is the `owner` pointer passed to [`hurray_tensor_new`], with the exact
+// value provided at construction time.
 //
-// Implementations MUST NOT call back into the Hurray C ABI from within this
-// callback; doing so may cause deadlocks or use-after-free.
+// Implementations MUST NOT call back into the Hurray C ABI from within this callback;
+// doing so may cause deadlocks or use-after-free.
 typedef void (*HurrayOwnerReleaseFn)(void*);
 
 // Transport assumptions for a writer.
@@ -1187,7 +1177,7 @@ HurrayStatus hurray_buffer_memory_class(const struct HurrayBuffer *buffer,
 // # Examples
 //
 // ```
-// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 9);
+// assert_eq!(unsafe { hurray_ffi::hurray_c_abi_version() }, 10);
 // ```
  uint32_t hurray_c_abi_version(void) ;
 
@@ -1938,228 +1928,330 @@ HurrayStatus hurray_reader_next_tensor(struct HurrayReader *handle,
                                        struct HurrayTensor **out_tensor)
 ;
 
+// Reads the ABI version recorded by the producing build.
+//
+// **Call this first.** It is the one accessor guaranteed to work on a tensor produced by
+// any version of this ABI, and every other accessor assumes a caller that has already
+// compared this value against its own
+// [`HURRAY_C_ABI_VERSION`](crate::HURRAY_C_ABI_VERSION) and found it equal (ADR-043
+// § 5). That ordering is what lets later versions add accessors without breaking
+// consumers compiled against an earlier header.
+//
+// A tensor from a stream or file read reports this library's version; one from
+// [`hurray_tensor_new`] reports what its producer passed.
+//
+// # Safety
+//
+// `handle` and `out` MUST be valid, non-null pointers.
+//
+// # Examples
+//
+// ```
+// # use hurray_core::{
+// #     BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, SyncMode,
+// #     TensorDescriptor, MIN_BUFFER_ALIGNMENT,
+// # };
+// use hurray_ffi::tensor::{
+//     hurray_tensor_abi_version, hurray_tensor_destroy, hurray_tensor_new,
+// };
+// use hurray_ffi::{
+//     hurray_buffer_list_new, HurrayBufferList, HurrayTensor, HURRAY_C_ABI_VERSION, HURRAY_OK,
+// };
+// # let handle = BufferHandle::new(16, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced)?;
+// # let descriptor = TensorDescriptor::new(
+// #     1, 0, ElementType::Float32, Shape::new(vec![4])?, 0, LayoutDescriptor::RowMajor,
+// #     vec![handle], None, None, None, None,
+// # )?;
+// # let encoded = descriptor.encode()?;
+// # let mut buffers: *mut HurrayBufferList = std::ptr::null_mut();
+// # unsafe { hurray_buffer_list_new(1, &mut buffers) };
+// # let mut tensor: *mut HurrayTensor = std::ptr::null_mut();
+// # unsafe {
+// #     hurray_tensor_new(
+// #         HURRAY_C_ABI_VERSION, encoded.as_ptr(), encoded.len() as u64, buffers,
+// #         std::ptr::null_mut(), None, &mut tensor,
+// #     )
+// # };
+// let mut version: u32 = 0;
+// assert_eq!(
+//     unsafe { hurray_tensor_abi_version(tensor, &mut version) },
+//     HURRAY_OK,
+// );
+// if version != HURRAY_C_ABI_VERSION {
+//     // Producer and consumer disagree — refuse rather than dereference further.
+//     return Ok(());
+// }
+// # unsafe { hurray_tensor_destroy(&mut tensor) };
+// # Ok::<(), Box<dyn std::error::Error>>(())
+// ```
+
+HurrayStatus hurray_tensor_abi_version(const struct HurrayTensor *handle,
+                                       uint32_t *out)
+;
+
 // Borrows the tensor's buffer list.
 //
 // Element `i` of the list is buffer `i` of the descriptor's buffer table. The list is
-// **borrowed**: the caller MUST NOT call [`hurray_buffer_list_destroy`] on it.
+// **borrowed**: the caller MUST NOT call [`hurray_buffer_list_destroy`] on it, and MUST
+// keep the tensor alive while it reads the buffers.
 //
 // # Safety
 //
 // `handle` and `out_buffers` MUST be valid, non-null pointers.
+//
+// # Examples
+//
+// ```
+// # use hurray_core::{
+// #     BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, SyncMode,
+// #     TensorDescriptor, MIN_BUFFER_ALIGNMENT,
+// # };
+// use hurray_ffi::buffer_list::hurray_buffer_list_len;
+// use hurray_ffi::tensor::{hurray_tensor_buffers, hurray_tensor_destroy, hurray_tensor_new};
+// use hurray_ffi::{
+//     hurray_buffer_list_new, HurrayBufferList, HurrayTensor, HURRAY_C_ABI_VERSION, HURRAY_OK,
+// };
+// # let handle = BufferHandle::new(16, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced)?;
+// # let descriptor = TensorDescriptor::new(
+// #     1, 0, ElementType::Float32, Shape::new(vec![4])?, 0, LayoutDescriptor::RowMajor,
+// #     vec![handle], None, None, None, None,
+// # )?;
+// # let encoded = descriptor.encode()?;
+// # let mut buffers: *mut HurrayBufferList = std::ptr::null_mut();
+// # unsafe { hurray_buffer_list_new(1, &mut buffers) };
+// # let mut tensor: *mut HurrayTensor = std::ptr::null_mut();
+// # unsafe {
+// #     hurray_tensor_new(
+// #         HURRAY_C_ABI_VERSION, encoded.as_ptr(), encoded.len() as u64, buffers,
+// #         std::ptr::null_mut(), None, &mut tensor,
+// #     )
+// # };
+// let mut borrowed: *mut HurrayBufferList = std::ptr::null_mut();
+// assert_eq!(
+//     unsafe { hurray_tensor_buffers(tensor, &mut borrowed) },
+//     HURRAY_OK,
+// );
+//
+// let mut len: u64 = 0;
+// unsafe { hurray_buffer_list_len(borrowed, &mut len) };
+// # unsafe { hurray_tensor_destroy(&mut tensor) };
+// # Ok::<(), Box<dyn std::error::Error>>(())
+// ```
 
 HurrayStatus hurray_tensor_buffers(const struct HurrayTensor *handle,
                                    struct HurrayBufferList **out_buffers)
-;
-
-// Reads the ABI version recorded by the producing build.
-//
-// **Call this first.** It is the one accessor guaranteed to work on a context
-// produced by any version of this ABI; every other accessor assumes a caller
-// that has already compared this value against its own
-// [`HURRAY_C_ABI_VERSION`](crate::HURRAY_C_ABI_VERSION) and found it
-// compatible (ADR-034 § 4). That ordering is what lets later versions add
-// accessors without breaking older consumers.
-//
-// # Safety
-//
-// `ctx` MUST be a live handle from [`hurray_tensor_context_new`], and `out`
-// MUST be a valid, writable pointer.
-//
-// # Examples
-//
-// ```
-// use hurray_ffi::tensor_context::{
-//     hurray_tensor_context_abi_version, hurray_tensor_context_destroy,
-//     hurray_tensor_context_new,
-// };
-// use hurray_ffi::{HurrayTensorContext, HURRAY_C_ABI_VERSION, HURRAY_OK};
-//
-// let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
-// unsafe {
-//     hurray_tensor_context_new(
-//         HURRAY_C_ABI_VERSION, std::ptr::null(), 0, std::ptr::null_mut(), None, &mut ctx,
-//     );
-// }
-//
-// let mut version: u32 = 0;
-// assert_eq!(
-//     unsafe { hurray_tensor_context_abi_version(ctx, &mut version) },
-//     HURRAY_OK,
-// );
-// assert_eq!(version, HURRAY_C_ABI_VERSION);
-//
-// unsafe { hurray_tensor_context_destroy(&mut ctx) };
-// ```
-
-HurrayStatus hurray_tensor_context_abi_version(const struct HurrayTensorContext *ctx,
-                                               uint32_t *out)
-;
-
-// Borrows the encoded tensor descriptor.
-//
-// The returned pointer is owned by `ctx` and is valid until the context is
-// destroyed; the caller MUST NOT free it. Decode it with
-// [`hurray_descriptor_decode`](crate::descriptor::hurray_descriptor_decode) to
-// read the element type, shape, layout, and optional sections.
-//
-// `out_len` is `0` — and `out_bytes` null — for a context created without a
-// descriptor.
-//
-// # Safety
-//
-// `ctx` MUST be a live handle from [`hurray_tensor_context_new`], and both out
-// pointers MUST be valid and writable.
-//
-// # Examples
-//
-// ```
-// use hurray_ffi::tensor_context::{
-//     hurray_tensor_context_descriptor, hurray_tensor_context_destroy,
-//     hurray_tensor_context_new,
-// };
-// use hurray_ffi::{HurrayTensorContext, HURRAY_C_ABI_VERSION, HURRAY_OK};
-//
-// let descriptor = [0x48u8, 0x52, 0x52, 0x59];
-// let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
-// unsafe {
-//     hurray_tensor_context_new(
-//         HURRAY_C_ABI_VERSION,
-//         descriptor.as_ptr(),
-//         descriptor.len() as u64,
-//         std::ptr::null_mut(),
-//         None,
-//         &mut ctx,
-//     );
-// }
-//
-// let mut bytes: *const u8 = std::ptr::null();
-// let mut len: u64 = 0;
-// assert_eq!(
-//     unsafe { hurray_tensor_context_descriptor(ctx, &mut bytes, &mut len) },
-//     HURRAY_OK,
-// );
-// assert_eq!(len, 4);
-// assert_eq!(unsafe { std::slice::from_raw_parts(bytes, len as usize) }, &descriptor);
-//
-// unsafe { hurray_tensor_context_destroy(&mut ctx) };
-// ```
-
-HurrayStatus hurray_tensor_context_descriptor(const struct HurrayTensorContext *ctx,
-                                              const uint8_t **out_bytes,
-                                              uint64_t *out_len)
-;
-
-// Destroys a [`HurrayTensorContext`], invoking its owner-release callback, and
-// nulls the caller's pointer.
-//
-// Destroying a null handle is a no-op that returns [`HURRAY_OK`], so the call
-// is safe to make unconditionally on a cleanup path.
-//
-// # Safety
-//
-// - `ctx` MUST be a valid, writable pointer to a handle slot.
-// - The handle it points to MUST come from [`hurray_tensor_context_new`] and
-//   MUST NOT have been destroyed already.
-//
-// # Examples
-//
-// ```
-// use hurray_ffi::tensor_context::{hurray_tensor_context_destroy, hurray_tensor_context_new};
-// use hurray_ffi::{HurrayTensorContext, HURRAY_C_ABI_VERSION, HURRAY_OK};
-//
-// let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
-// unsafe {
-//     hurray_tensor_context_new(
-//         HURRAY_C_ABI_VERSION, std::ptr::null(), 0, std::ptr::null_mut(), None, &mut ctx,
-//     );
-// }
-//
-// assert_eq!(unsafe { hurray_tensor_context_destroy(&mut ctx) }, HURRAY_OK);
-// assert!(ctx.is_null());
-// // Destroying again is a no-op, not a double free.
-// assert_eq!(unsafe { hurray_tensor_context_destroy(&mut ctx) }, HURRAY_OK);
-// ```
- HurrayStatus hurray_tensor_context_destroy(struct HurrayTensorContext **ctx) ;
-
-// Creates a [`HurrayTensorContext`] owning a copy of `descriptor_bytes`.
-//
-// `abi_version` MUST be the producing build's `HURRAY_C_ABI_VERSION`; a consumer
-// compares it against its own before trusting anything else about the capsule.
-//
-// `owner` and `owner_release` are optional and opaque. When `owner_release` is
-// non-null it is invoked exactly once, with `owner`, during
-// [`hurray_tensor_context_destroy`].
-//
-// The caller owns the returned handle and MUST destroy it exactly once.
-//
-// # Safety
-//
-// - `out_ctx` MUST be a valid, non-null, writable pointer.
-// - `descriptor_bytes` MUST point to at least `descriptor_len` readable bytes,
-//   unless `descriptor_len` is `0`, in which case it MAY be null.
-// - `owner` MUST remain valid until `owner_release` is invoked.
-//
-// # Examples
-//
-// ```
-// use hurray_ffi::tensor_context::{
-//     hurray_tensor_context_destroy, hurray_tensor_context_new,
-// };
-// use hurray_ffi::{HurrayTensorContext, HURRAY_C_ABI_VERSION, HURRAY_OK};
-//
-// let descriptor = [0x48u8, 0x52, 0x52, 0x59]; // "HRRY"
-// let mut ctx: *mut HurrayTensorContext = std::ptr::null_mut();
-// assert_eq!(
-//     unsafe {
-//         hurray_tensor_context_new(
-//             HURRAY_C_ABI_VERSION,
-//             descriptor.as_ptr(),
-//             descriptor.len() as u64,
-//             std::ptr::null_mut(),
-//             None,
-//             &mut ctx,
-//         )
-//     },
-//     HURRAY_OK,
-// );
-//
-// assert_eq!(unsafe { hurray_tensor_context_destroy(&mut ctx) }, HURRAY_OK);
-// assert!(ctx.is_null()); // destroy nulls the caller's pointer
-// ```
-
-HurrayStatus hurray_tensor_context_new(uint32_t abi_version,
-                                       const uint8_t *descriptor_bytes,
-                                       uint64_t descriptor_len,
-                                       void *owner,
-                                       HurrayOwnerReleaseFn owner_release,
-                                       struct HurrayTensorContext **out_ctx)
 ;
 
 // Borrows the tensor's descriptor handle.
 //
 // The returned handle carries every accessor in [`crate::descriptor`] and
 // [`crate::field`]. It is **borrowed**: the caller MUST NOT call
-// [`hurray_descriptor_destroy`] on it.
+// [`hurray_descriptor_destroy`] on it, and MUST keep the tensor alive while it reads.
 //
 // # Safety
 //
 // `handle` and `out_descriptor` MUST be valid, non-null pointers.
+//
+// # Examples
+//
+// ```
+// # use hurray_core::{
+// #     BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, SyncMode,
+// #     TensorDescriptor, MIN_BUFFER_ALIGNMENT,
+// # };
+// use hurray_ffi::descriptor::hurray_descriptor_rank;
+// use hurray_ffi::tensor::{hurray_tensor_descriptor, hurray_tensor_destroy, hurray_tensor_new};
+// use hurray_ffi::{
+//     hurray_buffer_list_new, HurrayBufferList, HurrayDescriptor, HurrayTensor,
+//     HURRAY_C_ABI_VERSION, HURRAY_OK,
+// };
+// # let handle = BufferHandle::new(16, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced)?;
+// # let descriptor = TensorDescriptor::new(
+// #     1, 0, ElementType::Float32, Shape::new(vec![4])?, 0, LayoutDescriptor::RowMajor,
+// #     vec![handle], None, None, None, None,
+// # )?;
+// # let encoded = descriptor.encode()?;
+// # let mut buffers: *mut HurrayBufferList = std::ptr::null_mut();
+// # unsafe { hurray_buffer_list_new(1, &mut buffers) };
+// # let mut tensor: *mut HurrayTensor = std::ptr::null_mut();
+// # unsafe {
+// #     hurray_tensor_new(
+// #         HURRAY_C_ABI_VERSION, encoded.as_ptr(), encoded.len() as u64, buffers,
+// #         std::ptr::null_mut(), None, &mut tensor,
+// #     )
+// # };
+// let mut descriptor: *mut HurrayDescriptor = std::ptr::null_mut();
+// assert_eq!(
+//     unsafe { hurray_tensor_descriptor(tensor, &mut descriptor) },
+//     HURRAY_OK,
+// );
+//
+// let mut rank: u32 = 0;
+// unsafe { hurray_descriptor_rank(descriptor, &mut rank) };
+// assert_eq!(rank, 1);
+// # unsafe { hurray_tensor_destroy(&mut tensor) };
+// # Ok::<(), Box<dyn std::error::Error>>(())
+// ```
 
 HurrayStatus hurray_tensor_descriptor(const struct HurrayTensor *handle,
                                       struct HurrayDescriptor **out_descriptor)
 ;
 
-// Destroys a tensor handle, its descriptor and every buffer it owns, then writes null
-// through `handle`.
+// Destroys a tensor handle — its descriptor, every buffer it owns, and its owner
+// reference — then writes null through `handle`.
 //
-// One call rather than two, so the teardown order is not the caller's problem.
+// One call rather than two, so the teardown order is not the caller's problem. A
+// non-null `owner_release` is invoked exactly once, with the `owner` pointer given at
+// construction.
 //
 // # Safety
 //
 // - `handle` MUST be a valid, non-null pointer to a `*mut HurrayTensor` produced by
-//   [`hurray_reader_next_tensor`][crate::hurray_reader_next_tensor].
+//   [`hurray_tensor_new`], by [`hurray_reader_next_tensor`][crate::hurray_reader_next_tensor],
+//   by [`hurray_file_reader_read_tensor`][crate::hurray_file_reader_read_tensor], or
+//   taken out of a native-protocol capsule.
 // - That tensor MUST NOT have been destroyed already.
- HurrayStatus hurray_tensor_destroy(struct HurrayTensor **handle) ;
+//
+// # Examples
+//
+// ```
+// # use hurray_core::{
+// #     BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, SyncMode,
+// #     TensorDescriptor, MIN_BUFFER_ALIGNMENT,
+// # };
+// use hurray_ffi::tensor::{hurray_tensor_destroy, hurray_tensor_new};
+// use hurray_ffi::{
+//     hurray_buffer_list_new, HurrayBufferList, HurrayTensor, HURRAY_C_ABI_VERSION,
+//     HURRAY_ERR_INTERNAL, HURRAY_OK,
+// };
+// # let handle = BufferHandle::new(16, MIN_BUFFER_ALIGNMENT, DeviceTag::Cpu, SyncMode::ProducerSynced)?;
+// # let descriptor = TensorDescriptor::new(
+// #     1, 0, ElementType::Float32, Shape::new(vec![4])?, 0, LayoutDescriptor::RowMajor,
+// #     vec![handle], None, None, None, None,
+// # )?;
+// # let encoded = descriptor.encode()?;
+// # let mut buffers: *mut HurrayBufferList = std::ptr::null_mut();
+// # unsafe { hurray_buffer_list_new(1, &mut buffers) };
+// # let mut tensor: *mut HurrayTensor = std::ptr::null_mut();
+// # unsafe {
+// #     hurray_tensor_new(
+// #         HURRAY_C_ABI_VERSION, encoded.as_ptr(), encoded.len() as u64, buffers,
+// #         std::ptr::null_mut(), None, &mut tensor,
+// #     )
+// # };
+// assert_eq!(unsafe { hurray_tensor_destroy(&mut tensor) }, HURRAY_OK);
+// assert!(tensor.is_null());
+//
+// // A second destroy finds the caller's variable dead and says so, rather than
+// // freeing anything twice.
+// assert_eq!(
+//     unsafe { hurray_tensor_destroy(&mut tensor) },
+//     HURRAY_ERR_INTERNAL,
+// );
+// # Ok::<(), Box<dyn std::error::Error>>(())
+// ```
+
+HurrayStatus hurray_tensor_destroy(struct HurrayTensor **handle)
+;
+
+// Creates a [`HurrayTensor`] from an encoded descriptor and a finished buffer list.
+//
+// `abi_version` MUST be the producing build's
+// [`HURRAY_C_ABI_VERSION`](crate::HURRAY_C_ABI_VERSION); a consumer compares it against
+// its own before trusting anything else about the handle.
+//
+// `descriptor_bytes` is **decoded during this call** and only the decoded form is kept,
+// so a producer cannot export a tensor whose descriptor does not parse: bytes that fail
+// to decode are rejected with the status the decode failed with. A null pointer or a
+// `descriptor_len` of `0` is rejected with
+// [`HURRAY_ERR_NULL_POINTER`](crate::HURRAY_ERR_NULL_POINTER) — a tensor with no
+// descriptor is a carrier for bytes nothing can interpret.
+//
+// On success `buffers` is **owned by the tensor**, and the caller MUST NOT push into it,
+// destroy it, or use the handle at all. On failure ownership stays with the caller, who
+// MUST destroy it — the discipline
+// [`hurray_buffer_list_push`](crate::buffer_list::hurray_buffer_list_push) already
+// follows.
+//
+// `owner` and `owner_release` are optional and opaque. When `owner_release` is non-null
+// it is invoked exactly once, with `owner`, during [`hurray_tensor_destroy`].
+//
+// # Safety
+//
+// - `out_tensor` MUST be a valid, non-null, writable pointer.
+// - `descriptor_bytes` MUST point to at least `descriptor_len` readable bytes.
+// - `buffers` MUST be a live list from
+//   [`hurray_buffer_list_new`](crate::hurray_buffer_list_new) that nothing else owns.
+// - `owner` MUST remain valid until `owner_release` is invoked.
+//
+// # Examples
+//
+// ```
+// use hurray_core::{
+//     BufferHandle, DeviceTag, ElementType, LayoutDescriptor, Shape, SyncMode,
+//     TensorDescriptor, MIN_BUFFER_ALIGNMENT,
+// };
+// use hurray_ffi::tensor::{hurray_tensor_destroy, hurray_tensor_new};
+// use hurray_ffi::{
+//     hurray_buffer_list_new, HurrayBufferList, HurrayTensor, HURRAY_C_ABI_VERSION, HURRAY_OK,
+// };
+//
+// let handle = BufferHandle::new(
+//     16,
+//     MIN_BUFFER_ALIGNMENT,
+//     DeviceTag::Cpu,
+//     SyncMode::ProducerSynced,
+// )?;
+// let descriptor = TensorDescriptor::new(
+//     1,
+//     0,
+//     ElementType::Float32,
+//     Shape::new(vec![4])?,
+//     0,
+//     LayoutDescriptor::RowMajor,
+//     vec![handle],
+//     None,
+//     None,
+//     None,
+//     None,
+// )?;
+// let encoded = descriptor.encode()?;
+//
+// // An empty list is enough to show the ownership transfer; a real producer pushes
+// // one buffer per descriptor buffer-table entry first.
+// let mut buffers: *mut HurrayBufferList = std::ptr::null_mut();
+// assert_eq!(unsafe { hurray_buffer_list_new(1, &mut buffers) }, HURRAY_OK);
+//
+// let mut tensor: *mut HurrayTensor = std::ptr::null_mut();
+// assert_eq!(
+//     unsafe {
+//         hurray_tensor_new(
+//             HURRAY_C_ABI_VERSION,
+//             encoded.as_ptr(),
+//             encoded.len() as u64,
+//             buffers, // ownership transfers on success
+//             std::ptr::null_mut(),
+//             None,
+//             &mut tensor,
+//         )
+//     },
+//     HURRAY_OK,
+// );
+//
+// // One call ends the whole tensor: descriptor, buffers, and the owner reference.
+// assert_eq!(unsafe { hurray_tensor_destroy(&mut tensor) }, HURRAY_OK);
+// assert!(tensor.is_null()); // destroy nulls the caller's pointer
+// # Ok::<(), Box<dyn std::error::Error>>(())
+// ```
+
+HurrayStatus hurray_tensor_new(uint32_t abi_version,
+                               const uint8_t *descriptor_bytes,
+                               uint64_t descriptor_len,
+                               struct HurrayBufferList *buffers,
+                               void *owner,
+                               HurrayOwnerReleaseFn owner_release,
+                               struct HurrayTensor **out_tensor)
+;
 
 // Destroys a writer, releases its transport context, and writes null through `handle`.
 //

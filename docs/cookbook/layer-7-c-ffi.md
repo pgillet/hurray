@@ -186,33 +186,34 @@ HurrayStatus s = hurray_buffer_handoff_producer_synced(buffer);
 
 ## Reading a capsule from outside Python
 
-A native-protocol capsule carries a `HurrayBufferList` as its pointer and a
-`HurrayTensorContext` as its context. The list holds the bytes; the context holds the
-descriptor that says what those bytes *are* (ADR-034). Without it a consumer gets
-element data with no element type, shape, or layout — which is what every non-Python
-consumer got before ADR-034.
+A native-protocol capsule carries **one** thing: a `HurrayTensor *`. The handle owns the
+descriptor that says what the bytes *are* — element type, shape, layout, quantization —
+and the buffers that hold them, so a consumer holding the pointer cannot have one without
+the other (ADR-043). Before it, the capsule was a `HurrayBufferList` pointer plus a
+`HurrayTensorContext` context: two independent fetches, paired by convention, torn down in
+a required order.
 
 **Check the version first.** It is the one accessor guaranteed to work across ABI
 versions, and every other accessor assumes a caller that has already checked:
 
 ```c
+HurrayTensor *tensor = PyCapsule_GetPointer(capsule, "hurray_tensor_handle");
+if (tensor == NULL) return -1;
+
 uint32_t abi_version = 0;
-if (hurray_tensor_context_abi_version(ctx, &abi_version) != HURRAY_OK) return -1;
+if (hurray_tensor_abi_version(tensor, &abi_version) != HURRAY_OK) return -1;
 if (abi_version != HURRAY_C_ABI_VERSION) {
     /* Producer and consumer disagree — refuse rather than dereference. */
     return -1;
 }
 ```
 
-Then borrow the descriptor and decode it:
+Then borrow the descriptor. There is nothing to decode: construction decoded it, and the
+handle keeps only the decoded form.
 
 ```c
-const uint8_t *bytes = NULL;
-uint64_t len = 0;
-if (hurray_tensor_context_descriptor(ctx, &bytes, &len) != HURRAY_OK) return -1;
-
-HurrayDescriptor *descriptor = NULL;
-if (hurray_descriptor_decode(bytes, (uintptr_t)len, &descriptor) != HURRAY_OK) return -1;
+HurrayDescriptor *descriptor = NULL;    /* borrowed — do not destroy */
+if (hurray_tensor_descriptor(tensor, &descriptor) != HURRAY_OK) return -1;
 
 uint8_t type_tag = 0;
 uint32_t rank = 0;
@@ -220,18 +221,23 @@ hurray_descriptor_element_type_tag(descriptor, &type_tag);
 hurray_descriptor_rank(descriptor, &rank);
 ```
 
-The pointer `bytes` is **borrowed** — owned by the context, valid until the context is
-destroyed. Copy it if you need it longer. An empty descriptor reports a null pointer
-and a zero length.
+Every descriptor *field* is readable this way (see
+[Reading the optional descriptor sections](#reading-the-optional-descriptor-sections)).
+The encoded bytes are not: verbatim byte forwarding went with the context, because a
+tensor from a stream or file read has no bytes to offer — the sans-io cores decode out of
+a staging buffer and drop it.
 
-Now the buffers mean something, because the descriptor said what they hold:
+Now the buffers mean something, because the same handle said what they hold:
 
 ```c
+HurrayBufferList *buffers = NULL;       /* borrowed — do not destroy */
+if (hurray_tensor_buffers(tensor, &buffers) != HURRAY_OK) return -1;
+
 uint64_t count = 0;
-hurray_buffer_list_len(list, &count);
+hurray_buffer_list_len(buffers, &count);
 for (uint64_t i = 0; i < count; i++) {
     HurrayBuffer *borrowed = NULL;          /* owned by the list — do not destroy */
-    hurray_buffer_list_get(list, i, &borrowed);
+    hurray_buffer_list_get(buffers, i, &borrowed);
 
     void *ptr = NULL;
     uint64_t size = 0;
@@ -240,20 +246,44 @@ for (uint64_t i = 0; i < count; i++) {
 }
 ```
 
-Destroying the context runs its `owner_release` callback, which is how the producer
-learns it can let the tensor go:
+Keep the handle alive while you read those pointers — both halves are borrows. One call
+ends the whole tensor, running every buffer's release callback and then the producer's
+`owner_release`, which is how the producer learns it can let the tensor go:
 
 ```c
-hurray_descriptor_destroy(descriptor);
-hurray_tensor_context_destroy(&ctx);       /* runs owner_release exactly once */
-hurray_buffer_list_destroy(&list);         /* destroys every handle it owns */
+hurray_tensor_destroy(&tensor);    /* descriptor + buffers + owner, in that order */
 ```
+
+Producing one is the same handle from the other side: accumulate the buffers in a list,
+then hand the finished list over.
+
+```c
+HurrayBufferList *buffers = NULL;
+hurray_buffer_list_new(1, &buffers);
+hurray_buffer_list_push(buffers, buffer);   /* the list takes ownership */
+
+HurrayTensor *tensor = NULL;
+HurrayStatus status = hurray_tensor_new(HURRAY_C_ABI_VERSION,
+                                        descriptor_bytes, descriptor_len,
+                                        buffers,          /* ownership transfers */
+                                        owner, owner_release,
+                                        &tensor);
+if (status != HURRAY_OK) {
+    /* The descriptor did not parse. The list is still yours on failure. */
+    hurray_buffer_list_destroy(&buffers);
+    return -1;
+}
+```
+
+`hurray_tensor_new` decodes the descriptor, so a producer cannot export a tensor whose
+descriptor does not parse — a failure that used to be discovered by the consumer, one
+process or one machine later. A null or zero-length descriptor is refused outright.
 
 Runnable version, in Rust because that is what this repository builds — but the
 sequence is the one any language follows:
 
 ```bash
-cargo run -p hurray-ffi --example tensor_context
+cargo run -p hurray-ffi --example tensor
 ```
 
 ## Reading a layout's payload fields
@@ -606,6 +636,9 @@ cargo run -p hurray-ffi --example section_fields
   any is null. Optional context pointers (e.g., `release_context`) MAY be null.
 - **Exactly one destroy per create.** Each handle created by a `*_from_ptr`,
   `*_decode`, or `*_new` function MUST be destroyed exactly once.
-- **Read the ABI version before anything else.** For a `HurrayTensorContext` this is
+- **Read the ABI version before anything else.** For a `HurrayTensor` this is
   normative, not advisory: it is what lets later versions add accessors without
   breaking consumers compiled against an earlier header.
+- **One handle is the whole tensor.** `hurray_tensor_descriptor` and
+  `hurray_tensor_buffers` hand out borrows, so keep the handle alive while you read them
+  and end it with a single `hurray_tensor_destroy`.

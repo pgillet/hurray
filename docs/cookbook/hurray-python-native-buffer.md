@@ -71,11 +71,12 @@ assert q_copy.dtype == hurray.dtype.int4   # works in strict mode
 
 ## Capsule lifecycle
 
-`__hurray__()` returns a `PyCapsule` named `"hurray_tensor"`. The capsule
-holds a `HurrayBuffer` pointer (from `hurray-ffi`) and a strong Python reference to
-the source `Tensor`.
+`__hurray__()` returns a `PyCapsule` named `"hurray_tensor_handle"`. The capsule holds
+one pointer — a `HurrayTensor` (from `hurray-ffi`) owning the descriptor, every buffer,
+and a strong Python reference to the source `Tensor` as its opaque owner — and no
+context (ADR-043).
 
-`hurray.from_hurray()` renames the capsule to `"used_hurray_tensor"` before
+`hurray.from_hurray()` renames the capsule to `"used_hurray_tensor_handle"` before
 taking ownership — preventing double-free if the capsule is later GC'd. Attempting to
 consume the same capsule twice raises `hurray.BufferError`.
 

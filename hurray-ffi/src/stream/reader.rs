@@ -15,11 +15,8 @@ use crate::{
         status_from_io_error, HurrayStatus, HURRAY_END_OF_STREAM, HURRAY_ERR_INTERNAL,
         HURRAY_ERR_NULL_POINTER, HURRAY_OK,
     },
-    stream::{
-        tensor::{tensor_handle, HurrayTensor},
-        transport::Transport,
-        HurrayTransport,
-    },
+    stream::{transport::Transport, HurrayTransport},
+    tensor::{tensor_handle, HurrayTensor},
 };
 
 // ── Options ───────────────────────────────────────────────────────────────────

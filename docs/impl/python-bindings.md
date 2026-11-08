@@ -379,10 +379,14 @@ handle's accessors, so the pairing is structural: a consumer that has the pointe
 the description of the bytes it points at, in any language, with no structure private
 to `hurray-python` in the way.
 
-A producer MUST build the handle with `hurray_tensor_new`, passing the encoded
-descriptor and the finished `HurrayBufferList`. Construction decodes the descriptor, so
-a capsule whose descriptor does not parse is refused where it is created rather than
-where it is consumed.
+A producer MUST build the handle so that it owns the descriptor and the finished
+`HurrayBufferList` before the capsule exists. A producer reaching the ABI from C does
+that with `hurray_tensor_new`, which decodes the encoded descriptor it is given, so a
+capsule whose descriptor does not parse is refused where it is created rather than where
+it is consumed. `hurray-python` itself holds a decoded `TensorDescriptor` already and
+hands that to `hurray-ffi`'s Rust constructor instead: encoding it only for
+`hurray_tensor_new` to decode it straight back would buy validation a `hurray.Tensor`
+has by construction (ADR-043, Consequences).
 
 The strong reference that keeps the source tensor alive MUST travel as the handle's
 opaque `owner`, released through its `owner_release` callback, so that no Python type

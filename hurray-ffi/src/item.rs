@@ -36,7 +36,7 @@ use hurray_io::stream::StreamItem;
 use crate::{
     panic::{catch, null_check},
     status::{HurrayStatus, HURRAY_ERR_INDEX_OUT_OF_BOUNDS, HURRAY_ERR_INTERNAL, HURRAY_OK},
-    stream::tensor::{hurray_tensor_destroy, tensor_handle, HurrayTensor},
+    tensor::{hurray_tensor_destroy, tensor_handle, HurrayTensor},
 };
 
 // ── Node kinds ────────────────────────────────────────────────────────────────
