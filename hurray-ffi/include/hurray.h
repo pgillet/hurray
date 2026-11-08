@@ -2164,7 +2164,7 @@ HurrayStatus hurray_tensor_destroy(struct HurrayTensor **handle)
 // so a producer cannot export a tensor whose descriptor does not parse: bytes that fail
 // to decode are rejected with the status the decode failed with. A null pointer or a
 // `descriptor_len` of `0` is rejected with
-// [`HURRAY_ERR_NULL_POINTER`](crate::HURRAY_ERR_NULL_POINTER) — a tensor with no
+// [`HURRAY_ERR_NULL_POINTER`] — a tensor with no
 // descriptor is a carrier for bytes nothing can interpret.
 //
 // On success `buffers` is **owned by the tensor**, and the caller MUST NOT push into it,

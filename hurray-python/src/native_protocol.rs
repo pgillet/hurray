@@ -29,9 +29,7 @@
 use std::ffi::CStr;
 
 use hurray_core::{DeviceTag, MemoryClass, SyncMode, TensorDescriptor};
-use hurray_ffi::{
-    HurrayBuffer, HurrayBufferList, HurrayTensor, HURRAY_C_ABI_VERSION, HURRAY_OK,
-};
+use hurray_ffi::{HurrayBuffer, HurrayBufferList, HurrayTensor, HURRAY_C_ABI_VERSION, HURRAY_OK};
 use pyo3::prelude::*;
 
 use crate::buffer::BufferStore;
@@ -579,7 +577,10 @@ mod tests {
 
     #[test]
     fn capsule_name_constants_are_correct() {
-        assert_eq!(HURRAY_TENSOR_CAPSULE_NAME.to_bytes(), b"hurray_tensor_handle");
+        assert_eq!(
+            HURRAY_TENSOR_CAPSULE_NAME.to_bytes(),
+            b"hurray_tensor_handle"
+        );
         assert_eq!(
             HURRAY_TENSOR_CAPSULE_USED.to_bytes(),
             b"used_hurray_tensor_handle"
@@ -670,7 +671,10 @@ mod tests {
             // And nothing rides in a context: there is no second fetch to forget
             // (ADR-043 § 3).
             let context = unsafe { pyo3::ffi::PyCapsule_GetContext(capsule.as_ptr()) };
-            assert!(context.is_null(), "a capsule carries one pointer, no context");
+            assert!(
+                context.is_null(),
+                "a capsule carries one pointer, no context"
+            );
 
             let mut list: *mut HurrayBufferList = std::ptr::null_mut();
             unsafe { hurray_ffi::tensor::hurray_tensor_buffers(handle, &mut list) };
