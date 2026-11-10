@@ -154,6 +154,18 @@ while shipping a surface we already knew we would change.
   describes what the format can express, and the same honesty applied to `level-2` in
   [#240](https://github.com/pgillet/hurray/issues/240).
 
+  > **Affirmed by [#264](https://github.com/pgillet/hurray/issues/264):** this bullet was
+  > re-opened as a missing row and upheld, so the two mechanical reasons are recorded here
+  > rather than re-derived. `check-coverage-matrix.py` raises when two rows claim one
+  > capability, and the Rust probe already proves `stream_read`/`stream_write` *through the
+  > tokio async driver* — async streaming in Rust is not an unlisted capability, it is how
+  > the listed rows are proven. And neither the `hurray-ffi` cell nor the Unix-only
+  > restriction has an honest glyph: ❌ would assert a C gap that § 8 of ADR-041 denies,
+  > and ◐ means "partly implemented" where this surface is fully implemented and
+  > conditionally *available* — a restriction the table already carries unlabelled for the
+  > sync reader's `fileno()` transport. What the matrix gained instead is one sentence in
+  > its interchange intro: rows are framings, not driver styles.
+
 ## Alternatives Considered
 
 **`loop.sock_recv_into` / `sock_sendall`.** The obvious primitives, and ADR-041 § 6a rules

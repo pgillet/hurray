@@ -933,7 +933,8 @@ the transport, so other Python threads run while a stream waits on it. How the b
 moved is not specified here: the reference binding drives a `hurray-io` sans-io core over
 blocking I/O (ADR-041 § 9), having previously given each object its own `tokio` runtime,
 and neither is a requirement on an implementation. An `asyncio` surface is a second,
-additive surface; see ADR-035 § 1 and ADR-041 § 9.
+additive surface; see [§ Asyncio surface](#asyncio-surface) below, ADR-035 § 1 and
+ADR-041 § 9.
 
 ### `hurray.StreamReader`
 
@@ -1030,6 +1031,184 @@ a metadata dict with a silent hole in it is worse than a refusal.
 `StreamWriter.getvalue()` MUST be repeatable, like `io.BytesIO.getvalue()`. A destructive
 implementation makes the second call return empty, which turns a later read into a
 *clean* end of stream — data loss reported as success.
+
+### Asyncio surface
+
+On Unix, `hurray-python` MUST expose a second streaming surface, `hurray.aio`, holding
+`hurray.aio.StreamReader` and `hurray.aio.StreamWriter` (ADR-042). It is **additive**: the
+blocking classes above keep their behaviour, and the async classes drive the same stream
+state machines over the same wire format.
+
+- For the same items, the async writer's output MUST be byte-identical to the blocking
+  writer's (ADR-042, Consequences). There is one implementation of the protocol with two
+  drivers over it, not two protocols.
+- Everything the blocking surface can stream, the async surface MUST be able to stream,
+  composites included.
+- The surface MUST be driven by the caller's running event loop. It MUST NOT link an
+  executor of its own, and MUST NOT drive the blocking transport vtable of ADR-041 § 8
+  (ADR-041 § 9): one core, two drivers, no blocking call inside a coroutine.
+- § Exceptions applies unchanged — framing failures raise `hurray.StreamError`, a
+  descriptor that did not decode raises `hurray.InvalidDescriptorError`, and a failed
+  transport raises `hurray.FileError`.
+
+How the driver is divided between Python source and the extension is not specified here;
+the reference binding writes the readiness logic in Python over a private seam (ADR-042
+§ 1), and that seam is not part of this contract.
+
+#### Import and platform
+
+- `import hurray` MUST NOT import `hurray.aio`. A caller MUST reach the surface with an
+  explicit `import hurray.aio`. `import hurray` has to succeed on every platform the
+  package ships wheels for, and this surface does not exist on all of them.
+- The surface is Unix-only. Importing `hurray.aio` on a platform where it is unavailable
+  MUST raise `hurray.UnsupportedError`, naming the restriction and naming the blocking
+  classes as what works everywhere. It MUST NOT surface as an `ImportError` on a private
+  name: the obstacle is a platform decision ([issue #215](https://github.com/pgillet/hurray/issues/215)),
+  not a missing module.
+
+#### Readiness, not transfers
+
+Every `await` in this surface MUST wait for the descriptor to become **readable or
+writable**, and MUST NOT cover a transfer.
+
+- A transfer MUST move the bytes **and** report the byte count to the core in one
+  synchronous step, with no suspension point between the two (ADR-041 § 6a, ADR-042 § 2).
+- A driver MUST NOT await a transfer. This excludes `loop.sock_recv_into` and
+  `loop.sock_sendall`: each performs its transfer inside a loop callback and then resolves
+  a future, so a cancellation landing between those two events loses the byte count. A
+  lost count is unrecoverable — `0x00` is valid tensor data, so no inspection of the
+  stream can recover the position.
+- The apparent escape MUST NOT be used either. Reading through `asyncio.StreamReader`
+  keeps cancelled data in asyncio's own buffer and so cannot lose a count, but it hands
+  back a byte sequence that must then be copied into the core's destination. That is the
+  second, tensor-sized payload copy ADR-041 § 2 exists to forbid; resumability MUST NOT be
+  bought with it.
+- A destination the core owns MUST NOT be exposed to Python, as a `memoryview` or
+  otherwise. The core replaces that destination when a buffer completes, so a view that
+  outlived one step would be a use-after-free (ADR-042 § 2). Keeping the transfer below
+  the Python boundary is what prevents such a view from existing, rather than documenting
+  that callers must not keep one.
+- A transport that reports **not ready** — `EAGAIN`, or a syscall interrupted by a
+  signal — MUST NOT be reported to the core as a transferred count of zero; the driver
+  MUST wait for readiness again. On the read path a reported zero means end of input, so
+  reporting a spurious wakeup as zero turns it into a stream that appears to end cleanly
+  mid-item.
+- On the write path, a transfer that accepts zero bytes on a descriptor the loop reported
+  writable MUST be treated as a closed sink, not retried. It MUST raise
+  `hurray.StreamError`, and it MUST leave the writer poisoned: the item in flight can no
+  longer be completed.
+
+Because the transfer cannot block — the descriptor is non-blocking and the loop has
+already reported it ready — § Blocking's GIL-release requirement does not extend here. An
+implementation MAY hold the GIL across an async transfer.
+
+> **Note (non-normative):** this is the one rule in this section whose violation is
+> silent. A binding built on `loop.sock_recv_into` passes every test that is not a
+> cancellation test, and loses a byte count only under cancellation, where nothing can
+> detect it afterwards.
+
+#### Cancellation
+
+Cancellation is observable only at a readiness `await`, which is what the rule above buys.
+Its consequences are **not** symmetrical, and both halves are contract.
+
+- A cancelled read MUST leave the reader usable. No byte moved at the only cancellation
+  point the read path has, so the next call resumes the same item and reads it through
+  (ADR-041 § 6). A partially filled destination MUST NOT be observable: it belongs to the
+  core until the item completes, so cancellation can never hand a caller a half-written
+  tensor.
+- A cancelled write MUST poison the writer if, and only if, the item had already put a
+  byte on the wire (ADR-041 § 6b). The item is truncated at the peer, a stream has no
+  resynchronisation point, and no forward-only writer can make that output conforming
+  again. A write cancelled before its first byte MUST leave the writer intact, and the
+  same item MUST be writable again.
+- A poisoned writer MUST refuse every later `write` with `hurray.StreamError`, and the
+  message MUST state that a fresh writer over the same connection is **not** a recovery:
+  the truncation is at the peer, which must be told, or the connection replaced.
+- `asyncio.CancelledError` MUST propagate. An implementation MUST NOT convert it to a
+  `hurray.*` exception and MUST NOT swallow it. It MUST drop the operation in flight
+  before re-raising, so that the core's own record of whether a byte was emitted is what
+  answers the question above — a driver MUST NOT keep a second copy of that predicate.
+
+#### The reader
+
+`hurray.aio.StreamReader` is § `hurray.StreamReader`'s contract with an event loop in
+place of a blocking thread. It MUST:
+
+- implement `__aiter__` returning itself and `__anext__` yielding a `hurray.Tensor` or a
+  `hurray.Composite`, raising `StopAsyncIteration` at a clean end of stream;
+- expose `next_item()` as an awaitable returning the next item, or `None` at a clean end
+  of stream, with `__anext__` layered on it. The primitive is named because outside an
+  `async for` a caller wants the end of stream as a value, not as an exception;
+- read with `next_item` semantics, so that a composite arrives as **one** item, for the
+  reason § `hurray.StreamReader` gives;
+- implement the asynchronous context-manager protocol, and expose `close()`. A closed
+  reader MUST behave as exhausted rather than raise. `close()` MUST NOT be a coroutine:
+  it releases a descriptor and has nothing to wait for;
+- accept `max_descriptor_bytes`, `max_buffer_bytes`, `max_composite_depth` and
+  `cross_machine` as keyword arguments, with the same defaults and the same meaning
+  § Reader limits and § Cross-machine transport require of the blocking reader. The limits
+  are not optional hygiene on this surface either, and an untrusted peer is the case an
+  event loop is reached for.
+
+#### The writer
+
+`hurray.aio.StreamWriter` MUST:
+
+- accept a `hurray.Tensor` or a `hurray.Composite` in an awaitable `write`, transmitting
+  every buffer the item references in descriptor order and, for a composite, the head and
+  then its members recursively in the wire order ADR-027 § Binding fixes. Any other
+  argument MUST raise `TypeError`, not a `hurray.*` exception, for the reason
+  § `hurray.StreamWriter` gives;
+- expose `finish()` as an idempotent awaitable that releases the descriptor, and implement
+  the asynchronous context-manager protocol, finishing the stream on exit;
+- raise `hurray.StreamError` when written to after finishing;
+- accept `cross_machine` as § Cross-machine transport requires;
+- hold a strong reference to every object that owns payload bytes for as long as the item
+  is in flight, releasing it when the item completes or is abandoned and not before
+  (ADR-041 § 6). The async writer borrows the payload across suspensions, so a source
+  tensor or composite MUST NOT become collectable mid-item;
+- refuse a second `write` submitted while one is in flight with `hurray.StreamError`. One
+  stream object is driven by one task; concurrency across *streams* is what this surface
+  exists for, and `asyncio.gather` over several readers or writers already expresses it.
+
+> **Note (non-normative):** `finish()` flushes nothing. Every byte of an accepted item has
+> already left through a write on the descriptor, so finishing releases the descriptor and
+> nothing else — earlier than collection would, which is the whole of its value here.
+
+#### Transport and the descriptor
+
+The async surface accepts a **narrower** transport than § Transports, and each exclusion
+is a refusal with a named exception rather than a caveat:
+
+| Argument | Async surface |
+|---|---|
+| an object with `fileno()` naming a socket or a pipe | accepted |
+| an object with no `fileno()` — a `str` path, `bytes`, `io.BytesIO` | `TypeError` |
+| an object whose `fileno()` names a regular file | `hurray.UnsupportedError` |
+| omitted (writer) | not accepted: no in-memory mode, no `getvalue()` |
+
+- A path, a byte sequence, or an in-memory destination has no readiness to await. The
+  `TypeError` MUST name the blocking class as the thing to use instead, since the fix is
+  not guessable from a bare type error — the same requirement § Transports makes for
+  `io.BytesIO`.
+- A regular file MUST be refused with `hurray.UnsupportedError`: an event loop cannot poll
+  one, and a transfer against one does not block, so readiness has nothing to contribute.
+- The descriptor MUST be duplicated, as § Transports requires, so that finishing or
+  closing the stream does not close the caller's. Readiness MUST be awaited on the *same*
+  descriptor the transfers use, so that the two cannot drift apart.
+- The descriptor MUST be put in non-blocking mode, and implementations MUST document that
+  this is observable through the object the caller passed in: `O_NONBLOCK` belongs to the
+  open file description, which `dup` shares. Any descriptor an event loop drives has to be
+  in that mode regardless.
+
+#### No async file API
+
+`hurray.load`, `hurray.save` and `hurray.load_kv` MUST NOT be given `hurray.aio`
+counterparts. asyncio has no asynchronous random access, so a coroutine over them would
+be the synchronous call with a thread behind it — which `asyncio.to_thread` already
+expresses in one line, at a cost the caller can see (ADR-042 § 2). The absence is a
+decision, not a gap.
 
 ## Error Handling
 

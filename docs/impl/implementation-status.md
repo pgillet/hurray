@@ -131,7 +131,11 @@ is required at any conformance level.
 ## Streaming and File Interchange
 
 The two framings that share the descriptor encoding: the self-delimiting stream format and
-the HRRYFILE container.
+the HRRYFILE container. Rows are framings, not driver styles — one core puts the same bytes
+on the wire whether it is driven by `hurray-io`'s `tokio` shell, by `hurray.StreamReader`,
+by `hurray.aio.StreamReader`, or by a C caller's own loop over the blocking transport
+vtable (ADR-041 § 8). Which drivers an implementation offers is in its own guide; for
+Python that is [Python Bindings](python-bindings.md).
 
 | Feature | `hurray-core` + `hurray-io` | `hurray-python` | `hurray-ffi` |
 |---|---|---|---|
