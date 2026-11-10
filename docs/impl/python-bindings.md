@@ -914,15 +914,15 @@ exactly this.
 
 `hurray-python` MUST expose the streaming interchange format through two classes
 (ADR-035). The format's defining property is that neither side buffers the whole
-sequence, and the Python surface MUST preserve it: a reader MUST yield a tensor as
-soon as its descriptor and buffers have arrived, and a writer MUST emit each tensor
-as it is given one.
+sequence, and the Python surface MUST preserve it: a reader MUST yield an item as soon
+as it is complete — a tensor once its buffers have arrived, a composite at its last
+member — and a writer MUST emit each item as it is given one.
 
 ```python
 with hurray.StreamWriter(destination) as writer:
     writer.write(tensor)
 
-for tensor in hurray.StreamReader(source):
+for item in hurray.StreamReader(source):
     ...
 ```
 
@@ -937,22 +937,24 @@ additive surface; see ADR-035 § 1 and ADR-041 § 9.
 
 ### `hurray.StreamReader`
 
-- MUST implement `__iter__` returning itself and `__next__` yielding a `hurray.Tensor`,
-  raising `StopIteration` at a clean end of stream.
+- MUST implement `__iter__` returning itself and `__next__` yielding a `hurray.Tensor`
+  or a `hurray.Composite`, raising `StopIteration` at a clean end of stream.
 - MUST implement the context-manager protocol, and expose `close()`, so the transport
   can be released without waiting for collection. A closed reader MUST behave as
   exhausted rather than raise.
-- MUST read with `next_item` semantics, not `next_tensor`: a composite head owns no
-  buffers, so reading it as an ordinary tensor would yield an empty tensor and then
-  surface the head's members as top-level tensors — a stream that decoded
-  "successfully" having lost the composition.
-- MUST raise `hurray.UnsupportedError`, naming the composite, when the stream contains
-  one. It MUST NOT skip it.
+- MUST read with `next_item` semantics, not `next_tensor`, so that a composite arrives
+  as **one** item: a composite head owns no buffers, so reading it as an ordinary tensor
+  would yield an empty tensor and then surface the head's members as top-level tensors —
+  a stream that decoded "successfully" having lost the composition.
 
 ### `hurray.StreamWriter`
 
 - MUST accept a `hurray.Tensor` in `write`, transmitting every buffer its descriptor
   references, in descriptor order.
+- MUST accept a `hurray.Composite` in `write`, emitting the head and then its members,
+  recursively, in the wire order ADR-027 § Binding fixes. Any other argument MUST raise
+  `TypeError`, not a `hurray.*` exception: nothing reached the transport, so nothing
+  about the stream is wrong.
 - MUST implement the context-manager protocol, finishing the stream on exit. `finish()`
   MUST also be callable explicitly and MUST be idempotent, so the two paths compose.
 - MUST raise `hurray.StreamError` when written to after finishing.
@@ -1000,7 +1002,6 @@ guessable from a bare type error.
 | framing — truncated, malformed, or oversized frame | `hurray.StreamError` |
 | the descriptor did not decode or validate | `hurray.InvalidDescriptorError` |
 | the transport failed | `hurray.FileError` |
-| the stream contains a composite | `hurray.UnsupportedError` |
 
 > **Note (non-normative):** a stream has no end marker — frames are self-delimiting and
 > the stream ends at EOF, which is the property that also forbids end-of-file indexes.
