@@ -13,6 +13,8 @@ workspace share one version and are released together.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-11
+
 ### Added
 
 - **`hurray-ffi` — composites across the C stream and file surfaces**
@@ -359,6 +361,18 @@ workspace share one version and are released together.
 - ADR-038 was on disk but absent from the documentation navigation, so it never appeared
   on the published site.
 
+This release **breaks the C ABI**, from version 9 to 10, which a `0.x` minor bump is what
+permits — the `1.x` compatibility contract has not been opened. `HURRAY_C_ABI_VERSION` is
+now expected to be in its final pre-1.0 shape: no further break is known to be wanted, and
+the two surfaces still missing from C — the Level 2 writer and Level 3 transport — are
+additive when they land. The specification also remains **Draft**, so tag assignments are
+not yet frozen; [#225](https://github.com/pgillet/hurray/issues/225) is the checklist that
+ends both of those sentences.
+
+As with 0.1.0, the [implementation status page](docs/impl/implementation-status.md) is
+generated from the code and is the authoritative account of what each crate supports — the
+specification describes more than any crate implements.
+
 ## [0.1.0] - 2026-09-30
 
 First release. Everything below is new, because nothing preceded it.
@@ -405,5 +419,6 @@ The specification remains **Draft** at this release, which is what a `0.x` ships
 the `1.x` compatibility contract has not been opened, and tag assignments are not yet
 frozen.
 
-[Unreleased]: https://github.com/pgillet/hurray/compare/0.1.0...HEAD
+[Unreleased]: https://github.com/pgillet/hurray/compare/0.2.0...HEAD
+[0.2.0]: https://github.com/pgillet/hurray/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/pgillet/hurray/releases/tag/0.1.0
