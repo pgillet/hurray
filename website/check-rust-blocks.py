@@ -55,8 +55,10 @@ def cargo_build() -> str:
 def extern_paths(build_json: str) -> dict:
     """Map crate name -> .rlib path, for the workspace crates and their direct deps.
 
-    Paths come from cargo's own artifact messages rather than a glob over target/debug/deps:
-    stale hashed rlibs accumulate there, and only cargo knows which one this build produced.
+    Paths come from cargo's own artifact messages rather than a glob over the target
+    directory: stale hashed rlibs accumulate there, and only cargo knows which one this
+    build produced. Which crate to compile against is the part that must be exact;
+    `search_dirs` may glob, because it only says where rustc is allowed to look.
 
     The map is deliberately NOT every transitive rlib — a snippet must not compile against a
     crate the workspace does not itself depend on.
@@ -91,7 +93,24 @@ def extern_paths(build_json: str) -> dict:
     return externs
 
 
-def check_page(page: Path, externs: dict) -> tuple:
+def search_dirs() -> list:
+    """Every directory a dependency's rlib or rmeta can be in, for `-L dependency=`.
+
+    Cargo 1.100 builds each unit into its own `target/<profile>/build/<pkg>/<hash>/out/`,
+    so the single `deps/` directory that used to hold them all no longer does. It is still
+    listed for older toolchains, where the glob simply matches nothing of interest.
+
+    Passing stale hash directories is harmless: rustc matches a dependency by the hash
+    recorded in the crate that needs it, so extra candidates are ignored rather than
+    ambiguous. This is also why an rlib still loads from the path cargo reports for it —
+    1.100 keeps a crate's metadata in a separate `.rmeta` beside the unit's own rlib, and
+    the search path is how rustc finds it from cargo's uplifted copy.
+    """
+    dirs = [str(d) for d in sorted(Path("target/debug/build").glob("*/*/out")) if d.is_dir()]
+    return dirs + ["target/debug/deps"]
+
+
+def check_page(page: Path, externs: dict, dirs: list) -> tuple:
     """rustdoc --test one page. Returns (ok, combined output)."""
     # --test-run-directory puts each page's compiled doctests in a throwaway CWD while
     # rustdoc itself still runs from the repo root, so failures keep their relative path.
@@ -100,8 +119,9 @@ def check_page(page: Path, externs: dict) -> tuple:
     # depends on an earlier one looked self-contained when it was not.
     with tempfile.TemporaryDirectory(prefix="hurray-doc-") as scratch:
         cmd = ["rustdoc", "--test", str(page), "--edition", EDITION,
-               "--test-run-directory", scratch,
-               "-L", "dependency=target/debug/deps"]
+               "--test-run-directory", scratch]
+        for directory in dirs:
+            cmd += ["-L", f"dependency={directory}"]
         for name, path in sorted(externs.items()):
             cmd += ["--extern", f"{name}={path}"]
         proc = run(cmd)
@@ -125,9 +145,10 @@ def main() -> int:
         print(f"error: cargo produced no rlib for {', '.join(missing)}", file=sys.stderr)
         return 2
 
+    dirs = search_dirs()
     failed = []
     for page in pages:
-        ok, output = check_page(page, externs)
+        ok, output = check_page(page, externs, dirs)
         status = "ok" if ok else "FAILED"
         summary = next((ln for ln in output.splitlines() if ln.startswith("test result:")), "")
         print(f"{status:6}  {page}  {summary}")
