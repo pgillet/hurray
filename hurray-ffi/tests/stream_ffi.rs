@@ -409,6 +409,32 @@ fn a_sink_that_accepts_zero_bytes_mid_tensor_closes_and_poisons_the_writer() {
     }
 }
 
+#[test]
+fn a_sink_that_accepts_nothing_closes_without_poisoning_the_writer() {
+    unsafe {
+        let payload: Vec<u8> = (0u8..64).collect();
+        let descriptor = row_major(64, MIN_BUFFER_ALIGNMENT, SyncMode::ProducerSynced);
+
+        let mut sink = MemTransport::writing();
+        sink.close_write_at = Some(0);
+        let mut writer = writer_over(&mut sink);
+        assert_eq!(
+            write_one(writer, &descriptor, &[&payload]),
+            HURRAY_ERR_SINK_CLOSED
+        );
+
+        // Not poisoned: nothing of the item reached the sink, so § 6b leaves the writer
+        // usable and the same status comes back rather than `HURRAY_ERR_CORE_UNUSABLE`.
+        // A truncation claim here would be about a peer that never saw a byte.
+        assert_eq!(
+            write_one(writer, &descriptor, &[&payload]),
+            HURRAY_ERR_SINK_CLOSED
+        );
+        assert_eq!(hurray_writer_destroy(&mut writer), HURRAY_OK);
+        assert!(sink.output.is_empty());
+    }
+}
+
 // ── § 6: a failing callback leaves the position intact ────────────────────────
 
 #[test]

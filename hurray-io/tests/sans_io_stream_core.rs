@@ -335,16 +335,41 @@ fn a_closed_sink_mid_item_poisons_the_core() {
     let mut core = StreamWriterCore::new();
     let mut op = core.tensor(&descriptor, &buffers).unwrap();
     op.step().unwrap();
+    // A byte of this item is on the wire, which is what makes the sink closing terminal.
+    op.report_written(16).unwrap();
     assert!(matches!(op.report_sink_closed(), Error::SinkClosed));
     drop(op);
 
-    // § 6a: a truncated item is on the wire and cannot be un-sent, so a fresh writer over
-    // the same sink is not a recovery.
+    // § 6b: a truncated item cannot be un-sent, so a fresh writer over the same sink is
+    // not a recovery.
     assert!(core.is_unusable());
     assert!(matches!(
         core.tensor(&descriptor, &buffers),
         Err(Error::CoreUnusable(Unusable::IncompleteOutput))
     ));
+}
+
+#[test]
+fn a_sink_closed_before_the_first_byte_leaves_the_core_usable() {
+    let descriptor = row_major(MIN_BUFFER_ALIGNMENT);
+    let payload = vec![0x55u8; 256];
+    let buffers: [&[u8]; 1] = [&payload];
+
+    let mut core = StreamWriterCore::new();
+    let mut op = core.tensor(&descriptor, &buffers).unwrap();
+    op.step().unwrap();
+    // Bytes were offered; none were accepted. The operation ends either way.
+    assert_eq!(op.emitted(), 0);
+    assert!(matches!(op.report_sink_closed(), Error::SinkClosed));
+    assert!(matches!(op.step(), Err(Error::CoreFailed)));
+    drop(op);
+
+    // § 6b: nothing reached the transport, so the core is exactly as it was and the same
+    // item may be submitted again. Poisoning here would claim a truncation at a peer that
+    // never saw a byte of it.
+    assert!(!core.is_unusable());
+    let mut again = core.tensor(&descriptor, &buffers).unwrap();
+    assert!(matches!(again.step(), Ok(WriteStep::Output { .. })));
 }
 
 #[test]

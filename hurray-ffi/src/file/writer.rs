@@ -439,11 +439,9 @@ fn drain(op: &mut FileWriteOp<'_>, transport: &Transport) -> HurrayStatus {
                         }
                     }
                     Err(status) => {
-                        // No `report_sink_closed` here: the core poisoned itself at this
-                        // item's first accepted byte (§ 6b), and calling it would overwrite
-                        // that with `LostWriteCount` — claiming the count is unknown when
-                        // it is known exactly. It would also make the footer retry
-                        // unreachable, which is what § 6b exists to allow.
+                        // No `report_sink_closed` here: it would flatten the callback's own
+                        // status to `SinkClosed`, and the core needs no telling — § 6b is
+                        // answered by `torn`, set at the item's first accepted byte.
                         if op.emitted() > 0 {
                             // A torn item: the transport's own status would understate it.
                             return HURRAY_ERR_SINK_CLOSED;

@@ -499,17 +499,19 @@ impl WriteOp<'_> {
 
     /// Declares the sink closed while this item is in flight.
     ///
-    /// Returns the error to propagate. A partially written item is already on the wire and
-    /// a stream cannot be un-sent, so this poisons the core as well: a fresh writer over
-    /// the same connection is not a recovery (ADR-041 § 6a).
+    /// Returns the error to propagate and ends this operation. Whether the *core* survives
+    /// is ADR-041 § 6b's question, and the core has already answered it: an item that had a
+    /// byte accepted is torn, so the core stays poisoned and a fresh writer over the same
+    /// connection is not a recovery; an item that emitted nothing leaves the core exactly
+    /// as it was, and the same item may be submitted again.
     ///
     /// # Examples
     ///
     /// See [`mark_unusable`][Self::mark_unusable].
     pub fn report_sink_closed(&mut self) -> Error {
-        // Not `LostWriteCount`: the count is known exactly. What is lost is the ability to
-        // finish the item, which is a different claim (§ 6b).
-        self.core.unusable = Some(Unusable::IncompleteOutput);
+        // No poison of its own: `torn`, set at the first accepted byte, already retires the
+        // core and outlives this op (§ 6b). Poisoning unconditionally would claim a
+        // truncation at the peer for an item that never put a byte on the wire.
         self.state = OpState::Failed;
         Error::SinkClosed
     }

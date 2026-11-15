@@ -779,8 +779,11 @@ typedef struct HurrayWriterOptions {
 
 // The sink accepted zero bytes while an item was in flight.
 //
-// Distinct from [`HURRAY_ERR_TRANSPORT`]: a truncated item is already on the wire, so
-// the writer is poisoned and no further call on it can succeed (ADR-041 § 4).
+// Distinct from [`HURRAY_ERR_TRANSPORT`]: the sink itself is finished, not one call on
+// it. Whether the writer survives follows ADR-041 § 6b — poisoned if a byte of the item
+// had already reached the sink, because a truncated item is then on the wire and every
+// later call fails with [`HURRAY_ERR_CORE_UNUSABLE`]; still usable if the sink stopped
+// before the item's first byte, because nothing was emitted.
 #define HURRAY_ERR_SINK_CLOSED -15
 
 // Input ended in the middle of a descriptor or a buffer.
@@ -2314,9 +2317,10 @@ HurrayStatus hurray_writer_new(const struct HurrayTransport *transport,
 //   valid composite: a head that is not one, a member count that disagrees with the
 //   head, a partition that does not cover its index space, an overlay whose base is not
 //   first. Refused before a byte moved, so the writer stays usable.
-// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes mid-composite, so a
-//   truncated item is on the wire and the writer is poisoned. A composite is one item:
-//   there is no partially valid composite to resume from.
+// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes mid-composite. If part
+//   of the group was already out, a truncated item is on the wire and the writer is
+//   poisoned: a composite is one item, so there is no partially valid composite to resume
+//   from. If nothing was emitted, the writer stays usable (ADR-041 § 6b).
 // - Whatever status the write callback returned, if it failed **before any byte of this
 //   composite reached the sink**. Nothing was emitted, so the call MAY be retried.
 //
@@ -2343,9 +2347,11 @@ HurrayStatus hurray_writer_write_composite(struct HurrayWriter *handle,
 //
 // - [`HURRAY_OK`] — the tensor is entirely written and the payload pointers are no longer
 //   held.
-// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes mid-tensor, so a
-//   truncated item is on the wire. The writer is poisoned: every later call fails, and a
-//   fresh writer over the same connection is not a recovery.
+// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes mid-tensor. If part of
+//   the tensor was already out, a truncated item is on the wire and the writer is
+//   poisoned: every later call fails, and a fresh writer over the same connection is not
+//   a recovery. If the sink stopped before the tensor's first byte, nothing was emitted
+//   and the writer stays usable (ADR-041 § 6b).
 // - Whatever status the write callback returned, if it failed **before any byte of this
 //   tensor reached the sink**. Nothing was emitted, so the call MAY be retried. A failure
 //   after the first byte is reported as [`HURRAY_ERR_SINK_CLOSED`] instead, because at

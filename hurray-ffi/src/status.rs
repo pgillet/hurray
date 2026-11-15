@@ -85,8 +85,11 @@ pub const HURRAY_ERR_TRANSPORT: HurrayStatus = -14;
 
 /// The sink accepted zero bytes while an item was in flight.
 ///
-/// Distinct from [`HURRAY_ERR_TRANSPORT`]: a truncated item is already on the wire, so
-/// the writer is poisoned and no further call on it can succeed (ADR-041 § 4).
+/// Distinct from [`HURRAY_ERR_TRANSPORT`]: the sink itself is finished, not one call on
+/// it. Whether the writer survives follows ADR-041 § 6b — poisoned if a byte of the item
+/// had already reached the sink, because a truncated item is then on the wire and every
+/// later call fails with [`HURRAY_ERR_CORE_UNUSABLE`]; still usable if the sink stopped
+/// before the item's first byte, because nothing was emitted.
 pub const HURRAY_ERR_SINK_CLOSED: HurrayStatus = -15;
 
 /// Input ended in the middle of a descriptor or a buffer.

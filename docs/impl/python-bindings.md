@@ -1095,8 +1095,10 @@ writable**, and MUST NOT cover a transfer.
   mid-item.
 - On the write path, a transfer that accepts zero bytes on a descriptor the loop reported
   writable MUST be treated as a closed sink, not retried. It MUST raise
-  `hurray.StreamError`, and it MUST leave the writer poisoned: the item in flight can no
-  longer be completed.
+  `hurray.StreamError`. Whether it leaves the writer poisoned follows the same rule
+  § Cancellation states below: poisoned if, and only if, the item had already put a byte on
+  the wire (ADR-041 § 6b). A sink that stops before an item's first byte has truncated
+  nothing at the peer, and the writer MUST NOT report otherwise.
 
 Because the transfer cannot block — the descriptor is non-blocking and the loop has
 already reported it ready — § Blocking's GIL-release requirement does not extend here. An

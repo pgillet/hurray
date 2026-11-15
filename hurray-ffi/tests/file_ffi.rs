@@ -1071,6 +1071,52 @@ fn a_sink_that_closes_mid_tensor_reports_sink_closed() {
 }
 
 #[test]
+fn a_sink_that_accepts_nothing_before_the_first_byte_is_retryable() {
+    unsafe {
+        let descriptor = plain_2x2();
+        let data = payload(16, 0x42);
+        let mut sink = MemFile::writing();
+        let mut writer = writer_over(&mut sink, None);
+
+        // The twin of the test below, for the other way a write can stop: zero accepted
+        // bytes with OK rather than a failing callback. The header is already out, so
+        // closing at exactly its length stops this tensor before any of its bytes land.
+        sink.close_write_at = Some(sink.output.len());
+        assert_eq!(
+            write_one(writer, "weight", &descriptor, &[&data]),
+            HURRAY_ERR_SINK_CLOSED
+        );
+
+        // Retryable, under the same name, for the same reason: nothing was emitted, so
+        // neither the name nor a byte of the file was consumed (§ 6b). A closed sink ends
+        // the item, not the writer.
+        sink.close_write_at = None;
+        assert_eq!(
+            write_one(writer, "weight", &descriptor, &[&data]),
+            HURRAY_OK
+        );
+        assert_eq!(
+            hurray_file_writer_finish(writer, std::ptr::null(), 0),
+            HURRAY_OK
+        );
+        assert_eq!(hurray_file_writer_destroy(&mut writer), HURRAY_OK);
+
+        let mut source = MemFile::reading(std::mem::take(&mut sink.output));
+        let vt = vtable(&mut source);
+        let mut reader: *mut HurrayFileReader = std::ptr::null_mut();
+        assert_eq!(hurray_file_reader_new(&vt, &mut reader), HURRAY_OK);
+        let mut count: u64 = 0;
+        assert_eq!(
+            hurray_file_reader_tensor_count(reader, &mut count),
+            HURRAY_OK
+        );
+        assert_eq!(count, 1);
+        let mut r = reader;
+        assert_eq!(hurray_file_reader_destroy(&mut r), HURRAY_OK);
+    }
+}
+
+#[test]
 fn a_file_write_that_fails_before_its_first_byte_is_retryable() {
     unsafe {
         let descriptor = plain_2x2();

@@ -678,14 +678,40 @@ fn a_zero_length_write_is_not_progress() {
     // Position is still known, so the operation may be retried.
     assert!(matches!(op.step().unwrap(), WriteStep::Output { .. }));
 
-    // Declaring the sink closed is the other answer, and it poisons the core.
+    // Declaring the sink closed is the other answer. It ends the operation, but nothing
+    // was accepted, so § 6b leaves the core as it was — including the name, which the
+    // failed attempt never consumed.
+    assert_eq!(op.emitted(), 0);
+    assert!(matches!(op.report_sink_closed(), Error::SinkClosed));
+    assert!(matches!(op.step(), Err(Error::CoreFailed)));
+    drop(op);
+    assert!(!core.is_unusable());
+    assert!(core.tensor("t", &descriptor, &buffers).is_ok());
+}
+
+#[test]
+fn a_sink_closed_after_the_first_byte_poisons_the_core() {
+    let data = payload(64, 0x00);
+    let descriptor = row_major(64, 64);
+    let buffers: [&[u8]; 1] = [&data];
+
+    let mut core = FileWriterCore::new();
+    drain(core.header().unwrap(), &mut Vec::new()).unwrap();
+    let mut op = core.tensor("t", &descriptor, &buffers).unwrap();
+    assert!(matches!(op.step().unwrap(), WriteStep::Output { .. }));
+    // A byte of this item is in the file, which is what makes the sink closing terminal:
+    // a forward-only writer has no way back to the item's start (§ 6b).
+    op.report_written(16).unwrap();
     assert!(matches!(op.report_sink_closed(), Error::SinkClosed));
     drop(op);
+
     assert!(core.is_unusable());
     assert!(matches!(
         core.tensor("u", &descriptor, &buffers),
-        Err(Error::CoreUnusable(_))
+        Err(Error::CoreUnusable(Unusable::IncompleteOutput))
     ));
+    // Not completable either: the bytes on the sink are not a container.
+    assert!(core.finish(Vec::new()).is_err());
 }
 
 #[test]

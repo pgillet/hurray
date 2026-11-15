@@ -78,12 +78,10 @@ impl fmt::Display for Unusable {
             Self::LostWriteCount => {
                 f.write_str("a write's byte count was lost; the sink is poisoned")
             }
-            // Worded to cover both reachable cases: an item torn mid-emission, and a sink
-            // that closed before the item's first byte. "Begun and not finished" would be
-            // false for the second.
-            Self::IncompleteOutput => {
-                f.write_str("the output is incomplete and cannot be completed")
-            }
+            // One reachable case: an item torn mid-emission. A sink that closes before an
+            // item's first byte retires nothing, so the vaguer wording this once needed is
+            // no longer earning anything (§ 6b).
+            Self::IncompleteOutput => f.write_str("an item was begun and cannot be finished"),
         }
     }
 }

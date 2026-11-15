@@ -476,8 +476,13 @@ through `write` alone and never seeks back.
 **The file writer's failure contract is the stream writer's.** The rule stated above for
 `hurray_writer_write_tensor` is normative for both surfaces: a write that fails **after**
 the first byte of its item MUST poison the writer, and one that fails **before** it MUST
-leave the writer usable, the item's name unconsumed, and the file completable. The status
-distinguishes the two — `HURRAY_ERR_SINK_CLOSED` after, the callback's own status before.
+leave the writer usable, the item's name unconsumed, and the file completable. Where the
+callback *failed*, the status distinguishes the two — `HURRAY_ERR_SINK_CLOSED` after, the
+callback's own status before. Where it *accepted zero bytes*, the status is
+`HURRAY_ERR_SINK_CLOSED` either way, because the sink offered no status of its own; the
+poison still follows the first-byte rule, so what distinguishes them is the next call —
+`HURRAY_ERR_CORE_UNUSABLE` if the writer was poisoned, and whatever that call earns on its
+own if it was not.
 
 `hurray_file_writer_finish` is an item under the same rule, which makes it the one retry
 worth having here: the data is already on the sink and only the index is missing, so a
