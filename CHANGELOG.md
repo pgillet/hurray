@@ -13,6 +13,29 @@ workspace share one version and are released together.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A sink that closes before an item's first byte no longer poisons the writer**
+  ([#265](https://github.com/pgillet/hurray/issues/265), ADR-041 § 6b). Both write cores
+  retired themselves unconditionally when a driver declared the sink closed, so a sink that
+  accepted *nothing* was recorded as `Unusable::IncompleteOutput` — the state of a genuinely
+  truncated item. The effect was right either way, since a writer whose sink is gone cannot
+  write again, but the recorded reason is consumed downstream as a claim about the peer:
+  `hurray.aio.StreamWriter` told callers an earlier item had put bytes on the wire and left
+  the stream truncated at the peer, and directed them to notify that peer or replace the
+  connection — for a sink that had taken no byte of it. The C surface inherited the same
+  classification, against the contract `c-ffi.md` already stated for both writer surfaces.
+
+  The "nothing emitted" predicate is now the only thing that decides, which is what the
+  `torn` flag has always been for: an item with a byte accepted is torn and the core stays
+  poisoned, and an item that emitted nothing leaves the core exactly as it was — the same
+  item, in a file under the same name, may be submitted again. `report_sink_closed` ends the
+  operation and records nothing of its own. `Unusable::IncompleteOutput` now describes one
+  state rather than two, and its message says which.
+
+  Behavioural change for anyone driving the sans-io cores directly: a driver that relied on
+  `report_sink_closed` to retire the core MUST consult `emitted()` itself.
+
 ## [0.2.0] - 2026-11-11
 
 ### Added

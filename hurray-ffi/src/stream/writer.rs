@@ -147,9 +147,11 @@ pub unsafe extern "C" fn hurray_writer_destroy(handle: *mut *mut HurrayWriter) -
 ///
 /// - [`HURRAY_OK`] — the tensor is entirely written and the payload pointers are no longer
 ///   held.
-/// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes mid-tensor, so a
-///   truncated item is on the wire. The writer is poisoned: every later call fails, and a
-///   fresh writer over the same connection is not a recovery.
+/// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes mid-tensor. If part of
+///   the tensor was already out, a truncated item is on the wire and the writer is
+///   poisoned: every later call fails, and a fresh writer over the same connection is not
+///   a recovery. If the sink stopped before the tensor's first byte, nothing was emitted
+///   and the writer stays usable (ADR-041 § 6b).
 /// - Whatever status the write callback returned, if it failed **before any byte of this
 ///   tensor reached the sink**. Nothing was emitted, so the call MAY be retried. A failure
 ///   after the first byte is reported as [`HURRAY_ERR_SINK_CLOSED`] instead, because at
@@ -238,10 +240,9 @@ fn drain(op: &mut WriteOp<'_>, transport: &Transport) -> HurrayStatus {
                         }
                     }
                     Err(status) => {
-                        // No `report_sink_closed` here: the core poisoned itself at this
-                        // item's first accepted byte (§ 6b), and calling it would
-                        // overwrite that with `LostWriteCount` — claiming the count is
-                        // unknown when it is known exactly.
+                        // No `report_sink_closed` here: it would flatten the callback's
+                        // own status to `SinkClosed`, and the core needs no telling — § 6b
+                        // is answered by `torn`, set at the item's first accepted byte.
                         if op.emitted() > 0 {
                             // A torn item: the transport's own status understates it.
                             return HURRAY_ERR_SINK_CLOSED;
@@ -282,9 +283,10 @@ fn drain(op: &mut WriteOp<'_>, transport: &Transport) -> HurrayStatus {
 ///   valid composite: a head that is not one, a member count that disagrees with the
 ///   head, a partition that does not cover its index space, an overlay whose base is not
 ///   first. Refused before a byte moved, so the writer stays usable.
-/// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes mid-composite, so a
-///   truncated item is on the wire and the writer is poisoned. A composite is one item:
-///   there is no partially valid composite to resume from.
+/// - [`HURRAY_ERR_SINK_CLOSED`] — the sink stopped accepting bytes mid-composite. If part
+///   of the group was already out, a truncated item is on the wire and the writer is
+///   poisoned: a composite is one item, so there is no partially valid composite to resume
+///   from. If nothing was emitted, the writer stays usable (ADR-041 § 6b).
 /// - Whatever status the write callback returned, if it failed **before any byte of this
 ///   composite reached the sink**. Nothing was emitted, so the call MAY be retried.
 ///

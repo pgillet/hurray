@@ -686,9 +686,11 @@ impl FileWriteOp<'_> {
 
     /// Declares the sink closed while this item is in flight.
     ///
-    /// Returns the error to propagate. A partially written file has a torn item in it and
-    /// no footer, so this poisons the core: a fresh operation on the same sink is not a
-    /// recovery (§ 6).
+    /// Returns the error to propagate and ends this operation. Whether the *core* survives
+    /// is ADR-041 § 6b's question, and the core has already answered it: an item that had a
+    /// byte accepted leaves a torn item in the file and no footer, so the core stays
+    /// poisoned; an item that emitted nothing commits nothing — no name, no index entry —
+    /// and the same item may be submitted again.
     ///
     /// # Examples
     ///
@@ -702,9 +704,9 @@ impl FileWriteOp<'_> {
     /// # }
     /// ```
     pub fn report_sink_closed(&mut self) -> Error {
-        // Not `LostWriteCount`: the count is known exactly. What is lost is the ability to
-        // finish the item, which is a different claim (§ 6b).
-        self.core.unusable = Some(Unusable::IncompleteOutput);
+        // No poison of its own: `torn`, set at the first accepted byte, already retires the
+        // core and outlives this op (§ 6b). Poisoning unconditionally would report a torn
+        // file for an item that never put a byte in it.
         self.failed = true;
         Error::SinkClosed
     }

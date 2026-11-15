@@ -90,9 +90,12 @@ pub enum Error {
     #[error("zero-length write is not progress")]
     ZeroLengthWrite,
 
-    /// The sink was closed while an item was in flight, so a truncated item is on the
-    /// wire. The core and the sink are both poisoned.
-    #[error("sink closed mid-item: the item on the wire is truncated")]
+    /// The sink stopped accepting bytes while an item was in flight.
+    ///
+    /// Whether the core survives follows ADR-041 § 6b: an item that had a byte accepted is
+    /// torn and the core stays poisoned; an item that emitted nothing leaves the core as it
+    /// was. The message claims neither, because only the core knows which.
+    #[error("sink closed while an item was in flight")]
     SinkClosed,
 
     /// A tensor or footer was submitted to a file writer core before its header.

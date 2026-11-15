@@ -117,6 +117,34 @@ impl AsyncWrite for ClosedSink {
     }
 }
 
+/// Accepts `limit` bytes in total and then nothing, without raising an error: a sink that
+/// goes away mid-item, which is the only way a zero-length write can tear one.
+struct ClosingSink {
+    accepted: usize,
+    limit: usize,
+}
+
+impl AsyncWrite for ClosingSink {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        _cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        let me = self.get_mut();
+        let n = me.limit.saturating_sub(me.accepted).min(buf.len());
+        me.accepted += n;
+        Poll::Ready(Ok(n))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
 /// Fails with `Interrupted` the first `interrupts` times, then accepts everything.
 struct InterruptingSink {
     written: Vec<u8>,
@@ -331,11 +359,12 @@ async fn an_interrupted_write_is_retried_not_surfaced() {
     assert_eq!(sink.written, expected);
 }
 
-/// § 4: a zero-length write is never progress. A sink that accepts nothing is its own
-/// signal, and since a partial item is already on the wire it poisons the writer — a
-/// second attempt over the same connection is not a recovery (§ 6a).
+/// § 4: a zero-length write is never progress, and a sink that accepts nothing is its own
+/// signal. Nothing of the item reached the wire, so § 6b leaves the writer usable and the
+/// error simply repeats — it does not harden into a poison, which would claim a truncation
+/// at a peer that never saw a byte.
 #[tokio::test]
-async fn a_closed_sink_is_reported_and_poisons_the_writer() {
+async fn a_sink_that_accepts_nothing_does_not_poison_the_writer() {
     let d = desc();
     let payload = vec![0u8; 256];
     let buffers: [&[u8]; 1] = [&payload];
@@ -345,9 +374,32 @@ async fn a_closed_sink_is_reported_and_poisons_the_writer() {
         writer.write_tensor(&d, &buffers).await,
         Err(Error::SinkClosed)
     ));
+    // `SinkClosed` again rather than `CoreUnusable`: this writer never tore an item.
     assert!(matches!(
         writer.write_tensor(&d, &buffers).await,
-        Err(Error::CoreUnusable(_))
+        Err(Error::SinkClosed)
+    ));
+}
+
+/// The other half: a sink that takes the descriptor and then stops leaves a truncated item
+/// on the wire, so the writer is poisoned (§ 6b). The poison comes from the core's own
+/// `torn` flag, set at the first accepted byte, not from the sink-closed report.
+#[tokio::test]
+async fn a_sink_that_closes_mid_item_poisons_the_writer() {
+    let d = desc();
+    let payload = vec![0u8; 256];
+    let buffers: [&[u8]; 1] = [&payload];
+
+    // Enough for the descriptor and part of the payload, not enough for the item.
+    let limit = d.encode().unwrap().len() + 64;
+    let mut writer = StreamWriter::new(ClosingSink { accepted: 0, limit });
+    assert!(matches!(
+        writer.write_tensor(&d, &buffers).await,
+        Err(Error::SinkClosed)
+    ));
+    assert!(matches!(
+        writer.write_tensor(&d, &buffers).await,
+        Err(Error::CoreUnusable(Unusable::IncompleteOutput))
     ));
 }
 
