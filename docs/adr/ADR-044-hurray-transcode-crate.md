@@ -9,6 +9,16 @@ crate boundary against `hurray-core`, the error surface, and the sync-core/paral
 shape, decided before the first line is written. It also resolves that issue's one open
 question — **device support is movement-only** (§ 11).
 
+> **The pass was run twice.** § 14's audit found eight conversions the issue's list did not
+> name, so the decisions were re-derived against the larger scope rather than left standing
+> on the smaller one. Four moved: a plan now publishes each output buffer as **aliased or
+> produced** (§ 5), which makes corollary 1 computable rather than merely stated; work-item
+> disjointness is an **output** property, not an input one (§ 6); statistics propagation
+> needs an **arity** qualifier, because the first pass's rule was written for one-to-one and
+> is wrong for a split (§ 7); and a survey can now **refuse** a conversion, which is a sixth
+> error family (§ 13). The audit paid for itself before any code was written, which is the
+> argument for running it on every pass that adds scope.
+
 **ADR-014** (layout address computation lives in `hurray-core`), **ADR-041 §§ 1–2**
 (sans-io core; who owns payload memory) and **ADR-027** (composite composition rules) are
 load-bearing here. None of them is amended.
@@ -157,6 +167,15 @@ a sum type over a flag plus a runtime check that ADR-041 § 6a settled for the C
 surface. The survey that sizes a sparse output yields the exact `nnz` as a byproduct, which
 is also what makes the subsequent run partitionable (§ 6).
 
+**A survey serves two purposes, and the second one can say no.** Sizing is the first
+(dense → sparse). *Admissibility* is the second, and § 14 is what put it there: integer
+narrowing must establish that the data fits, collapsing a broadcast must establish that the
+repetition holds, and demoting per-block to per-channel or asymmetric to symmetric must
+establish that the scales are uniform or the zero points zero. So `survey` returns a
+`ReadyPlan` **or refuses** — on conforming data, for a target it does not fit (§ 13). It
+also means a survey reads *buffer* bytes rather than payload bytes specifically: the scale
+and zero-point buffers are what the demotions interrogate.
+
 The three shapes also answer #272's statistics question without an exception: a statistic
 *is* a survey (§ 7). The issue calls statistics "the one exception" because a reduction
 reads a tensor and produces no tensor; in this architecture that is not an exception, it is
@@ -164,8 +183,40 @@ one of the three shapes, and the crate needed it anyway to size a sparse buffer.
 
 ### 5. The caller allocates every destination
 
-A run takes the input buffers as `&[&[u8]]` and the output buffers as `&mut [&mut [u8]]`,
-sized and aligned per the handles the plan published. **The crate allocates no output.**
+A run takes its inputs as one buffer list **per input tensor** and its outputs as one
+mutable buffer list per output tensor, sized and aligned per the handles the plan published.
+**The crate allocates no output.**
+
+The per-tensor nesting is there from the start because § 1's arity generalisation demands
+it: shard and composite split are one-to-many, merge and flatten are many-to-one, and
+adding a nesting level to a shipped signature is the retrofit the issue says to decide now
+rather than later. One-to-one conversions pass a one-element slice and pay nothing.
+
+**Each output buffer is published as either produced or aliased**:
+
+```text
+BufferPlan::Produce { byte_size, alignment }   // the caller allocates; the run fills it
+BufferPlan::Alias(input_buffer_index)          // byte-identical to an input buffer
+```
+
+§ 14c is what forces this, and it is not a micro-optimization. An exact quantization-scheme
+promotion leaves the *storage buffer byte-identical* and changes only the scheme's metadata
+buffers, so a `Produce`-only contract would copy a multi-gigabyte weight buffer in order to
+add a few kilobytes of replicated scales. With aliasing, the caller allocates the small
+buffers and shares the large one. The same arm covers every other no-op case the audit
+turned up: an alignment the buffer already satisfies, a `byte_offset` already zero, a
+target equal to the source.
+
+The cost of the arm is one the caller must see: an aliased output buffer **shares memory
+with its input**, so the output tensor cannot outlive the input's buffers and a caller that
+needs an independent copy must ask for one. Publishing the arm per buffer is what makes that
+visible before the run rather than surprising afterwards.
+
+It also makes **corollary 1 computable.** A conversion "expressible as a descriptor change
+alone" is now exactly a plan whose every output buffer is an `Alias` — so the crate can
+*detect* #113 territory instead of relying on a reviewer to notice it, and return it as the
+no-op it is rather than performing a copy to prove it moved. The corollary stops being a
+sentence a future pass has to remember.
 
 The precedent is in `hurray-core` already: `encode_into(&mut [u8])` with an
 `encode_to_vec()` convenience over it. The same pair appears here, and the reasons it is
@@ -198,6 +249,13 @@ items**, with one invariant that is also the acceptance test:
 
 > Running every work item exactly once, in any order, on any number of threads, produces
 > byte-identical output to the serial run.
+
+**Disjointness is a property of the output, not of the input.** § 14 is full of conversions
+where one source byte feeds many work items — materialising a broadcast reads the same
+element once per repeat, sparse → dense reads a shared index buffer, a block-paged source
+may point two logical positions at one page, and an overlay's base is read by every item.
+Items therefore partition the *output*, read the input freely, and the invariant above is
+stated over writes. An input is never mutated, so nothing is lost by it.
 
 This is the discipline ADR-041 § 1 imposed on I/O, for the same reason and with the same
 payoff: `CLAUDE.md` forbids mixing `rayon` into async contexts, and a default-featured
@@ -247,6 +305,30 @@ lossy plan can move *all six* groups: a small value rounds to zero and changes `
 narrowing cast overflows to infinity and changes `has_inf`; mean, variance and the range
 all shift. Clearing beats carrying a bound, because `metadata.md` has no encoding for
 "approximately".
+
+**The table above is the one-to-one rule, and § 1's arity generalisation splits it in
+three.** This is the correction the second pass owes the first: "carry the section through
+unchanged" is right for one-to-one and wrong the moment a tensor is split.
+
+- **One-to-one, exact** — carry the section through unchanged, as above. Integer narrowing
+  belongs here once its survey has passed: the values are unchanged, so the conversion is
+  provably exact and not merely bounded.
+- **One-to-many** (shard split, composite split) — **clear every field**, with three
+  entailment exceptions. The minimum, maximum, mean and variance of a *part* are not those
+  of the whole, and neither is its `nnz`. But three source values do entail the same value
+  on every part: `has_nan = false`, `has_inf = false`, and `nnz = 0` (with
+  `sparsity_ratio = 1.0`). A `false` survives where the matching `true` does not, which is
+  exact, free, and worth getting right once rather than rediscovering per layout.
+- **Many-to-one** (shard merge, composite flatten) — **merge the inputs' declared
+  sections, with no pass over the data**: the minimum of the minima, the maximum of the
+  maxima, `nnz` as a sum, `sparsity_ratio` recomputed from it, `has_nan`/`has_inf` OR'd,
+  and mean and variance combined pairwise — which is `Survey::merge` below, applied to
+  declared sections instead of scanned chunks. A field is carried only when **every** input
+  declares it, and dropped otherwise. `nm_n`/`nm_m` are dropped on both split and merge: an
+  N:M pattern is over groups of consecutive elements, and a shard boundary can cut one.
+
+That the merge arm is free is the pleasant half; that the split arm is a *correction* is
+the half that justifies re-running the pass.
 
 Dequantization is exact because the spec fixes the arithmetic: per-tensor, per-channel,
 per-block and NF4 all define the multiply in `float32`, and a `float32` or `float64` target
@@ -376,7 +458,10 @@ descriptors" clause, and modelling it as a plan would mean adding the mode flag 
 this design does not need.
 
 So it is its own pair of operations — `to_native` / `from_native`, in place, over a
-descriptor and its buffers — and on a little-endian host both are the identity. Together
+descriptor and its buffers — and on a little-endian host both are the identity. It swaps
+**per buffer, each by its own element type**: a swap that touches only the payload leaves
+the COO index buffers, the scale buffers and the zero-point buffers wrong, and each of
+those has a width the layout or the scheme declares rather than the one `type_tag` does. Together
 with § 11 these are the crate's only two non-plan data operations, and they are the two
 whose parameterisation lives outside the descriptor pair: host byte order, and device
 residency.
@@ -399,7 +484,14 @@ Variants fall into five families, and *when* each is raised is part of the contr
 | **Input mismatch** | survey / run | buffer count or byte length disagrees with the descriptor (`hurray-io`'s `MultiBufferLengthMismatch` and `BufferSizeMismatch`, mirrored), plus their output-side counterparts. |
 | **Unusable destination** | run | a destination shorter than the plan published, or a base address that does not meet the declared alignment. |
 | **Invalid data** | survey / run | the payload contradicts its descriptor: COO coordinates out of bounds or duplicated, `indptr` non-monotonic, a block table past its pool, a partition not covering its index space. The validation surface, and what a run raises instead of producing garbage. |
+| **Conversion refused by survey** | survey | the data conforms and simply does not fit the requested target: an integer narrowing with an out-of-range value, a broadcast collapse whose repetition does not hold, a demotion whose scales are not uniform or whose zero points are not zero (§ 14a, § 14b, § 14c). Distinct from invalid data on purpose — nothing is wrong with the input, and the caller's remedy is a different target, not a repair. |
 | **Device** | staging | one always-present variant carrying a backend name and a detail string. |
+
+The audit also filled out the plan-time refusals, which are now the crate's whole
+precondition surface in one place: an unresolved dynamic dimension (§ 14f), a cast,
+quantization or survey of an extension type (§ 14g), an incomplete or overlapping shard set
+offered to a merge (§ 14d), a source buffer that is not host-resident (§ 11), and a request
+whose plan is all aliases — a descriptor change asked of a data-moving crate (§ 5).
 
 Two deliberate omissions. **No "survey required" variant** — § 4's sum type makes the
 illegal order unrepresentable. **No "value not representable" variant** — a narrowing cast
