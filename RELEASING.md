@@ -102,8 +102,8 @@ credential to outlive the publish. Revoking does not affect anything already pub
 3. **Version bump.** Update `version` in `[workspace.package]` **and** the `version` fields
    of the inter-crate deps in `[workspace.dependencies]` (`hurray-core`, `hurray-io`,
    `hurray-ffi`) to the same number. `cargo release` (below) does both.
-4. **Tag.** Commit, then tag `X.Y.Z` (no leading `v`) and push the tag. The tag push starts
-   a docs run that builds `/docs/X.Y.Z/` — but **does not publish it**; see step 5.
+4. **Tag.** Commit, then tag `X.Y.Z` (no leading `v`) and push the tag. The tag push does
+   **not** touch the documentation site; publishing it is step 5.
 5. **Publish the docs.** Dispatch `docs.yml` **on `main`**, and check that
    `/docs/X.Y.Z/` serves and `versions.json` reports `"stable": "X.Y.Z"`:
 
@@ -113,12 +113,12 @@ credential to outlive the publish. Revoking does not affect anything already pub
    curl -s https://www.pascalgillet.net/hurray/versions.json | head -4
    ```
 
-   A docs deploy created from a **tag** ref is recorded and reports success, and is then
-   never served — only a run on the default branch is promoted to the live site
-   ([#268](https://github.com/pgillet/hurray/issues/268)). The tag run going green is not
-   evidence that anything published. Dispatching on `main` is what publishes, and it
-   builds the new version correctly because `build-site.sh` enumerates every tag in the
-   repository rather than only the ref it was called on.
+   `docs.yml` has no tag trigger, by design: a Pages deploy created from a **tag** ref is
+   recorded and reports success, and is then never served — only a run on the default
+   branch is promoted to the live site
+   ([#268](https://github.com/pgillet/hurray/issues/268)). Dispatching on `main` is what
+   publishes, and it builds the new version correctly because `build-site.sh` enumerates
+   every tag in the repository rather than only the ref it was called on.
 6. **Publish crates** to crates.io in dependency order.
 7. **Build the Python distributions** — run the **Build Python wheels** workflow against
    the tag, then download the `pyhurray-dist` artifact and **upload it yourself**.
@@ -180,15 +180,15 @@ The workflow only ever *builds* — it has no upload step and no registry creden
 
 - **Docs need one manual step.** `/docs/X.Y.Z/` is generated from that tag's Markdown, the
   version dropdown updates, and `stable` resolves to the highest non-prerelease tag — but
-  the run that *publishes* all of that has to be dispatched on `main` (step 5). A docs run
-  triggered by the tag push builds the version and silently fails to serve it
-  ([#268](https://github.com/pgillet/hurray/issues/268)).
+  the run that *publishes* all of that has to be dispatched on `main` (step 5). Pushing the
+  tag starts nothing: a deploy from a tag ref is never served, so the trigger that used to
+  claim otherwise was removed ([#268](https://github.com/pgillet/hurray/issues/268)).
 
-  The failure mode is worth recognising, because it hides: the tag's run is **green**, and
-  the missing version appears on its own at some arbitrary later time, when the next
-  ordinary push to `main` republishes the site with the tag already in place. So a release
-  whose docs step was skipped looks fine in the Actions tab and wrong on the website, and
-  then quietly corrects itself days later.
+  Skipping step 5 is worth recognising, because it hides: nothing fails, and the missing
+  version appears on its own at some arbitrary later time, when the next ordinary push to
+  `main` republishes the site with the tag already in place. So a release whose docs step
+  was skipped looks fine in the Actions tab and wrong on the website, and then quietly
+  corrects itself days later.
 - **Prereleases** (e.g. `0.2.0-rc.1`) publish as their own version but are never selected as
   `stable`.
 - **If a publish is wrong**, you cannot delete it — `cargo yank --version X.Y.Z <crate>` and

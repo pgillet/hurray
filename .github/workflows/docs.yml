@@ -1,16 +1,22 @@
 name: Documentation site
 
 # Builds the full documentation site (Zola shell + versioned mdBook books + cargo doc API
-# reference) and deploys it to GitHub Pages. Runs on pushes to main (rebuilds the `dev`
-# docs) and on release tags (adds/updates that version and re-resolves `stable`). See
-# ADR-028 and docs/website/README.md.
+# reference) and deploys it to GitHub Pages. Runs on pushes to main and on manual dispatch
+# only. Each run rebuilds every version: `dev` from the checked-out tree, and one book per
+# release tag enumerated from the repository.
+#
+# No tag trigger: with Pages sourced from GitHub Actions, only a deployment whose run ref is
+# the default branch is promoted to the live site, so a tag run built the new version,
+# reported success and served nothing (#268). Because the build enumerates tags from the
+# repository rather than from the checked-out ref, a run on `main` publishes a freshly
+# tagged version anyway — the tag trigger could deliver nothing `main` does not. Publishing
+# a release's docs is a dispatch on `main`; see RELEASING.md step 5.
+#
+# See ADR-028 and docs/website/README.md.
 
 on:
   push:
     branches: [main]
-    tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
-      - '[0-9]+.[0-9]+.[0-9]+-*'
   workflow_dispatch:
 
 permissions:
@@ -18,8 +24,8 @@ permissions:
   pages: write
   id-token: write
 
-# Never cancel an in-progress deploy; queue instead, so a tag push can't abort a main push
-# mid-deploy (or vice versa).
+# Never cancel an in-progress deploy; queue instead, so a release dispatch can't abort a
+# main push mid-deploy (or vice versa).
 concurrency:
   group: docs-pages
   cancel-in-progress: false
