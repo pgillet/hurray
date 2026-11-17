@@ -136,3 +136,4 @@
     - [ADR-041: Sans-io Core for hurray-io](adr/ADR-041-sans-io-core-for-hurray-io.md)
     - [ADR-042: Python asyncio Surface](adr/ADR-042-python-asyncio-surface.md)
     - [ADR-043: One HurrayTensor Handle](adr/ADR-043-one-hurray-tensor-handle.md)
+    - [ADR-044: hurray-transcode Crate](adr/ADR-044-hurray-transcode-crate.md)
