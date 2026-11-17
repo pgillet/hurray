@@ -169,8 +169,14 @@ docs/
 A GitHub Actions workflow builds and deploys the entire tree. It is stateless: it
 reconstructs all versions from git on every run.
 
-**Triggers:** push to `main`, push of a release tag (semver `MAJOR.MINOR.PATCH[-prerelease]`,
-no leading `v`), and manual dispatch.
+**Triggers:** push to `main`, and manual dispatch. A release tag MUST NOT trigger a deploy:
+with Pages sourced from GitHub Actions, only a deployment whose run ref is the default branch
+is promoted to the live site, so a tag-triggered run reports success and serves nothing
+([#268](https://github.com/pgillet/hurray/issues/268)). This costs nothing, because stage 5
+enumerates tags from the repository rather than from the checked-out ref: a run on `main`
+publishes a freshly tagged version just as a run on the tag would have. Publishing a
+release's docs is therefore a manual dispatch on `main` (see the
+[release checklist](https://github.com/pgillet/hurray/blob/main/RELEASING.md)).
 
 **Stages (in order):**
 
