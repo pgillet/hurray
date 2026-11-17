@@ -71,6 +71,12 @@ reshape annotation produces a plan with no work in it, and a requantization need
 which path the data took. The clause earns its keep twice: once as the paragraph a future
 pass is measured against, and once as the signature that makes the measurement automatic.
 
+One generalisation, found by the § 14 audit: three operations are not one-to-one — shard
+split and composite split are one-to-many, shard merge and composite flatten are
+many-to-one. So the rule is over the source and target descriptor **sets**, and a plan is
+a pure function of those two sets. Nothing else about it changes; the destinations of § 5
+are already a slice.
+
 ### 2. The crate boundary: the first crate that reads payload bytes as values
 
 `hurray-core` **describes**; `hurray-transcode` is the first crate in the workspace that
@@ -231,7 +237,7 @@ an invalid one. So propagation follows the plan's fidelity, and nothing else:
 
 | Plan fidelity | Conversions | Statistics on the output |
 |---|---|---|
-| **exact** | any layout → any layout, sparse ↔ dense, sparse → sparse, alignment, sub-byte packing, composite flatten/split, dequantization to `float32`/`float64` | the source's section is carried through **unchanged, mask and all** |
+| **exact** | any layout → any layout (broadcast materialisation and stride normalisation included), sparse ↔ dense, sparse → sparse, alignment, `byte_offset`, sub-byte packing, composite flatten/split, shard split/merge, integer and `bool` widening, the § 14c scheme promotions, dequantization to `float32`/`float64` | the source's section is carried through **unchanged, mask and all** |
 | **target-declared loss** | float → narrower float, quantization to any scheme | the section is **dropped** (`HAS_STATISTICS` cleared) |
 
 An exact plan preserves the index-to-value mapping, so every field keeps exactly the truth
@@ -405,7 +411,129 @@ The device variant is **not feature-gated**, so the enum has the same shape in e
 A variant that appears and disappears with a feature makes error matching differ per build
 configuration, which costs more than the one unused variant saves.
 
-### 14. What this crate does not add
+### 14. Scope completeness: an audit over the descriptor's own fields
+
+The in-scope list cannot be checked by remembering hard enough. The descriptor **is** the
+definition of "representation", so completeness is an audit: for every field and section
+of `metadata.md`, can it differ between two descriptors of the same logical value? If it
+can, there is a conversion; if it cannot, there is nothing to convert. That is a check a
+future pass can re-run, which a list cannot.
+
+| Descriptor field or section | Differs for one logical value? | Conversion |
+|---|---|---|
+| `magic`, `descriptor_length`, `flags` | no — fixed or derived | — |
+| `version_major` / `version_minor` | yes, but no byte moves | **out** — descriptor-only, corollary 1 (#113) |
+| `type_tag` | yes | float → float (#272), **int → int, `bool` → int** (§ 14a) |
+| `layout_tag` + layout fields | yes | every layout and sparse conversion (#272), **plus the degenerate strides** (§ 14b) |
+| `rank` | no — rank is logical | a rank change is a reshape: **out**, #113 |
+| `shape` | no | — , but a **dynamic dimension sentinel is refused at plan time** (§ 14f) |
+| `byte_offset` | yes | **rebasing a tensor within its buffer** (§ 14e) |
+| buffer table — `byte_size` | derived | — |
+| buffer table — `alignment` | yes | re-placement (#272) |
+| buffer table — `device_tag`, `sync_mode`, `memory_class` | yes | staging, movement-only (§ 11) |
+| Quantization section | yes | quantize / dequantize (#272), **plus the exact promotions** (§ 14c); lossy requantization stays out |
+| Shard section | yes | **shard split and merge** (§ 14d) |
+| Statistics section | yes | a survey (§ 7) |
+| Extension Type section | yes | **movement and repacking yes, value casting no** (§ 14g) |
+| Composite Member section | yes | flatten / split (#272), **and an overlay applies its `CombineOp`** (§ 14h) |
+| *(not in the descriptor)* | — | byte order (§ 12) |
+
+Eight entries the issue's list does not name. Five are in scope, two are refusals worth
+recording because they look free, and one is a precondition.
+
+**(a) Integer and `bool` casts.** #272's casting row covers float → float only. Integer
+widening (`int8` → `int32`, `uint8` → `uint32`) is exact and belongs here, as does `bool` →
+`int8`/`uint8` over the `{0, 1}` domain `metadata.md` already defines for `bool`
+statistics. Integer **narrowing** is admitted only through a survey: unlike IEEE-754, where
+overflow to infinity is the target's own declared behaviour, an integer type declares no
+overflow semantics, so wrapping would change the value and saturating would be a path loss.
+The survey establishes the data fits, and the run refuses it otherwise — the same shape
+§ 9 gives a caller-supplied quantization range.
+
+Two refusals, both of which look like free conversions: **signed ↔ unsigned at the same
+width** is a bit-identical reinterpretation with a different logical value (`-1` and `255`
+are not the same number), and **int → `bool`** is a predicate, not a representation. Both
+are out, permanently.
+
+**(b) The degenerate strides.** `strided.md` makes negative and zero strides valid and
+mandates support for them, which puts two conversions inside "strided → row-major" that
+have nothing in common with a general index remap. A **zero stride is a broadcast**:
+materialising it expands the data, by a factor the descriptor states, so it is the one
+conversion in the crate whose output can be arbitrarily larger than its input — and the
+only one where a caller can ask for a terabyte by accident. The reverse — collapsing a
+repeated axis back to a zero stride — is value-preserving only if the repetition actually
+holds in the data, so it is survey-gated. A **negative stride reverses** an axis;
+normalising it to a positive stride is a byte move, and it is the case where the source's
+base address is not the lowest address it reads.
+
+**(c) Exact quantization-scheme promotions are in; only *lossy* requantization is out.**
+#272 rules out quantized → quantized because the loss compounds along the path. That
+argument is exactly right about the lossy cases and does not reach a small, enumerable set
+where **the storage buffer is byte-identical and only the scheme's metadata buffers
+change**:
+
+- per-tensor affine → per-channel affine, with the single scale and zero point replicated;
+- per-channel affine → per-block affine, with each channel's scale replicated over its
+  blocks;
+- symmetric → asymmetric, with an all-zero zero-point buffer;
+- and their reverses, which are survey-gated over the *scale and zero-point buffers* —
+  admissible only if every replicated value is in fact equal, and every zero point is in
+  fact zero.
+
+"The storage buffer is byte-identical" is the test, and it is checkable mechanically. It
+also states the requantization boundary better than fidelity does: **requantization
+rewrites the data buffer; a promotion does not.** NF4 and MXFP have no exact affine
+equivalent — a non-uniform grid and a power-of-two shared exponent are not an affine scale
+— so they are not in this set in either direction. Scale-type conversion is not available
+either: `scale_type_tag` MUST be `float32` in this version of every affine scheme.
+
+This family is not academic. It is what a consumer that implements only per-block affine
+needs in order to accept a per-tensor tensor at all, and it costs a metadata buffer rather
+than a pass over the weights.
+
+**(d) Shard split and merge.** #272 treats sharding as composite flatten/split, and that
+covers the composite route — but ADR-004's **shard section** is a different mechanism: a
+standalone tensor annotated with its `shard_offset` inside a `parent_shape`, with no head
+descriptor binding the pieces together. Both routes exist in the format and they are not
+interchangeable: a composite is self-describing as a whole, where shards are self-describing
+*individually*. #226's parallel shard transfers and #111's cluster sharding both move
+pieces independently, over separate streams and to separate nodes, so the shard route is
+the one they need. Splitting a tensor into a shard grid, and merging a complete set back
+into its parent, are in scope; a merge refuses an incomplete or overlapping set at plan
+time, from the shard sections alone.
+
+**(e) `byte_offset` rebasing.** A tensor may sit at a non-zero offset in its buffer, so
+moving it to offset 0, or packing several tensors into one buffer at chosen offsets, is a
+conversion in its own right. Mostly it falls out of alignment re-placement; it is named
+here so that the `byte_offset` row of the audit is not blank, and because sub-byte types
+constrain where a tensor may start.
+
+**(f) A dynamic shape is refused at plan time.** `shape` may carry the dynamic-dimension
+sentinel (`UINT64_MAX`), and `metadata.md` forbids computing buffer sizes, strides or
+element counts for it until it is resolved. A plan is sizes, so it requires a fully
+resolved shape and refuses one that is not. Resolving the sentinel is a descriptor-only
+change and stays out by corollary 1.
+
+**(g) Extension-typed tensors move and repack, but never cast.** ADR-001's extension
+descriptor carries `bit_width`, `packing_factor` and `is_float` — enough to compute buffer
+sizes, so every layout, alignment, packing and staging conversion works on a private type
+and is not blocked by it. It is *not* enough to interpret a value, so casting, quantizing
+and surveying a private type are refused. #207's foreign-file scanning will meet this
+first, and the split is the useful one: the bytes can be rearranged for a consumer that
+knows the type, by a crate that does not.
+
+**(h) An overlay composite's materialisation applies `CombineOp`, and that is in scope.**
+`CombineOp::Add` means the logical value at an index is the base plus the sum of every
+covering correction, so flattening such a composite performs additions. That looks like
+arithmetic, and the rule still admits it: the composite's logical value *is defined* as the
+combination, so materialising it preserves that value exactly and computing something else
+would be the violation. Two consequences. Floating-point addition is order-dependent, so
+the materialisation follows ADR-027's validated layer order, and § 6's order-independence
+invariant quantifies over work items, never over layers. And it is worth saying plainly:
+`CombineOp::Add` is the only place in this crate where a value is computed rather than
+moved or recoded, and it is admissible only because the format defines the result.
+
+### 15. What this crate does not add
 
 **No coverage-matrix row and no new column.** The matrix's rows are *spec features* taken
 from `compliance.md`, and the spec requires no implementation to transcode anything. The
@@ -474,6 +602,11 @@ has.
   first consumers (#226, #111) are Rust-side.
 - #226 and #111 stop needing their own conversion code, and #110 gets the mechanism it is
   the policy layer for.
+- Broadcast materialisation (§ 14b) is the one conversion whose output can be arbitrarily
+  larger than its input, by a factor the descriptor states. A plan publishes its output
+  sizes before any byte moves, so a caller — a Level 3 server, say — can refuse it against
+  a budget, which is exactly what `interchange.md`'s `TRANSCODE_LIMIT_EXCEEDED` is for.
+  The budget is the caller's; the number is the plan's.
 
 ## Findings Routed Elsewhere
 
