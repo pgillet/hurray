@@ -30,3 +30,4 @@ that the reference implementation and language bindings must satisfy.
 | [Rust Reference](rust-reference.md) | Requirements for `hurray-core` and `hurray-io` |
 | [C FFI](c-ffi.md) | C ABI layer requirements: opaque handles, function table, panic safety |
 | [Python Bindings](python-bindings.md) | Python codec + zero-copy bridge: DLPack, NumPy/PyTorch interop, native Hurray buffer protocol |
+| [Transcode Matrix](transcode-matrix.md) | Which representation conversions `hurray-transcode` performs, gates behind a survey, or refuses permanently — versioned, and non-normative |

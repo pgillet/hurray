@@ -40,6 +40,7 @@
 - [Rust Reference](impl/rust-reference.md)
 - [C FFI](impl/c-ffi.md)
 - [Python Bindings](impl/python-bindings.md)
+- [Transcode Matrix](impl/transcode-matrix.md)
 
 # Cookbook
 
