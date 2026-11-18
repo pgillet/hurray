@@ -837,7 +837,10 @@ ADR that governs it. The refused rows carry their reason, because "signed ↔ un
 same width" (§ 14a) being permanently out is as much a part of the published surface as the
 pairs that work.
 
-It is created by the first implementation pass, seeded with every pair § 14 names, and
+It ships **with this ADR**, seeded with every pair § 14 names and with every implementable
+row reading `deferred`, because the crate does not exist yet. That is not a placeholder: the
+`refused` rows are decided today and are the half of the surface a caller most needs in
+writing — re-proposing one means arguing with the reason in its last column. It is then
 updated **in the same pass that adds, gates or refuses a conversion** — the discipline
 `CLAUDE.md` already imposes for `website/coverage-matrix.toml`, for the same reason: a
 matrix maintained after the fact is a matrix nobody trusts. It is hand-written for now;
