@@ -53,6 +53,21 @@ question — **device support is movement-only** (§ 11).
 > `replace` only — `add` leaves the decomposition underdetermined, so § 1 refuses it
 > (§ 14h).
 
+> **Reviewed a third time**, with no P1 finding and no architectural change. What the pass
+> added is the enforcement side of three contracts that were stated but not operational.
+> § 4 now says that **the borrow checker enforces none of the survey-to-run obligation** —
+> a plan holds no borrow, by construction — and says **which plans may be reused**: a
+> descriptor-only plan any number of times on any conforming buffers, a survey-derived plan
+> on the bytes it surveyed and no others. § 9 stops *arguing* that derived parameters cannot
+> clip and instead **verifies and widens**: quantize both endpoints through § 15's arithmetic
+> and step the scale by an ulp until they fit, which terminates and is testable, with the two
+> degenerate ranges (zero-width, non-finite) given named answers. And the routed findings now
+> say **which one gates a release** — finding 1 does, because the spec has two incompatible
+> readings and the crate must choose; findings 2 and 5 do not, because the spec permits one
+> and is silent on the other. Writing § 9's degenerate cases also found a real gap: **a
+> survey refuses to quantize data containing a NaN or an infinity**, since no scheme encodes
+> either — the first pass had that rule for sub-byte float targets only (§ 15).
+
 **ADR-014** (layout address computation lives in `hurray-core`), **ADR-041 §§ 1–2**
 (sans-io core; who owns payload memory) and **ADR-027** (composite composition rules) are
 load-bearing here. None of them is amended.
@@ -247,6 +262,34 @@ data-level validation a run performs is performed on the bytes in front of it, n
 survey's recollection. So a caller that breaks the contract gets a wrong value, a
 saturated element, or an error — never a write outside a destination. Bounds come from the
 buffers presented to `run`; only *fidelity* came from the survey.
+
+**The borrow checker cannot help here, by construction, and the rustdoc must say so.** A
+plan holds no borrow of any input: a `BufferHandle` carries no pointer, and the buffers
+arrive as arguments to `run`. Safe Rust can therefore mutate a surveyed buffer while holding
+a `ReadyPlan`, and nothing will complain — the obligation above is not a lifetime that the
+compiler enforces, and documenting it as though it were would be worse than stating the
+truth. Taking a borrow instead was considered and rejected twice over: it would make a plan
+an immutable lock on a multi-gigabyte weight buffer for its whole life, and it still would
+not catch the FFI and Python cases, where the memory is owned outside Rust (ADR-043's
+handle, a NumPy array) and no Rust borrow spans it.
+
+**Which plans may be reused is part of the same contract.** A `ReadyPlan` that came straight
+from `Planned::Ready` is a function of descriptors alone, so it may be run **any number of
+times, on any buffers matching those descriptors** — that is the layout-negotiating server's
+case, and it is why a plan is a value rather than a one-shot token. A `ReadyPlan` that came
+from `SurveyPlan::survey` carries facts about *particular bytes*, so it is valid for those
+bytes and no others: running it against a different buffer with the same descriptor is the
+same violation as mutating the original, with the same consequences and the same absence of
+detection. A phantom type parameter distinguishing the two was considered and rejected — the
+arms deliberately converge on one `ReadyPlan` with one `run` (above), and a
+`ReadyPlan<Surveyed>` would still not stop a caller from passing different buffers of the
+same shape. It would move the unenforceable claim one level up while doubling the type
+surface.
+
+One case the reviewer of a device-backed consumer will ask about resolves itself: a plan
+requires every source buffer to be host-resident and refuses otherwise (§ 11), so an
+asynchronous device operation cannot invalidate a survey behind the crate's back. Staging is
+the only path to device memory, and it carries no survey.
 
 The three shapes also answer #272's statistics question without an exception: a statistic
 *is* a survey (§ 7). The issue calls statistics "the one exception" because a reduction
@@ -585,6 +628,28 @@ division and rounding. With that, the invariant is real and a clamp firing is a 
 `debug_assert`ed in the derived path, and the boundary vectors — `±value_abs_max`, and both
 endpoints of an asymmetric range — are named test cases rather than incidental ones.
 
+**The asymmetric case earns its own answer, because an argument about it is not a proof.**
+The scale is derived from the range width and the zero point from the range's position, and
+the interaction of two roundings with a clamp into `[q_min, q_max]` is exactly where a
+hand-waved invariant fails. So the derivation does not argue; it **verifies and widens**:
+compute the candidate `scale` and `zero_point`, quantize both endpoints of the surveyed
+range *through § 15's arithmetic*, and if either lands outside the storage range, widen the
+scale to the next `float32` and recompute. This terminates — a larger denominator cannot
+increase the quotient, and one or two ulps settle every case — and it replaces a claim about
+real numbers with a check in the arithmetic that will actually run. The no-clipping invariant
+is then a property test over generated ranges rather than a paragraph: strongly asymmetric
+ranges either side of zero, ranges that straddle it barely, widths at both ends of
+`float32`'s exponent span, and endpoints placed deliberately on a rounding boundary.
+
+**Two degenerate ranges have named answers**, since a survey will meet both. A **zero-width
+range** — `value_min == value_max`, which is every constant tensor and every all-zero one —
+makes the exact scale zero, and `quantization.md` requires a finite non-zero `scale`. It is
+not an error: a constant tensor is an ordinary tensor, so the derivation substitutes a
+positive scale and places the zero point to represent the constant, and the verify-and-widen
+step above governs the result as usual. A **non-finite range** — a NaN or an infinity in the
+data — is refused by the survey rather than papered over, because no affine scheme can
+encode either value and a range containing one cannot produce a usable scale at all (§ 15).
+
 **Mapping *to* an endpoint is not saturation, and the counter must not conflate them.** A
 value that quantizes to exactly `127` has been represented, not clipped; the count reports
 elements whose computed quantum fell *outside* the target's range and was clamped to reach
@@ -892,6 +957,14 @@ because a round-trip test cannot find it — two symmetric errors cancel.
   infinity, and refuses the conversion otherwise (§ 13's *conversion refused by survey*
   family, alongside integer narrowing). A statistics section claiming `has_nan = false` does
   not substitute for the survey — § 8's rule about advisory inputs applies here too.
+- **Quantization is in that same family, for every scheme.** Writing § 9's degenerate cases
+  is what surfaced it: no affine scheme encodes a NaN or an infinity — the storage type is
+  an integer and the dequantization is a multiply — and NF4's grid and MXFP's shared
+  exponent encode neither either. A non-finite value also makes the derived range
+  non-finite, so there is no usable scale to derive. So **a survey refuses to quantize data
+  containing a NaN or an infinity**, exactly as it refuses a cast to `float4_e2m1`, rather
+  than letting a clamp invent a finite value for it. The first pass had this rule for
+  sub-byte float targets only, which was the same gap in a narrower place.
 - **Dequantization reproduces the spec's arithmetic exactly, not something better.** The
   subtraction is `int32`, the result is cast to `float32`, the multiply is `float32`, and a
   `float64` target widens that `float32` result rather than recomputing the multiply in
@@ -1022,6 +1095,13 @@ has.
   way clips a value the derivation promised would fit — § 9), and overlay arithmetic in the
   head's element type, where accumulating in `float32` and narrowing at the end gives a
   different and *more accurate* answer than the one the format defines (§ 15).
+- Two test families exist because a contract is only as good as what checks it. The
+  **plan-reuse boundary** (§ 4) gets both halves: a descriptor-only plan run repeatedly on
+  different conforming buffers must produce the right answer every time, and a survey-derived
+  plan run against mutated bytes must produce a wrong value or an error and never a write
+  outside a destination — asserted at the Rust boundary and again wherever the memory is
+  owned outside Rust. And **every implemented conversion has a matrix row** (§ 16), which is
+  the cheapest guard against the matrix drifting into fiction.
 - The architectural surface and the implemented surface are deliberately different sizes,
   and § 16's `docs/impl/transcode-matrix.md` is where the difference is published. § 14's
   audit is the shape of the crate at completion; which pairs land in which pass is the
@@ -1075,6 +1155,16 @@ has.
    — probably in `element-types.md`, since it is a property of the types rather than of a
    layout — on the same argument that put `NF4_LUT` in the spec instead of in an
    implementation. Related to finding 2, which is the same gap in one scheme.
+
+**Only one of these gates a release, and the test is whether the spec *permits* what the
+crate does.** Finding 1 does gate: `coo.md` has two mutually exclusive readings of `nnz`, the
+crate must pick one to emit anything sparse at all, and whichever it picks becomes an
+argument the spec then has to accommodate — so the normative answer is wanted before sparse
+output ships. Findings 2 and 5 do not gate, for the same reason as each other: `float32` is
+*within* what `mxfp.md`'s "`float32` (or higher)" permits, and § 15 pins arithmetic the spec
+is *silent* on, so neither can put the crate in contradiction with the format. What they risk
+is two implementations differing, which is an interoperability argument for amending the
+spec, not a reason to withhold a conversion. Finding 4 is housekeeping and gates nothing.
 
 ## Open Questions Deferred
 
