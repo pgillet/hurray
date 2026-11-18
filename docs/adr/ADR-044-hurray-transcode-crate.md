@@ -2,7 +2,15 @@
 
 ## Status
 
-Proposed (2026-11-17)
+Accepted (2026-11-18), proposed 2026-11-17
+
+> Accepted after three review passes, which is what the revision notes below record. The
+> direction stood throughout; two defects were corrected (an all-alias plan meant two
+> opposite things, and the statistics merge was keyed on arity when it needed the cover) and
+> five contracts that had been stated only in prose became operational. No implementation
+> work has started: the crate does not exist, and the
+> [conversion matrix](../impl/transcode-matrix.md) reads `deferred` on every implementable
+> row until it does.
 
 The architect pass for [issue #272](https://github.com/pgillet/hurray/issues/272): the
 crate boundary against `hurray-core`, the error surface, and the sync-core/parallel-edge
