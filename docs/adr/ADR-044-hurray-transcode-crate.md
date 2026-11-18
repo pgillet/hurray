@@ -19,6 +19,24 @@ question — **device support is movement-only** (§ 11).
 > error family (§ 13). The audit paid for itself before any code was written, which is the
 > argument for running it on every pass that adds scope.
 
+> **Then reviewed.** A review of the two passes found one internal contradiction and one
+> false claim, and both are corrected here rather than argued with: a plan whose every
+> output buffer is an alias was returned as a no-op by § 5 and refused at plan time by
+> § 13 — it is now **`Ready` with zero work items** (§ 5), and corollary 1's refusals are
+> stated separately from it; and § 7's claim that pairwise merging makes a survey
+> independent of the chunking is **true only in exact arithmetic**, so the guarantees are
+> now split three ways, with the digest pinned to index order (§ 7). It also found three
+> holes where the design was silent rather than wrong, each of which becomes a contract
+> here: the **numerical arithmetic** of a narrowing cast, which the spec declares out of its
+> own scope and which is now pinned in full (§ 15, finding 5); what the **destinations hold
+> after a failed run** (§ 13); and the fact that a `ReadyPlan` reached through a survey is
+> **only as true as the bytes the survey read** (§ 4). The first was the expensive one to
+> have found after publication, which is the argument for a review pass between the
+> architect and the planner. Two smaller things came with it: § 1 now says that "logical
+> value" means *the value the format defines*, which is what makes § 14h's `CombineOp::Add`
+> an instance of the rule rather than an exception to it, and the versioned conversion
+> matrix the audit is deliberately not becomes a documentation deliverable (§ 16).
+
 **ADR-014** (layout address computation lives in `hurray-core`), **ADR-041 §§ 1–2**
 (sans-io core; who owns payload memory) and **ADR-027** (composite composition rules) are
 load-bearing here. None of them is amended.
@@ -65,27 +83,48 @@ With its two corollaries: **anything expressible as a descriptor change alone st
 annotating is out), and **loss must be a property of the target, not of the path** (which
 is what rules requantization out).
 
+**"Logical value" means the value the format defines**, and the rule is relative to that
+definition rather than to an intuition about arithmetic. For a dense tensor it is the
+element stored at an index; for a quantized tensor it is the value the scheme's
+dequantization arithmetic yields; for an overlay composite it is the `CombineOp`
+combination ADR-027 defines over the layers. So § 14h's `CombineOp::Add` — which performs
+additions — is admitted *by* the rule rather than excused from it, and an operation that
+preserves a value Hurray never defined is not admitted at all. The boundary moves when the
+format moves, and only then: the clause to argue with, when a future pass wants to widen
+this crate, is the format's definition of the value, not this crate's taste.
+
 The rule is not new to this project. `interchange.md` § On-the-Fly Transcoding already
 says it normatively for the protocol: "the logical tensor (the values at every index) MUST
 be identical before and after transcoding. Only the memory layout changes." This ADR
 generalises that sentence to element types and quantization, where the loss is declared by
 the target, and gives it a mechanical form:
 
-> **A conversion belongs in this crate iff its plan is a pure function of the source
-> descriptor and the target descriptor.**
+> **The selection of a conversion and its rules are a pure function of the source
+> descriptor and the target descriptor. Its admissibility and its output sizes may require
+> the bytes.**
 
-That is the rule as a type, not as prose. § 4 makes the plan a real object built from two
-descriptors and nothing else, so an operation that cannot be planned from descriptors
-alone cannot be expressed — a matmul has no plan, `arange` has no source descriptor, a
-reshape annotation produces a plan with no work in it, and a requantization needs to know
-which path the data took. The clause earns its keep twice: once as the paragraph a future
-pass is measured against, and once as the signature that makes the measurement automatic.
+Both halves are load-bearing, and the first pass stated only the first — "a plan is a pure
+function of two descriptors" is the sentence § 4's survey family contradicts. The size of a
+COO `values` buffer is not in any descriptor, and neither is the fact that every `int32`
+value in a buffer fits in `int8`. What *is* a function of the descriptors alone is **which**
+transformation is performed and **by what rule**, and that is the half the membership test
+needs: an operation whose very choice of transformation depends on the data is reading
+values to decide what to compute, which is a compute library's job. A survey never changes
+the rule; it establishes whether the rule applies and how much room its output needs.
+
+The first half is also the rule as a type, not as prose. § 4 makes the plan a real object
+built from two descriptors and nothing else, so an operation that cannot be planned from
+descriptors alone cannot be expressed — a matmul has no plan, `arange` has no source
+descriptor, a reshape annotation produces a plan with no work in it, and a requantization
+needs to know which path the data took. The clause earns its keep twice: once as the
+paragraph a future pass is measured against, and once as the signature that makes the
+measurement automatic.
 
 One generalisation, found by the § 14 audit: three operations are not one-to-one — shard
 split and composite split are one-to-many, shard merge and composite flatten are
-many-to-one. So the rule is over the source and target descriptor **sets**, and a plan is
-a pure function of those two sets. Nothing else about it changes; the destinations of § 5
-are already a slice.
+many-to-one. So the rule is over the source and target descriptor **sets**, and its first
+half is a pure function of those two sets. Nothing else about it changes; the destinations
+of § 5 are already a slice.
 
 ### 2. The crate boundary: the first crate that reads payload bytes as values
 
@@ -176,6 +215,23 @@ establish that the scales are uniform or the zero points zero. So `survey` retur
 also means a survey reads *buffer* bytes rather than payload bytes specifically: the scale
 and zero-point buffers are what the demotions interrogate.
 
+**A `ReadyPlan` reached through a survey is only as true as the bytes it read.** A survey
+establishes a fact about data — `nnz` is 412, every value fits in `int8`, every replicated
+scale is equal — and the run that follows acts on it. The inputs handed to `run` MUST
+therefore be the same bytes the survey read; **mutating an input between survey and run
+voids the plan, and the crate cannot detect that it happened.** A `BufferHandle` carries no
+pointer (§ 2) and a plan keeps no digest of what it surveyed, so there is nothing to
+compare against, and adding a checksum would mean a second pass over the data to defend
+against a caller mutating its own buffers mid-conversion. This is a documented caller
+obligation, which is the only honest place for it.
+
+What the obligation does *not* extend to is soundness. A plan's sizes are checked against
+the destinations the caller actually passes (§ 13, unusable destination), and every
+data-level validation a run performs is performed on the bytes in front of it, not on the
+survey's recollection. So a caller that breaks the contract gets a wrong value, a
+saturated element, or an error — never a write outside a destination. Bounds come from the
+buffers presented to `run`; only *fidelity* came from the survey.
+
 The three shapes also answer #272's statistics question without an exception: a statistic
 *is* a survey (§ 7). The issue calls statistics "the one exception" because a reduction
 reads a tensor and produces no tensor; in this architecture that is not an exception, it is
@@ -212,11 +268,23 @@ with its input**, so the output tensor cannot outlive the input's buffers and a 
 needs an independent copy must ask for one. Publishing the arm per buffer is what makes that
 visible before the run rather than surprising afterwards.
 
-It also makes **corollary 1 computable.** A conversion "expressible as a descriptor change
-alone" is now exactly a plan whose every output buffer is an `Alias` — so the crate can
-*detect* #113 territory instead of relying on a reviewer to notice it, and return it as the
-no-op it is rather than performing a copy to prove it moved. The corollary stops being a
-sentence a future pass has to remember.
+**A plan whose every output buffer is an `Alias` is `Ready` with zero work items, and is
+not an error.** The first pass said both things in two places, and this is the one that
+survives. Such a plan is what a target equal to the source produces, and an alignment the
+buffer already satisfies, and a `byte_offset` already zero — a *materialisation* that
+happens to need no byte moved. A caller performing layout negotiation reaches that case
+routinely, and refusing it would push the comparison onto every caller, which is the
+comparison this crate is best placed to make: it owns the arithmetic that decides whether
+two descriptions imply the same bytes. So `run` is callable on it, writes nothing, and
+reports nothing moved.
+
+**That case is not corollary 1, and the distinction matters.** Corollary 1 is about
+operations whose *definition* is a descriptor change — a reshape, a version bump, resolving
+a dynamic dimension (§ 14f). Those are refused at plan time as unsupported pairs (§ 13) and
+never produce a plan at all, because there is no representation change to ask for. An
+all-alias plan is a supported conversion with an empty body. Conflating the two reads "I
+asked for the representation I already have" as "I asked this crate to do something it does
+not do", which is a different sentence and a worse error.
 
 The precedent is in `hurray-core` already: `encode_into(&mut [u8])` with an
 `encode_to_vec()` convenience over it. The same pair appears here, and the reasons it is
@@ -364,8 +432,33 @@ Survey -> quantization parameters    // § 8
 `merge` is doing two jobs: it is what makes a survey parallel over the same work items as a
 run, and it is the shape that lets a survey be fed incrementally later — "cheap now, a
 rewrite afterwards", as the issue puts it. Mean and variance merge pairwise
-(Chan–Golub–LeVeque), not by accumulating a running total, so the result does not depend on
-the chunking.
+(Chan–Golub–LeVeque) rather than by accumulating a running total, which is what keeps the
+result numerically sound for a large tensor.
+
+**It does not make the result bit-reproducible across partitions, and § 6's invariant does
+not reach a survey.** Pairwise merging is associative in exact arithmetic and not in
+floating point, so two different chunkings of the same data can differ in the last bits of
+`value_mean` and `value_stddev`. Three guarantees, stated apart, because conflating them is
+how an elegant invariant comes to cover something it does not:
+
+- **A run's output bytes** are partition-independent — § 6's invariant, which is an
+  acceptance test precisely because it is testable.
+- **A survey's exact facts** are partition-independent too, and for the same reason the run
+  is: `nnz`, `value_min`, `value_max`, `value_abs_max`, `has_nan` and `has_inf` are a count,
+  a min, a max and two ORs, all associative in the arithmetic that computes them.
+- **A survey's accumulated moments** — `value_mean`, `value_stddev` — are deterministic for
+  a given partition and not bit-identical across partitions. They do not need to be:
+  `metadata.md` makes every statistic advisory and forbids a reader from relying on one for
+  correctness (§ 8 is this crate obeying that rule about its own inputs). A last-bit
+  difference in an advisory field is not a defect, and buying bit-identity with a fixed
+  reduction tree would cost the parallelism the accumulator exists to allow.
+
+**The digest is the exception, and it is pinned rather than advisory.** § 10's digest is a
+survey whose whole value is that two implementations agree, so its merge is fixed to
+row-major index order — partial digests combine in index order only, never in completion
+order. That is a constraint on the digest's `merge`, not on the accumulator in general, and
+it is the reason § 10 defers the algorithm to a normative home rather than letting each
+implementation pick a reduction.
 
 The accumulator's *scalar getters are not public*. A `Survey` converts to a `Statistics`
 section or to quantization parameters, and those are its only outputs. This is the
@@ -484,20 +577,45 @@ Variants fall into five families, and *when* each is raised is part of the contr
 | **Input mismatch** | survey / run | buffer count or byte length disagrees with the descriptor (`hurray-io`'s `MultiBufferLengthMismatch` and `BufferSizeMismatch`, mirrored), plus their output-side counterparts. |
 | **Unusable destination** | run | a destination shorter than the plan published, or a base address that does not meet the declared alignment. |
 | **Invalid data** | survey / run | the payload contradicts its descriptor: COO coordinates out of bounds or duplicated, `indptr` non-monotonic, a block table past its pool, a partition not covering its index space. The validation surface, and what a run raises instead of producing garbage. |
-| **Conversion refused by survey** | survey | the data conforms and simply does not fit the requested target: an integer narrowing with an out-of-range value, a broadcast collapse whose repetition does not hold, a demotion whose scales are not uniform or whose zero points are not zero (§ 14a, § 14b, § 14c). Distinct from invalid data on purpose — nothing is wrong with the input, and the caller's remedy is a different target, not a repair. |
+| **Conversion refused by survey** | survey | the data conforms and simply does not fit the requested target: an integer narrowing with an out-of-range value, a broadcast collapse whose repetition does not hold, a demotion whose scales are not uniform or whose zero points are not zero (§ 14a, § 14b, § 14c), a NaN or an infinity bound for a target that represents neither (§ 15). Distinct from invalid data on purpose — nothing is wrong with the input, and the caller's remedy is a different target, not a repair. |
 | **Device** | staging | one always-present variant carrying a backend name and a detail string. |
 
 The audit also filled out the plan-time refusals, which are now the crate's whole
 precondition surface in one place: an unresolved dynamic dimension (§ 14f), a cast,
 quantization or survey of an extension type (§ 14g), an incomplete or overlapping shard set
-offered to a merge (§ 14d), a source buffer that is not host-resident (§ 11), and a request
-whose plan is all aliases — a descriptor change asked of a data-moving crate (§ 5).
+offered to a merge (§ 14d), and a source buffer that is not host-resident (§ 11). A request
+whose plan is *all aliases* is **not** among them — it is a conversion with an empty body,
+and § 5 says why it succeeds.
+
+**What the destinations hold after an error.** A run that returns an error leaves every
+`Produce` destination **unspecified but initialised**: the caller handed over `&mut [u8]`,
+so there is no uninitialised memory and no unsoundness, but the contents are neither the
+conversion's output nor necessarily the caller's original bytes. Inputs and aliased buffers
+are never written at all (§ 6: items partition the output), and the plan itself remains
+valid — a caller that repairs its input may call `run` again on the same destinations
+without re-planning and without reallocating. The rule is worth stating because the
+alternative is worse in both directions: a crate that promised all-or-nothing would have to
+buffer or re-zero the output, and a crate that said nothing would leave callers guessing
+whether a half-converted buffer is safe to hand on.
+
+**A caller that needs all-or-nothing validates first.** Data-level validation is a survey
+by § 4's definition — it reads bytes and produces facts — so the structural checks of the
+*invalid data* family are available as their own call (§ 2's data-level counterpart to
+`CompositeValidator`) and can be run to completion before any destination is touched. What
+a run cannot do is hoist those checks into planning for free: a sparse → dense conversion
+discovers an out-of-bounds coordinate at the element that carries it, mid-write, and
+paying for a validation pass on every run would tax the conforming case to tidy up the
+failing one. Separate call, caller's choice, stated cost.
 
 Two deliberate omissions. **No "survey required" variant** — § 4's sum type makes the
 illegal order unrepresentable. **No "value not representable" variant** — a narrowing cast
-rounds or saturates per the target type's own semantics, and that is precisely the loss § 1
-permits the target to declare; the one case where loss is *not* the target's is
-caller-supplied quantization range, and § 9 reports it as a count rather than an error.
+rounds, saturates or overflows to an infinity per § 15's contract, and that is precisely the
+loss § 1 permits the target to declare. Two cases where the loss would *not* be the
+target's are handled elsewhere rather than by a variant here: a caller-supplied
+quantization range, which § 9 reports as a saturation count, and a value the target has no
+vocabulary for at all — a NaN or an infinity bound for `float4_e2m1` or a `float6` — which
+§ 15 refuses through a survey, before any byte is written, instead of discovering it
+element by element mid-run.
 
 The device variant is **not feature-gated**, so the enum has the same shape in every build.
 A variant that appears and disappears with a feature makes error matching differ per build
@@ -625,7 +743,76 @@ invariant quantifies over work items, never over layers. And it is worth saying 
 `CombineOp::Add` is the only place in this crate where a value is computed rather than
 moved or recoded, and it is admissible only because the format defines the result.
 
-### 15. What this crate does not add
+### 15. The numerical contract: what "a loss the target declares" is, in bytes
+
+§ 1 permits a loss "the target representation itself declares", and § 13 declines a
+*value not representable* error on the grounds that "a narrowing cast rounds or saturates
+per the target type's own semantics". That sentence was doing work the target type does not
+actually do. `element-types.md` pins bit patterns, pins the clamping of out-of-range values
+for `float4_e2m1` and the `float6` pair, and requires that NaN payloads and subnormals
+survive *zero-copy interchange* — it says nothing about the arithmetic of a **conversion**,
+and the affine schemes go further and declare it out of scope explicitly: "A consumer MAY
+further convert to `float64` or to a lower-precision float type; such conversion is out of
+scope for this specification."
+
+So the target declares the *destination*, and this crate must declare the *arithmetic*. It
+is pinned here rather than left to the implementation, because an unpinned rounding mode
+makes two conforming implementations produce different bytes for the same request, and
+because a round-trip test cannot find it — two symmetric errors cancel.
+
+- **Rounding is round-to-nearest, ties-to-even**, for every narrowing float cast and for
+  the quantize direction's divide. It is IEEE 754's default, it is what the frameworks a
+  tensor arrives from already use, and ties-to-away would bias a quantized weight
+  distribution the one direction nobody wants.
+- **Overflow follows the target's own vocabulary.** A magnitude above the target's finite
+  range becomes an infinity where the target has one (`float16`, `bfloat16`,
+  `float8_e5m2`) and saturates to the largest finite magnitude of the target's sign where
+  it does not (`float8_e4m3`, `float4_e2m1`, `float6_e2m3`, `float6_e3m2`) — which is the
+  clamping `element-types.md` already mandates for the sub-byte floats, applied to the
+  whole family that lacks an infinity.
+- **Subnormals are never flushed.** A source subnormal representable in the target is
+  preserved exactly; one below the target's smallest subnormal rounds under the rule above,
+  which is the target's own behaviour and not a flush.
+- **Signed zero is preserved**, in both directions, including a value that rounds to zero
+  from below reaching `-0.0`.
+- **NaN survives as NaN, and its payload does not.** A NaN input becomes the target's
+  canonical quiet NaN (`0x7F`/`0xFF` for `float8_e4m3`, per `element-types.md`); the
+  payload bits are dropped, because preserving them across a mantissa narrowing is not
+  generally possible and a partially preserved payload is worse than none. Infinity maps to
+  the target's infinity where one exists.
+- **A target with no NaN or infinity makes the cast survey-gated.** `float4_e2m1` and the
+  `float6` pair have neither, so there is nothing for a NaN to become: clamping it to a
+  finite number would substitute a value the target never declared, which is precisely the
+  path loss § 1 forbids. The survey establishes that the data contains no NaN and no
+  infinity, and refuses the conversion otherwise (§ 13's *conversion refused by survey*
+  family, alongside integer narrowing). A statistics section claiming `has_nan = false` does
+  not substitute for the survey — § 8's rule about advisory inputs applies here too.
+- **Dequantization reproduces the spec's arithmetic exactly, not something better.** The
+  subtraction is `int32`, the result is cast to `float32`, the multiply is `float32`, and a
+  `float64` target widens that `float32` result rather than recomputing the multiply in
+  `float64`. Recomputing would be *more* accurate and would produce different bytes from
+  every other implementation, which is the wrong trade for an interchange crate. MXFP is
+  pinned to `float32` on the same grounds (finding 2).
+- **The arithmetic is reproducible across platforms and across serial and parallel runs.**
+  No fused multiply-add contraction inside a conversion, no extended-precision
+  accumulation, no fast-math. § 6's byte-identity invariant is unenforceable without this,
+  and an acceptance test that depends on the host's FMA availability is not an acceptance
+  test.
+
+Two things this contract deliberately does not become. It does not become an *option* —
+`CLAUDE.md`'s no-flag rule applies, and a caller who wants stochastic rounding or a
+different saturation policy is asking for a quantization library, which this is not. And it
+does not become a claim of agreement with any particular framework's cast: ties-to-even is
+what the hardware does, but a framework that flushes subnormals or canonicalises NaN
+differently will disagree in those cases, and the differential tests in Consequences are
+written against IEEE 754 and the OCP specifications rather than against another library's
+output.
+
+Finding 5 routes the question of whether the spec should adopt this, which it should: the
+rounding mode of a narrowing cast is no more implementation business than the NF4 lookup
+table is.
+
+### 16. What this crate does not add
 
 **No coverage-matrix row and no new column.** The matrix's rows are *spec features* taken
 from `compliance.md`, and the spec requires no implementation to transcode anything. The
@@ -638,6 +825,24 @@ capability, not the mechanism underneath it. This is the same reasoning that gav
 an implementation must do to conform, and conformance says nothing about transcoding. The
 crate's contract is this ADR plus its rustdoc. `rust-reference.md` gains a paragraph
 placing the crate in the stack.
+
+**One new document that is not a conformance document: the conversion matrix**, at
+`docs/impl/transcode-matrix.md`. § 14 is an audit of the *architectural* surface — what the
+descriptor permits to differ, and therefore what a conversion crate could ever be asked to
+do. It is deliberately not a statement about what the crate converts today, and a reader who
+needs that answer should not have to infer it from an ADR. So the matrix is the versioned
+counterpart: one row per conversion, with **status** (supported / survey-gated / refused /
+deferred), the **crate version** a pair became supported in, and a pointer to the § of this
+ADR that governs it. The refused rows carry their reason, because "signed ↔ unsigned at the
+same width" (§ 14a) being permanently out is as much a part of the published surface as the
+pairs that work.
+
+It is created by the first implementation pass, seeded with every pair § 14 names, and
+updated **in the same pass that adds, gates or refuses a conversion** — the discipline
+`CLAUDE.md` already imposes for `website/coverage-matrix.toml`, for the same reason: a
+matrix maintained after the fact is a matrix nobody trusts. It is hand-written for now;
+whether it can be generated from the crate's own dispatch table, and drift-checked in CI
+the way the coverage matrix is, is left to that pass.
 
 **No new spec section** — with one possible exception, the digest (§ 10), which is deferred
 below precisely because it is the one piece of this crate that two implementations would
@@ -680,9 +885,21 @@ has.
   dependency. `hurray-core` should drop the unconditional `rayon` it does not use, and
   `CLAUDE.md`'s crate-responsibility table needs the same edit.
 - `hurray-transcode` is the first crate whose tests can be *numerically* wrong rather than
-  structurally wrong. Round-trip equality (convert and convert back, compare bytes) and
-  § 6's order-independence invariant are the two properties that carry most of that weight;
-  frozen corpora remain the defence for anything the format pins.
+  structurally wrong. § 6's order-independence invariant and round-trip equality (convert
+  and convert back, compare bytes) carry much of that weight, and frozen corpora remain the
+  defence for anything the format pins — but **round-trip equality is not sufficient on its
+  own**, because a pair of symmetric errors cancels: a wrong rounding mode applied in both
+  directions, or a swapped stride in a permutation and its inverse, round-trips perfectly.
+  So § 15's contract is tested against the external references that define it — IEEE 754
+  and the OCP MX specification for the float formats, hand-computed vectors for the affine
+  schemes — and the float edge cases are a named corpus of their own: NaN, both zeros, both
+  infinities, subnormals at every boundary, and the ties that distinguish ties-to-even from
+  ties-to-away. Sparse conversions get the same treatment with a corpus of degenerate
+  structures (empty, all-zero, explicitly stored zeros, a single entry, a full tensor).
+- The architectural surface and the implemented surface are deliberately different sizes,
+  and § 16's `docs/impl/transcode-matrix.md` is where the difference is published. § 14's
+  audit is the shape of the crate at completion; which pairs land in which pass is the
+  planner's call, and no pair is claimed until it has a row.
 - Two halves with different testability, by construction (§ 11). CI exercises the host half
   completely and compile-tests the other.
 - `hurray-inspect` gains a backend it does not have today: data-level validation (§ 2) and
@@ -708,6 +925,9 @@ has.
    the two counts genuinely different numbers, and the spec then forces a false statistical
    field. § 7(c) sidesteps it for this crate by emitting canonical sparse output; the spec
    should say which count `nnz` is, in `coo.md`, `csr.md`, `csc.md` and `csf.md` alike.
+   **Wanted before this crate's sparse output ships**, not merely before 1.0: § 7(c) is the
+   right answer under only one of the two readings, and a crate that has already shipped the
+   other one becomes an argument the spec then has to accommodate.
 2. **(→ `format-spec-writer`, MEDIUM)** `mxfp.md` § says dequantization arithmetic is
    performed in "`float32` (or higher) precision". "Or higher" makes the output bytes
    implementation-dependent, where the other three schemes pin `float32` exactly. A
@@ -719,6 +939,16 @@ has.
    (§ 3).
 4. **(→ a cleanup issue)** `rayon` is an unconditional dependency of `hurray-core` with no
    use anywhere in `hurray-core/src` (§ 6).
+5. **(→ `format-spec-writer`, MEDIUM)** The spec pins no **conversion arithmetic**. It fixes
+   every bit pattern, mandates clamping for the sub-byte floats, and requires NaN payloads
+   and subnormals to survive zero-copy interchange — but it declares conversion *away* from
+   the dequantized `float32` out of scope (`per-tensor-affine.md` § Dequantization Formula),
+   and nowhere states a rounding mode, a NaN-payload rule or an overflow rule for a
+   narrowing cast. Two conforming implementations can therefore transcode the same tensor
+   to different bytes. § 15 pins the whole contract for this crate; the spec should adopt it
+   — probably in `element-types.md`, since it is a property of the types rather than of a
+   layout — on the same argument that put `NF4_LUT` in the spec instead of in an
+   implementation. Related to finding 2, which is the same gap in one scheme.
 
 ## Open Questions Deferred
 
@@ -729,3 +959,8 @@ has.
   `ALLOW_TRANSCODE`. The direction is settled (§ 3); the scheduling is not.
 - **Whether transcoding ever runs inside a streaming write.** § 6 keeps it possible and
   nothing in this ADR commits to it.
+- **Whether integer → float casts are in scope.** § 14's `type_tag` row names float → float,
+  int → int and `bool` → int, and no pass has yet ruled on `int32` → `float32`. § 1 admits
+  it — the rounding above 2^24 is IEEE's and § 15 now pins it — but it has not been decided,
+  and the first implementation pass should accept or refuse it deliberately rather than
+  inherit it from a rounding rule written for something else.
