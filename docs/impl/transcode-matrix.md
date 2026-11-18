@@ -115,8 +115,10 @@ rather than an error, and the run reports how many elements saturated (§ 9).
 | shard split (one tensor → a shard grid, per ADR-004's shard section) | `deferred` | — | § 14d |
 | shard merge (a complete shard set → its parent) | `deferred` | — | § 14d — an incomplete or overlapping set is refused at plan time, from the shard sections alone. |
 | composite flatten (head + members → one dense tensor) | `deferred` | — | § 14, ADR-027 |
-| composite split (one tensor → a composite) | `deferred` | — | § 14 |
-| overlay materialisation applying `CombineOp` | `deferred` | — | § 14h — the composite's logical value *is* the combination, so materialising it preserves that value; layer order follows ADR-027. |
+| composite split (one tensor → a partition composite) | `deferred` | — | § 14 |
+| composite split into an **overlay**, `combine_op = replace` | `deferred` | — | § 14h — the target boxes determine every member's values. |
+| composite split into an **overlay**, `combine_op = add` | `refused` | — | Infinitely many base-and-correction decompositions sum to the same tensor, so the plan is not a function of the descriptor sets (§ 1, § 14h). A caller that wants a residual overlay knows which residual it wants. |
+| overlay materialisation applying `CombineOp` | `deferred` | — | § 14h, § 15 — the composite's logical value *is* the combination, so materialising it preserves that value; layer order follows ADR-027 and the additions happen in the head's element type with no wider accumulator. |
 
 ## Surveys and non-plan operations
 

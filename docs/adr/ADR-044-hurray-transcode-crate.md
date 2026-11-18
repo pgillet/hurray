@@ -37,6 +37,22 @@ question — **device support is movement-only** (§ 11).
 > an instance of the rule rather than an exception to it, and the versioned conversion
 > matrix the audit is deliberately not becomes a documentation deliverable (§ 16).
 
+> **Reviewed again**, and the second review found a third thing that was wrong rather than
+> merely unstated. § 7's many-to-one merge is sound only over a **disjoint** cover: an
+> overlay's output value is not one of its inputs' values at that index, so a base whose
+> maximum is `3` and a correction whose maximum is `5` can produce `7`, and every merge
+> built on the union of the input value multisets fails with it. The rule had been keyed on
+> arity when the property it needed was the cover, and overlay flatten is now its own arm
+> with two free entailments and nothing else (§ 7). Three smaller amendments came with it:
+> the derived-quantization no-clipping invariant is established in § 15's arithmetic rather
+> than in the reals, which constrains how the scale is rounded and separates an endpoint hit
+> from a saturation (§ 9); an alias names `{ input, buffer }` rather than a flat index, which
+> a one-to-many or many-to-one plan would otherwise leave ambiguous (§ 5); and § 15 now
+> governs an overlay's additions explicitly, in the head's element type, with no wider
+> accumulator (§ 15, § 14h). Splitting *into* an overlay also turns out to be admissible for
+> `replace` only — `add` leaves the decomposition underdetermined, so § 1 refuses it
+> (§ 14h).
+
 **ADR-014** (layout address computation lives in `hurray-core`), **ADR-041 §§ 1–2**
 (sans-io core; who owns payload memory) and **ADR-027** (composite composition rules) are
 load-bearing here. None of them is amended.
@@ -252,8 +268,18 @@ rather than later. One-to-one conversions pass a one-element slice and pay nothi
 
 ```text
 BufferPlan::Produce { byte_size, alignment }   // the caller allocates; the run fills it
-BufferPlan::Alias(input_buffer_index)          // byte-identical to an input buffer
+BufferPlan::Alias { input, buffer }            // byte-identical to an input tensor's buffer
 ```
+
+**An alias names a tensor and a buffer within it, never a flat index.** Inputs arrive as one
+buffer list *per input tensor*, so `input` indexes the tensor list a run is given and
+`buffer` indexes that tensor's own buffers; a one-to-one conversion aliases
+`{ input: 0, buffer: n }` and pays nothing for the extra field. A single flattened index was
+the obvious shorter spelling and is wrong: it would make a plan's meaning depend on the
+order and arity of the caller's flattening, so the same plan applied to the same tensors
+could name a different buffer, and a many-to-one merge — where several input tensors each
+have a buffer at index 0 — would be ambiguous on its face. The two-field form costs a `usize`
+in a struct built once per conversion.
 
 § 14c is what forces this, and it is not a micro-optimization. An exact quantization-scheme
 promotion leaves the *storage buffer byte-identical* and changes only the scheme's metadata
@@ -363,7 +389,7 @@ an invalid one. So propagation follows the plan's fidelity, and nothing else:
 
 | Plan fidelity | Conversions | Statistics on the output |
 |---|---|---|
-| **exact** | any layout → any layout (broadcast materialisation and stride normalisation included), sparse ↔ dense, sparse → sparse, alignment, `byte_offset`, sub-byte packing, composite flatten/split, shard split/merge, integer and `bool` widening, the § 14c scheme promotions, dequantization to `float32`/`float64` | the source's section is carried through **unchanged, mask and all** |
+| **exact** | any layout → any layout (broadcast materialisation and stride normalisation included), sparse ↔ dense, sparse → sparse, alignment, `byte_offset`, sub-byte packing, composite flatten/split and shard split/merge (*fidelity* only — their propagation is the cover rules below), integer and `bool` widening, the § 14c scheme promotions, dequantization to `float32`/`float64` | the source's section is carried through **unchanged, mask and all** |
 | **target-declared loss** | float → narrower float, quantization to any scheme | the section is **dropped** (`HAS_STATISTICS` cleared) |
 
 An exact plan preserves the index-to-value mapping, so every field keeps exactly the truth
@@ -381,22 +407,71 @@ unchanged" is right for one-to-one and wrong the moment a tensor is split.
 - **One-to-one, exact** — carry the section through unchanged, as above. Integer narrowing
   belongs here once its survey has passed: the values are unchanged, so the conversion is
   provably exact and not merely bounded.
-- **One-to-many** (shard split, composite split) — **clear every field**, with three
-  entailment exceptions. The minimum, maximum, mean and variance of a *part* are not those
-  of the whole, and neither is its `nnz`. But three source values do entail the same value
-  on every part: `has_nan = false`, `has_inf = false`, and `nnz = 0` (with
-  `sparsity_ratio = 1.0`). A `false` survives where the matching `true` does not, which is
-  exact, free, and worth getting right once rather than rediscovering per layout.
-- **Many-to-one** (shard merge, composite flatten) — **merge the inputs' declared
-  sections, with no pass over the data**: the minimum of the minima, the maximum of the
-  maxima, `nnz` as a sum, `sparsity_ratio` recomputed from it, `has_nan`/`has_inf` OR'd,
-  and mean and variance combined pairwise — which is `Survey::merge` below, applied to
-  declared sections instead of scanned chunks. A field is carried only when **every** input
-  declares it, and dropped otherwise. `nm_n`/`nm_m` are dropped on both split and merge: an
-  N:M pattern is over groups of consecutive elements, and a shard boundary can cut one.
+- **One-to-many over a disjoint cover** (shard split, partition split) — **clear every
+  field**, with three entailment exceptions. The minimum, maximum, mean and variance of a
+  *part* are not those of the whole, and neither is its `nnz`. But three source values do
+  entail the same value on every part: `has_nan = false`, `has_inf = false`, and `nnz = 0`
+  (with `sparsity_ratio = 1.0`). A `false` survives where the matching `true` does not,
+  which is exact, free, and worth getting right once rather than rediscovering per layout.
+  The cover is disjoint by construction in both cases — a shard grid tiles its parent, and
+  a partition composite's boxes are exact-cover validated — and splitting *into* an overlay
+  is a different operation that § 14h rules on separately.
+- **Many-to-one over a disjoint cover** (shard merge, partition flatten) — **merge the
+  inputs' declared sections, with no pass over the data**: the minimum of the minima, the
+  maximum of the maxima, `nnz` as a sum, `sparsity_ratio` recomputed from it,
+  `has_nan`/`has_inf` OR'd, and mean and variance combined pairwise — which is
+  `Survey::merge` below, applied to declared sections instead of scanned chunks. A field is
+  carried only when **every** input declares it, and dropped otherwise. `nm_n`/`nm_m` are
+  dropped on both split and merge: an N:M pattern is over groups of consecutive elements,
+  and a shard boundary can cut one.
 
-That the merge arm is free is the pleasant half; that the split arm is a *correction* is
-the half that justifies re-running the pass.
+  Every one of those merges is sound for exactly one reason: **each output value is exactly
+  one input value**, so the multiset of output values is the union of the input multisets.
+  That is a property of the *cover*, not of the arity, and it is already verified rather
+  than assumed — a shard merge refuses an incomplete or overlapping set at plan time
+  (§ 14d), and ADR-027 validates exact-cover and non-overlap for a partition composite at
+  close time.
+- **Many-to-one over an overlapping cover** (overlay flatten, either `combine_op`) —
+  **clear the section**, with the narrow entailments below. This is what the second review
+  found, and it is a correctness defect rather than an omission: an overlay's output value
+  is *not* one of its inputs' values at that index, so the union argument above does not
+  hold and every merge built on it is wrong. Under `add`, a base whose maximum is `3` and a correction whose maximum is
+  `5` can produce `7`; under `replace`, a correction can overwrite the very element that
+  carried the maximum, so the minimum and maximum degrade from values into *bounds*, and
+  `metadata.md` has no encoding for a bound. `nnz` as a sum is wrong in both directions at
+  once — a correction can zero a stored value or make a logical zero nonzero.
+
+  What survives is worth stating per `combine_op`, because the two differ and both
+  entailments are free:
+
+  | Carried | `replace` | `add` |
+  |---|---|---|
+  | `nnz = 0` and `sparsity_ratio = 1.0`, when **every** input declares it | yes | yes — adding zeros to zeros yields zeros |
+  | `has_nan = false`, when every input declares it | yes | only if every input *also* declares `has_inf = false`: `+inf + -inf` is the one way addition manufactures a NaN from inputs that had none |
+  | `has_inf = false`, when every input declares it | yes | **no** — a sum of finite values overflows to an infinity in the head's element type |
+  | anything else | no | no |
+
+  A caller that wants real statistics on an overlay materialisation asks for a survey over
+  the output, which is the path § 7's last paragraph already provides.
+
+  **Group composites (`composition_rule = 0x03`) have no statistics rule at all**, because
+  they have no single logical tensor: ADR-027 makes a group's members independent tensors
+  under one head identity, with the head's `shape` and `type_tag` advisory. There is
+  nothing to flatten and nothing to merge.
+
+That the disjoint merge arm is free is the pleasant half; that the split arm and the overlay
+arm are both *corrections*, found one pass apart, is the half worth learning from. Both have
+the same cause: the rule was keyed on **arity**, because one-to-many and many-to-one are the
+visible difference, when the property it actually needed was the **cover**. Disjointness was
+load-bearing all along and went unnamed until an overlapping cover broke it.
+
+**Exactness and statistics-carryability are different properties, and the table above keys
+on the first.** An overlay flatten *is* an exact plan — the format defines the logical value
+as the combination (§ 1), so materialising it reproduces that value — and it still cannot
+carry a single moment of its inputs' statistics. Exactness is about reproducing the defined
+value; carrying a statistic additionally requires that each output value be one of the
+inputs' values, which overlap breaks. Reading the fidelity table as if it settled
+propagation is precisely the mistake this bullet corrects.
 
 Dequantization is exact because the spec fixes the arithmetic: per-tensor, per-channel,
 per-block and NF4 all define the multiply in `float32`, and a `float32` or `float64` target
@@ -495,6 +570,26 @@ settling it with an option, so the answer comes from where the parameters came f
 The count rides in a `#[non_exhaustive]` report returned by a run — facts about the run
 that the output descriptor cannot carry. The dangerous case is not clipping; it is
 *unobservable* clipping, and a count removes it without adding a knob.
+
+**The derived-parameter guarantee holds in § 15's arithmetic, not in the reals, and that is
+a constraint on how the scale is derived.** "`value_abs_max` covers the data" is a statement
+about real numbers, and the quantization that follows is `float32` division plus
+round-to-nearest-even. Those two can disagree at the endpoint: with a symmetric `int8`
+target, a scale rounded one ulp *below* the exact `abs_max / 127` makes `abs_max / scale`
+exceed `127`, which rounds to `128` and leaves the range — the extreme value clipping in a
+scheme derived precisely so that nothing would clip. So the derivation rounds the scale
+**away from zero**, to the nearest `float32` at or above the exact ratio, which makes the
+endpoint divide to at most the target maximum under the actual arithmetic; the asymmetric
+case chooses its `zero_point` so that both endpoints land inside the range after the same
+division and rounding. With that, the invariant is real and a clamp firing is a bug: it is
+`debug_assert`ed in the derived path, and the boundary vectors — `±value_abs_max`, and both
+endpoints of an asymmetric range — are named test cases rather than incidental ones.
+
+**Mapping *to* an endpoint is not saturation, and the counter must not conflate them.** A
+value that quantizes to exactly `127` has been represented, not clipped; the count reports
+elements whose computed quantum fell *outside* the target's range and was clamped to reach
+it. A counter that fired on endpoint hits would report a number that grows with how well
+the range fits the data, which is the opposite of the signal § 9 exists to give.
 
 ### 10. The canonical digest is a survey over the logical value
 
@@ -741,7 +836,17 @@ would be the violation. Two consequences. Floating-point addition is order-depen
 the materialisation follows ADR-027's validated layer order, and § 6's order-independence
 invariant quantifies over work items, never over layers. And it is worth saying plainly:
 `CombineOp::Add` is the only place in this crate where a value is computed rather than
-moved or recoded, and it is admissible only because the format defines the result.
+moved or recoded, and it is admissible only because the format defines the result. Its
+arithmetic is § 15's, including the head's element type as the accumulation type — ADR-027
+fixes that, and § 15 says what follows from it.
+
+**Splitting *into* an overlay is admissible for `replace` only.** Given a target box set,
+`replace` determines every member's values — the base is the source, each correction is the
+source within its box — so the plan is a function of the descriptor sets. `add` is not: for
+any box set there are infinitely many base-and-correction decompositions that sum to the
+same tensor, and choosing one is a decision no descriptor records. § 1's first half refuses
+it, and the refusal is the rule working rather than a gap in it: a caller that wants a
+residual overlay knows which residual it wants, and is the only party that does.
 
 ### 15. The numerical contract: what "a loss the target declares" is, in bytes
 
@@ -793,9 +898,22 @@ because a round-trip test cannot find it — two symmetric errors cancel.
   `float64`. Recomputing would be *more* accurate and would produce different bytes from
   every other implementation, which is the wrong trade for an interchange crate. MXFP is
   pinned to `float32` on the same grounds (finding 2).
+- **An overlay's `CombineOp::Add` is governed by every rule above, in the head's element
+  type.** ADR-027 fixes the accumulation type — "overlay combine happens in `float16`" for
+  its own `float16` example — so the base and its corrections are added in the head's
+  `type_tag`, in ADR-027's emission order, with **each addition rounded by the first rule
+  here**. No wider accumulator and no reassociation: a `float16` overlay is not accumulated
+  in `float32` and narrowed at the end, even though that would be more accurate, because
+  the format defines the value as the combination evaluated in the head's type and a more
+  accurate answer is a different answer. Each addition's overflow, signed zero and NaN
+  behaviour is IEEE 754's, which is why § 7's overlay merge rule can say that a sum of
+  finite `float16` values may reach an infinity and that `+inf + -inf` is the one way an
+  overlay manufactures a NaN.
 - **The arithmetic is reproducible across platforms and across serial and parallel runs.**
   No fused multiply-add contraction inside a conversion, no extended-precision
-  accumulation, no fast-math. § 6's byte-identity invariant is unenforceable without this,
+  accumulation, no fast-math — and *inside a conversion* includes an overlay's additions,
+  which is the one place in the crate where a contraction or a wider accumulator would
+  otherwise be tempting. § 6's byte-identity invariant is unenforceable without this,
   and an acceptance test that depends on the host's FMA availability is not an acceptance
   test.
 
@@ -898,7 +1016,12 @@ has.
   schemes — and the float edge cases are a named corpus of their own: NaN, both zeros, both
   infinities, subnormals at every boundary, and the ties that distinguish ties-to-even from
   ties-to-away. Sparse conversions get the same treatment with a corpus of degenerate
-  structures (empty, all-zero, explicitly stored zeros, a single entry, a full tensor).
+  structures (empty, all-zero, explicitly stored zeros, a single entry, a full tensor). Two
+  further corpora follow from the second review: the quantization endpoints
+  (`±value_abs_max`, and both ends of an asymmetric range, where a scale rounded the wrong
+  way clips a value the derivation promised would fit — § 9), and overlay arithmetic in the
+  head's element type, where accumulating in `float32` and narrowing at the end gives a
+  different and *more accurate* answer than the one the format defines (§ 15).
 - The architectural surface and the implemented surface are deliberately different sizes,
   and § 16's `docs/impl/transcode-matrix.md` is where the difference is published. § 14's
   audit is the shape of the crate at completion; which pairs land in which pass is the
