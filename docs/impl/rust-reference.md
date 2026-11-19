@@ -7,12 +7,13 @@ format. It is authoritative: when the spec is ambiguous, the reference implement
 defines the correct behaviour. When the implementation deviates from the spec, the
 implementation is wrong.
 
-The implementation is split across three crates:
+The implementation is split across four crates:
 
 | Crate | Responsibility |
 |-------|---------------|
 | `hurray-core` | Format types, tensor descriptor, buffer handle, quantization descriptors. No I/O, no async. |
 | `hurray-io` | Async streaming read/write, file format support. Depends on `hurray-core` and `tokio`. |
+| `hurray-transcode` | Representation conversion: layout, element type, quantization scheme, placement. Depends on `hurray-core` only. |
 | `hurray-ffi` | C ABI layer. See `c-ffi.md`. |
 
 ## hurray-core
@@ -93,7 +94,7 @@ both (§ 7):
 
 - A **sequential** core is fed forwards: it asks for *the next* `n` bytes. This serves
   stream read and write, and the file writer's single forward pass.
-- A **random-access** core is asked by range: it names the bytes `[offset, offset + len)`
+- A **random-access** core is asked by range: it names the bytes `offset .. offset + len`
   it needs and is told how many arrived. This serves the file reader, which seeks — the
   trailer at `file_size - 40`, the index located from it, tensors found by name — and
   therefore cannot be driven by a byte feed at all.
@@ -140,6 +141,59 @@ there is no index to start again from, is terminal.
 - The implementation MUST support mmap-based zero-copy loading of tensor data buffers when the file's `data_buffer_alignment` matches or exceeds the host page size.
 - A reader MUST reject a `data_buffer_alignment` that is not a power of two, rather than carrying it into the padding arithmetic: `0` is a divisor there, and a crafted header MUST NOT be able to panic a parser.
 - The reader MUST NOT read a padding byte it was not asked for. Each request covers exactly one section, descriptor, or buffer; inter-buffer padding is skipped by the next request's offset, never consumed.
+
+## hurray-transcode
+
+`hurray-core` **describes** a tensor; `hurray-transcode` is the first crate in the stack
+that **reads payload bytes as values**. That is the whole boundary, and it is where the
+types already draw it: a `BufferHandle` carries no pointer, so everything `hurray-core` can
+check is descriptor-internal, and everything a conversion does needs the bytes.
+
+Nothing about the format moves into it. Index-to-address computation, the NF4 lookup table,
+the MXFP scale encoding, buffer sizing, packing factors and every descriptor validity
+constraint stay in `hurray-core`; when a conversion needs a format fact `hurray-core` does
+not expose, the fix is to expose it there rather than re-derive it — a second
+implementation of the format's arithmetic living beside the first is the specific failure
+this rule prevents. Output descriptors are built through `hurray-core`'s own constructors,
+so no converted tensor can be more permissive than a decoded one. What *does* live here is
+validation that needs data — sorted and in-bounds sparse coordinates, a monotonic `indptr`,
+a block table within its pool, an address that actually meets its declared alignment —
+because a descriptor-only crate cannot perform it.
+
+The crate is **not** a dependency of `hurray-io`, and the direction is deliberate: the
+first consumer is a Level 3 server, which is `hurray-io` code that needs to *call*
+transcoding to honour `ALLOW_TRANSCODE`. Note that the crate's scope is wider than the
+protocol's: `interchange.md`'s `TRANSCODING` capability covers layout transcoding only, and
+a server MUST NOT read `ALLOW_TRANSCODE` as permission to cast or requantize on a client's
+behalf.
+
+Requirements on any implementation of it:
+
+- Conversion MUST be expressible as **plan, survey, run**: a plan reads descriptors only
+  and publishes its output descriptor and output buffer sizes before any byte moves; a
+  survey reads bytes and produces facts, never a tensor; a run reads bytes and writes
+  bytes. A conversion whose admissibility or output size depends on the data MUST be
+  reachable only through a survey.
+- The caller MUST allocate every destination. The crate MUST NOT allocate an output buffer,
+  so that a conversion can write straight into a consumer's own memory.
+- A run MUST refuse a destination that is shorter than the plan published, or whose base
+  address does not meet the alignment it published.
+- A plan MUST publish each output buffer as **produced** or **aliased**, so that a
+  conversion which needs no byte moved is a conversion with an empty body rather than a
+  copy. A request whose every output buffer is an alias MUST succeed.
+- A plan MUST partition its work into items that partition the **output**: running every
+  item exactly once, in any order, on any number of threads, MUST produce byte-identical
+  output to one serial run.
+- The crate MUST be synchronous, and a default build MUST NOT be able to spawn a thread, so
+  that it stays callable from inside an async task. Parallelism is an opt-in feature at the
+  edge.
+- A refusal MUST name what was refused. An operation outside the membership rule — a
+  reshape, a lossy requantization, an operation that changes the logical value — MUST be
+  refused rather than approximated.
+
+Which conversions are implemented, and which are permanently out of scope, is the
+[transcode matrix](transcode-matrix.md). The rule that decides what may ever be added is
+ADR-044 § 1.
 
 ## Code Quality
 

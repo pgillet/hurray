@@ -12,7 +12,7 @@ together under a single `MAJOR.MINOR.PATCH` tag.
 
 | Artifact | Registry | How |
 |----------|----------|-----|
-| `hurray-core`, `hurray-io`, `hurray-ffi`, `hurray-inspect` | [crates.io](https://crates.io) (source) | `cargo publish`, in dependency order |
+| `hurray-core`, `hurray-io`, `hurray-transcode`, `hurray-ffi`, `hurray-inspect` | [crates.io](https://crates.io) (source) | `cargo publish`, in dependency order |
 | `hurray` | [crates.io](https://crates.io) (source) | `cargo publish`, any time — it depends on nothing |
 | `pyhurray` (from `hurray-python`) | [PyPI](https://pypi.org) (wheels) | `maturin` |
 | Documentation site `/docs/<tag>/` | GitHub Pages | `docs.yml`, **dispatched on `main`** after tagging |
@@ -30,7 +30,7 @@ installs is imported as `hurray`.
 **Crate dependency order** (publish parents before children):
 
 ```
-hurray-core  →  hurray-io , hurray-ffi  →  hurray-inspect
+hurray-core  →  hurray-io , hurray-ffi , hurray-transcode  →  hurray-inspect
 ```
 
 ## One-time setup
@@ -101,7 +101,8 @@ credential to outlive the publish. Revoking does not affect anything already pub
    section in [`CHANGELOG.md`](CHANGELOG.md).
 3. **Version bump.** Update `version` in `[workspace.package]` **and** the `version` fields
    of the inter-crate deps in `[workspace.dependencies]` (`hurray-core`, `hurray-io`,
-   `hurray-ffi`) to the same number. `cargo release` (below) does both.
+   `hurray-ffi`, and `hurray-transcode` once a member depends on it) to the same number.
+   `cargo release` (below) does both.
 4. **Tag.** Commit, then tag `X.Y.Z` (no leading `v`) and push the tag. The tag push does
    **not** touch the documentation site; publishing it is step 5.
 5. **Publish the docs.** Dispatch `docs.yml` **on `main`**, and check that
@@ -151,6 +152,7 @@ fails until its dependency is actually live:
 ```sh
 cargo publish -p hurray-core
 cargo publish -p hurray-io
+cargo publish -p hurray-transcode
 cargo publish -p hurray-ffi
 cargo publish -p hurray-inspect
 cargo publish -p hurray          # no dependencies; order does not matter

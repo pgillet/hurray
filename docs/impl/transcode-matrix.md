@@ -18,10 +18,11 @@ what works today should not have to infer it from an ADR's audit. Hence this tab
 > implementations actually provide is in [Implementation Status](implementation-status.md).
 > This page covers one crate's conversion surface, which is neither.
 
-**Status as of this writing: `hurray-transcode` does not exist.** ADR-044 is the design pass
-that precedes its first line of code, so every implementable row below reads `deferred` and
-every version column reads `—`. The rows that read `refused` are the useful content today:
-those are decided, permanent, and the reason is recorded.
+**Status as of this writing:** `hurray-transcode` converts between the layouts with an
+affine stride form — row-major, column-major and strided, reversed axes and broadcasts
+included — for whole-byte element types. Every other implementable row below reads
+`deferred`. The rows that read `refused` are decided and permanent, and the reason is
+recorded with each.
 
 Unlike [Implementation Status](implementation-status.md), this page is **hand-maintained**.
 It is updated in the same pass that adds, gates or refuses a conversion — a matrix maintained
@@ -64,10 +65,13 @@ it yet.
 
 | Conversion | Status | Since | Governed by |
 |---|---|---|---|
-| any dense layout → any dense layout (row-major, column-major, strided, tiled, Morton, Hilbert) | `deferred` | — | § 14, `memory-layout.md` |
-| negative stride → positive stride (axis reversal normalised) | `deferred` | — | § 14b |
-| zero stride materialised (broadcast expanded) | `deferred` | — | § 14b |
-| repeated axis collapsed back to a zero stride | `deferred`, survey-gated | — | § 14b |
+| row-major ↔ column-major ↔ strided, any direction, whole-byte element types | `supported` | 0.3.0 | § 14, `memory-layout.md`, `strided.md` |
+| tiled, Morton or Hilbert at either end | `deferred` | — | § 14, `memory-layout.md` |
+| negative stride → positive stride (axis reversal normalised), and the reverse | `supported` | 0.3.0 | § 14b |
+| zero stride materialised (broadcast expanded) | `supported` | 0.3.0 | § 14b |
+| repeated axis collapsed back to a zero stride | `survey-gated` | 0.3.0 | § 14b — the survey refuses data that does not repeat along the collapsed axis. |
+| a layout conversion of a sub-byte-typed tensor (`int4`, `bool`, the `float6` pair) | `deferred` | — | § 14 — moving one element is a bit-field edit, not a copy; it belongs with the packing row below. |
+| a layout conversion of an extension-typed (private) tensor | `deferred` | — | § 14g — movement and repacking are permitted; only casting is refused. |
 | dense → sparse (COO, CSR, CSC, CSF) | `deferred`, survey-gated | — | § 4, § 7(c) |
 | sparse → dense | `deferred` | — | § 14 |
 | sparse → sparse | `deferred` | — | § 14 |
@@ -83,8 +87,8 @@ chunk's output offset is the exclusive prefix sum of the per-chunk counts (§ 6)
 
 | Conversion | Status | Since | Governed by |
 |---|---|---|---|
-| alignment re-placement | `deferred` | — | § 14 |
-| `byte_offset` rebasing (to offset 0, or packing tensors into one buffer) | `deferred` | — | § 14e |
+| alignment re-placement | `deferred` | — | § 14 — a layout conversion carries the source buffer's alignment through unchanged. |
+| `byte_offset` rebasing (to offset 0, or packing tensors into one buffer) | `deferred` | — | § 14e — a layout conversion places the output's `byte_offset` as its own strides require, which is 0 unless a stride is negative. |
 | host → device, device → host, pinned-host staging | `deferred` (feature-gated, CI compile-tested only) | — | § 11 |
 | on-device repacking (a device kernel that changes layout in place) | `refused` | — | A per-vendor repacking kernel is a kernel; the crate's name is the first argument against it (§ 11). Device → device is explicit composition: device → host, convert, host → device. |
 
@@ -124,7 +128,7 @@ rather than an error, and the run reports how many elements saturated (§ 9).
 
 | Operation | Status | Since | Governed by |
 |---|---|---|---|
-| statistics survey (the descriptor's statistics section, recomputed on request) | `deferred` | — | § 7 |
+| statistics survey (the descriptor's statistics section, recomputed on request) | `deferred` | — | § 7 — an exact plan carries the source's section through unchanged today, which needs no pass over the data. |
 | data-level validation (COO coordinates, `indptr` monotonicity, block tables, composite partitions, actual alignment) | `deferred` | — | § 2, § 13 |
 | canonical digest over the logical value | `deferred` | — | § 10 — not published until the algorithm is pinned, probably normatively: a canonical digest two implementations compute differently is worth nothing. |
 | byte swap (`to_native` / `from_native`, in place, per buffer by that buffer's own element type) | `deferred` | — | § 12 — not a plan: the distinguishing input is which side of the format boundary the bytes sit on, which no descriptor records. |

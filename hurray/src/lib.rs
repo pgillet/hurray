@@ -7,6 +7,7 @@
 //! |---|---|
 //! | [`hurray-core`](https://docs.rs/hurray-core) | Format types: tensor descriptor, element types, layouts, quantization, buffer handles. No I/O. |
 //! | [`hurray-io`](https://docs.rs/hurray-io) | Async streaming interchange and the `HRRYFILE` container. |
+//! | [`hurray-transcode`](https://docs.rs/hurray-transcode) | Representation conversion: layout, element type, quantization scheme, placement. |
 //! | [`hurray-ffi`](https://docs.rs/hurray-ffi) | The C ABI, for bindings in other languages. |
 //! | [`hurray-inspect`](https://crates.io/crates/hurray-inspect) | A CLI that prints a descriptor as an annotated hex table. |
 //!

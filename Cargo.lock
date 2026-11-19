@@ -419,7 +419,6 @@ version = "0.2.0"
 dependencies = [
  "criterion",
  "half",
- "rayon",
  "serde",
  "thiserror",
 ]
@@ -467,6 +466,15 @@ dependencies = [
  "hurray-io",
  "numpy",
  "pyo3",
+]
+
+[[package]]
+name = "hurray-transcode"
+version = "0.2.0"
+dependencies = [
+ "hurray-core",
+ "rayon",
+ "thiserror",
 ]
 
 [[package]]

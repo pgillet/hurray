@@ -13,6 +13,63 @@ workspace share one version and are released together.
 
 ## [Unreleased]
 
+### Added
+
+- **`hurray-transcode`: a new crate for representation conversion**
+  ([#272](https://github.com/pgillet/hurray/issues/272), ADR-044). The format specifies
+  conversions — `interchange.md`'s layout negotiation and on-the-fly transcoding — that no
+  implementation performed, and no crate in the workspace read a payload byte as a *value*:
+  `BufferHandle` carries no pointer, `hurray-io` moves buffers it never interprets, and the
+  cookbook's quantization page rebuilt a zero-point plane in the reader's own loop because
+  there was nothing to call. This crate is where that work lives, under one rule — an
+  operation belongs in it *iff* it changes only the tensor's representation, never its
+  logical value, and is determined by the source and target descriptors. It depends on
+  `hurray-core` alone.
+
+  This first release converts between the layouts with an affine stride form — row-major,
+  column-major and strided, in any direction — for whole-byte element types, including the
+  two degenerate strides `strided.md` mandates support for: a negative stride (a reversed
+  axis) and a zero stride (a broadcast). Materialising a broadcast is a plain conversion;
+  collapsing a repeated axis back into one is admissible only if the data repeats, so it is
+  reached through a survey that can refuse. A target that implies the same bytes as the
+  source — row-major against its strided spelling, say — is a conversion with an empty body:
+  the plan publishes the output buffer as an alias of the input's and the run writes nothing.
+
+  Three shapes carry the whole surface. `plan` reads descriptors only and publishes the
+  output descriptor and every destination's size and alignment before a byte moves, so a
+  conversion whose output would be too large can be refused against a budget. A survey reads
+  bytes and produces facts, never a tensor. A run reads bytes and writes bytes, into memory
+  the **caller** allocated — which is what keeps a conversion straight into a NumPy array, a
+  pinned staging buffer or an mmap'd region possible. `AlignedDestination` is there for
+  callers with no aligned allocation of their own, since the format's 64-byte floor is a
+  promise `Vec<u8>` does not keep.
+
+  The crate is synchronous and a default build cannot spawn a thread, so it stays callable
+  from inside an async task; the optional `rayon` feature adds `run_parallel`, which fans a
+  plan's work items over the thread pool. Work items partition the *output*, so running every
+  item exactly once in any order on any number of threads produces byte-identical output to
+  one serial run.
+
+  Everything else in the crate's scope — tiled, Morton and Hilbert layouts, sparse, sub-byte
+  packing, element casts, quantization, sharding, composites, byte order, device staging — is
+  refused by name rather than mishandled, and [`docs/impl/transcode-matrix.md`](docs/impl/transcode-matrix.md)
+  says which is which, with the reason for every permanent refusal.
+
+- **`LayoutDescriptor::dense_element_strides` and `LayoutDescriptor::element_offset_span`**
+  in `hurray-core`. The stride vector of a layout whose addressing is affine in the logical
+  index (row-major and column-major, derived from the shape; strided, declared), and the
+  lowest and highest element offset it addresses — `strided.md § Buffer Size`, which is what
+  sizes a buffer and places a `byte_offset` when a stride is negative. Both report `None` for
+  a layout with no affine form, so "no stride vector exists" is an answer rather than an
+  error. Added here rather than derived in `hurray-transcode`: a second implementation of the
+  format's own addressing arithmetic is exactly what ADR-044 § 2 forbids.
+
+### Changed
+
+- **`hurray-core` no longer depends on `rayon`** (ADR-044 § 6, finding 4). The dependency
+  was unconditional and appeared nowhere in `hurray-core/src`; it now belongs to
+  `hurray-transcode`, optional and off by default. No API change.
+
 ### Fixed
 
 - **A sink that closes before an item's first byte no longer poisons the writer**

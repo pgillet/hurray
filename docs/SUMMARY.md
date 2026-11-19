@@ -51,6 +51,7 @@
 - [Authoring Quantized Tensors](cookbook/authoring-quantized-tensors.md)
 - [Converting an Externally Quantized Tensor](cookbook/converting-external-quantized-tensors.md)
 - [IPC and Streaming Interchange](cookbook/ipc-streaming.md)
+- [Converting a Tensor's Layout](cookbook/transcoding-layouts.md)
 - [Private Extension Element Types](cookbook/extension-types.md)
 - [Layer 0: Element Types and Shape](cookbook/layer-0-element-types-and-shape.md)
 - [Layer 1: Buffer Protocol](cookbook/layer-1-buffer-protocol.md)
