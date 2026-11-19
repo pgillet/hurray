@@ -1,0 +1,24 @@
+[package]
+name = "hurray-transcode"
+description = "Representation conversion for the hurray tensor interchange format: layout, element type, quantization scheme, placement. No arithmetic beyond what the format itself defines."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/hurray-transcode"
+readme = "README.md"
+keywords = ["tensor", "layout", "conversion", "zero-copy", "inference"]
+categories = ["encoding", "data-structures", "science"]
+
+[dependencies]
+hurray-core = { workspace = true }
+thiserror = { workspace = true }
+# Optional and off by default: a default build structurally cannot spawn a thread, which
+# is what keeps the crate callable from an async context (ADR-044 § 6).
+rayon = { workspace = true, optional = true }
+
+[features]
+default = []
+rayon = ["dep:rayon"]

@@ -805,6 +805,170 @@ impl LayoutDescriptor {
             Self::Unknown(u) => Err(crate::Error::UnknownLayoutTag(u.tag)),
         }
     }
+    /// Returns the per-dimension element strides of a layout whose addressing is an
+    /// affine function of the logical index, or `None` for a layout that has no such
+    /// form.
+    ///
+    /// Three layouts qualify: row-major and column-major, whose strides the
+    /// specification derives from the shape, and strided, which declares them
+    /// explicitly. Tiled, Morton, Hilbert, the sparse layouts, block-paged and
+    /// composite address their storage by a rule that no stride vector expresses, and
+    /// return `None`.
+    ///
+    /// Strides are in **logical elements** and signed, per
+    /// `docs/spec/layouts/strided.md § Stride Semantics`: positive advances forward,
+    /// negative reverses that dimension, zero broadcasts it.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::DynamicDimInIndexing`] — a dimension is [`crate::DYNAMIC`]. Every
+    ///   caller of a stride vector needs it to size or address a buffer, which an
+    ///   unresolved extent cannot do, so this is rejected for *all* three layouts
+    ///   rather than only for the two that compute strides from the dims.
+    /// - [`Error::IndexRankMismatch`] — a strided layout's `strides.len()` does not
+    ///   equal the shape rank.
+    /// - [`Error::AddressOverflow`] — the canonical stride product overflows `int64`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::layout::{LayoutDescriptor, StridedLayout, MortonLayout};
+    /// use hurray_core::Shape;
+    ///
+    /// let shape = Shape::new(vec![3, 4]).unwrap();
+    ///
+    /// // Row-major strides for a 3×4 tensor: [4, 1].
+    /// assert_eq!(
+    ///     LayoutDescriptor::RowMajor.dense_element_strides(&shape).unwrap(),
+    ///     Some(vec![4, 1])
+    /// );
+    ///
+    /// // Column-major strides for the same shape: [1, 3].
+    /// assert_eq!(
+    ///     LayoutDescriptor::ColMajor.dense_element_strides(&shape).unwrap(),
+    ///     Some(vec![1, 3])
+    /// );
+    ///
+    /// // A strided layout reports what it declares, reversal and broadcast included.
+    /// let strided = LayoutDescriptor::Strided(StridedLayout::new(vec![-4, 0]));
+    /// assert_eq!(strided.dense_element_strides(&shape).unwrap(), Some(vec![-4, 0]));
+    ///
+    /// // Morton addressing is not affine in the index: no stride vector exists.
+    /// let morton = LayoutDescriptor::Morton(MortonLayout::new(vec![2, 2]).unwrap());
+    /// assert_eq!(morton.dense_element_strides(&shape).unwrap(), None);
+    /// ```
+    pub fn dense_element_strides(&self, shape: &Shape) -> crate::Result<Option<Vec<i64>>> {
+        if let Some(dim) = shape.dims().iter().position(|&d| d == crate::DYNAMIC) {
+            return Err(Error::DynamicDimInIndexing { dim: dim as u32 });
+        }
+        let dims = shape.dims();
+        match self {
+            // Row-major: stride[k] = product of dims after k (spec § Element Address).
+            Self::RowMajor => {
+                let mut strides = vec![0i64; dims.len()];
+                let mut acc: i64 = 1;
+                for k in (0..dims.len()).rev() {
+                    strides[k] = acc;
+                    acc = acc
+                        .checked_mul(i64::try_from(dims[k]).map_err(|_| Error::AddressOverflow)?)
+                        .ok_or(Error::AddressOverflow)?;
+                }
+                Ok(Some(strides))
+            }
+            // Column-major: stride[k] = product of dims before k.
+            Self::ColMajor => {
+                let mut strides = vec![0i64; dims.len()];
+                let mut acc: i64 = 1;
+                for k in 0..dims.len() {
+                    strides[k] = acc;
+                    acc = acc
+                        .checked_mul(i64::try_from(dims[k]).map_err(|_| Error::AddressOverflow)?)
+                        .ok_or(Error::AddressOverflow)?;
+                }
+                Ok(Some(strides))
+            }
+            Self::Strided(s) => {
+                if s.strides.len() != dims.len() {
+                    return Err(Error::IndexRankMismatch {
+                        index_rank: s.strides.len(),
+                        shape_rank: dims.len(),
+                    });
+                }
+                Ok(Some(s.strides.clone()))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Returns the lowest and highest element offset a layout addresses for a shape,
+    /// or `None` for a layout with no affine stride form.
+    ///
+    /// Implements `docs/spec/layouts/strided.md § Buffer Size`:
+    ///
+    /// ```text
+    /// max_offset = sum(max(0, strides[k] * (shape[k] - 1)))
+    /// min_offset = sum(min(0, strides[k] * (shape[k] - 1)))
+    /// ```
+    ///
+    /// The pair is inclusive, so a buffer covers the layout iff it holds
+    /// `max_offset - min_offset + 1` elements, and `byte_offset` must be at least
+    /// `-min_offset` elements into it — `min_offset` is non-zero exactly when some
+    /// stride is negative, which is the case where the base address is not the lowest
+    /// address the tensor reads.
+    ///
+    /// An **empty** tensor (any dimension zero) addresses nothing, and is reported as
+    /// `Some((0, 0))`: the formula above has no meaning for it, and a caller sizing a
+    /// buffer must use the element count, which is zero.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`LayoutDescriptor::dense_element_strides`], plus
+    /// [`Error::AddressOverflow`] if the span itself overflows `int64`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use hurray_core::layout::{LayoutDescriptor, StridedLayout};
+    /// use hurray_core::Shape;
+    ///
+    /// let shape = Shape::new(vec![3, 4]).unwrap();
+    ///
+    /// // Row-major 3×4: offsets 0..=11, so the buffer needs 12 elements.
+    /// assert_eq!(
+    ///     LayoutDescriptor::RowMajor.element_offset_span(&shape).unwrap(),
+    ///     Some((0, 11))
+    /// );
+    ///
+    /// // The spec's own example: strides [-4, 1] reach -8 through 3, nine elements,
+    /// // with element [0, 0] sitting eight elements into the buffer.
+    /// let reversed = LayoutDescriptor::Strided(StridedLayout::new(vec![-4, 1]));
+    /// assert_eq!(reversed.element_offset_span(&shape).unwrap(), Some((-8, 3)));
+    ///
+    /// // A broadcast dimension contributes nothing: four elements, read three times.
+    /// let broadcast = LayoutDescriptor::Strided(StridedLayout::new(vec![0, 1]));
+    /// assert_eq!(broadcast.element_offset_span(&shape).unwrap(), Some((0, 3)));
+    /// ```
+    pub fn element_offset_span(&self, shape: &Shape) -> crate::Result<Option<(i64, i64)>> {
+        let Some(strides) = self.dense_element_strides(shape)? else {
+            return Ok(None);
+        };
+        let dims = shape.dims();
+        if dims.contains(&0) {
+            return Ok(Some((0, 0)));
+        }
+        let mut min_offset: i64 = 0;
+        let mut max_offset: i64 = 0;
+        for (&stride, &dim) in strides.iter().zip(dims.iter()) {
+            let extent = i64::try_from(dim - 1).map_err(|_| Error::AddressOverflow)?;
+            let term = stride.checked_mul(extent).ok_or(Error::AddressOverflow)?;
+            if term < 0 {
+                min_offset = min_offset.checked_add(term).ok_or(Error::AddressOverflow)?;
+            } else {
+                max_offset = max_offset.checked_add(term).ok_or(Error::AddressOverflow)?;
+            }
+        }
+        Ok(Some((min_offset, max_offset)))
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1095,5 +1259,210 @@ mod tests {
         assert!(layout
             .validate_against_shape(&Shape::new(vec![100, 200]).unwrap())
             .is_ok());
+    }
+    // ── dense_element_strides / element_offset_span ───────────────────────────
+
+    // Spec docs/spec/layouts/row-major.md § Element Address: stride[k] is the
+    // product of the dimensions after k.
+    #[test]
+    fn row_major_strides_rank3() {
+        let shape = Shape::new(vec![2, 3, 4]).unwrap();
+        assert_eq!(
+            LayoutDescriptor::RowMajor
+                .dense_element_strides(&shape)
+                .unwrap(),
+            Some(vec![12, 4, 1])
+        );
+    }
+
+    // Spec docs/spec/layouts/column-major.md § Element Address: stride[k] is the
+    // product of the dimensions before k.
+    #[test]
+    fn col_major_strides_rank3() {
+        let shape = Shape::new(vec![2, 3, 4]).unwrap();
+        assert_eq!(
+            LayoutDescriptor::ColMajor
+                .dense_element_strides(&shape)
+                .unwrap(),
+            Some(vec![1, 2, 6])
+        );
+    }
+
+    // The canonical strides must reproduce the dispatched element offsets exactly:
+    // the two are the same spec formula, and a divergence would be a second
+    // implementation of it.
+    #[test]
+    fn canonical_strides_agree_with_element_offset() {
+        let shape = Shape::new(vec![3, 4, 5]).unwrap();
+        for layout in [LayoutDescriptor::RowMajor, LayoutDescriptor::ColMajor] {
+            let strides = layout.dense_element_strides(&shape).unwrap().unwrap();
+            for i in 0..3u64 {
+                for j in 0..4u64 {
+                    for k in 0..5u64 {
+                        let dispatched = layout.element_offset(&[i, j, k], &shape).unwrap();
+                        let affine = (i as i64) * strides[0]
+                            + (j as i64) * strides[1]
+                            + (k as i64) * strides[2];
+                        assert_eq!(dispatched as i64, affine, "{layout:?} at [{i},{j},{k}]");
+                    }
+                }
+            }
+        }
+    }
+
+    // A rank-0 tensor has no dimensions, so it has no strides and addresses offset 0.
+    #[test]
+    fn scalar_strides_are_empty() {
+        let shape = Shape::scalar();
+        assert_eq!(
+            LayoutDescriptor::RowMajor
+                .dense_element_strides(&shape)
+                .unwrap(),
+            Some(vec![])
+        );
+        assert_eq!(
+            LayoutDescriptor::RowMajor
+                .element_offset_span(&shape)
+                .unwrap(),
+            Some((0, 0))
+        );
+    }
+
+    // A strided layout reports its declared strides verbatim.
+    #[test]
+    fn strided_reports_declared_strides() {
+        let shape = Shape::new(vec![3, 4]).unwrap();
+        let layout = LayoutDescriptor::Strided(StridedLayout::new(vec![1, 3]));
+        assert_eq!(
+            layout.dense_element_strides(&shape).unwrap(),
+            Some(vec![1, 3])
+        );
+    }
+
+    // A strided stride vector of the wrong rank is a rank mismatch, not a panic.
+    #[test]
+    fn strided_rank_mismatch_is_rejected() {
+        let shape = Shape::new(vec![3, 4]).unwrap();
+        let layout = LayoutDescriptor::Strided(StridedLayout::new(vec![1]));
+        assert!(matches!(
+            layout.dense_element_strides(&shape),
+            Err(Error::IndexRankMismatch {
+                index_rank: 1,
+                shape_rank: 2
+            })
+        ));
+    }
+
+    // Every layout without an affine stride form reports None rather than erroring:
+    // "no stride vector exists" is an answer, not a failure.
+    #[test]
+    fn non_affine_layouts_have_no_strides() {
+        let shape = Shape::new(vec![4, 4]).unwrap();
+        let layouts = [
+            LayoutDescriptor::Tiled(Box::new(
+                TiledLayout::new(vec![2, 2], 0x01, 0x01, None, None, None).unwrap(),
+            )),
+            LayoutDescriptor::Morton(MortonLayout::new(vec![2, 2]).unwrap()),
+            LayoutDescriptor::Hilbert(HilbertLayout::new(2, 2).unwrap()),
+            LayoutDescriptor::Coo(CooLayout::new(4, false)),
+            LayoutDescriptor::Csr(CsrLayout::new(4)),
+        ];
+        for layout in layouts {
+            assert_eq!(
+                layout.dense_element_strides(&shape).unwrap(),
+                None,
+                "{layout:?}"
+            );
+            assert_eq!(
+                layout.element_offset_span(&shape).unwrap(),
+                None,
+                "{layout:?}"
+            );
+        }
+    }
+
+    // A DYNAMIC dimension makes the stride vector unsizeable, for every affine
+    // layout — including strided, whose strides are declared rather than derived.
+    #[test]
+    fn dynamic_dim_is_rejected_for_every_affine_layout() {
+        let shape = Shape::new(vec![3, crate::DYNAMIC]).unwrap();
+        for layout in [
+            LayoutDescriptor::RowMajor,
+            LayoutDescriptor::ColMajor,
+            LayoutDescriptor::Strided(StridedLayout::new(vec![4, 1])),
+        ] {
+            assert!(matches!(
+                layout.dense_element_strides(&shape),
+                Err(Error::DynamicDimInIndexing { dim: 1 })
+            ));
+        }
+    }
+
+    // Spec docs/spec/layouts/strided.md § Buffer Size, on that section's own example:
+    // shape [3,4] with strides [-4,1] reaches -8 (element [2,0]) through 3 (element
+    // [0,3]), which the formula makes 12 elements — the whole reversed matrix.
+    //
+    // The § Example prose says "from offset -8 to 0 (9 elements)", which contradicts
+    // the formula directly above it; the formula and `element_offset` agree with each
+    // other and with this test (see `span_bounds_every_addressed_offset`).
+    #[test]
+    fn span_matches_spec_negative_stride_example() {
+        let shape = Shape::new(vec![3, 4]).unwrap();
+        let layout = LayoutDescriptor::Strided(StridedLayout::new(vec![-4, 1]));
+        let (min, max) = layout.element_offset_span(&shape).unwrap().unwrap();
+        assert_eq!((min, max), (-8, 3));
+        assert_eq!(max - min + 1, 12);
+    }
+
+    // The span must bound every offset the layout actually addresses — asserted
+    // against the dispatched offsets, which are the authority.
+    #[test]
+    fn span_bounds_every_addressed_offset() {
+        let shape = Shape::new(vec![3, 4]).unwrap();
+        for layout in [
+            LayoutDescriptor::RowMajor,
+            LayoutDescriptor::ColMajor,
+            LayoutDescriptor::Strided(StridedLayout::new(vec![-4, 1])),
+            LayoutDescriptor::Strided(StridedLayout::new(vec![1, -3])),
+            LayoutDescriptor::Strided(StridedLayout::new(vec![0, 1])),
+            LayoutDescriptor::Strided(StridedLayout::new(vec![8, 1])),
+        ] {
+            let (min, max) = layout.element_offset_span(&shape).unwrap().unwrap();
+            let mut seen_min = i64::MAX;
+            let mut seen_max = i64::MIN;
+            for i in 0..3u64 {
+                for j in 0..4u64 {
+                    let off = layout.element_offset(&[i, j], &shape).unwrap() as i64;
+                    seen_min = seen_min.min(off);
+                    seen_max = seen_max.max(off);
+                }
+            }
+            assert_eq!((min, max), (seen_min, seen_max), "{layout:?}");
+        }
+    }
+
+    // A padded strided layout spans more elements than the tensor holds: the gap is
+    // part of the buffer the layout requires.
+    #[test]
+    fn span_includes_stride_padding() {
+        let shape = Shape::new(vec![3, 4]).unwrap();
+        // Row stride 8 for 4-element rows: 4 elements of padding per row.
+        let layout = LayoutDescriptor::Strided(StridedLayout::new(vec![8, 1]));
+        assert_eq!(layout.element_offset_span(&shape).unwrap(), Some((0, 19)));
+    }
+
+    // An empty tensor addresses nothing; the spec's (shape[k] - 1) formula has no
+    // meaning for it, so the span is (0, 0) and the element count is what sizes a
+    // buffer.
+    #[test]
+    fn empty_tensor_span_is_zero() {
+        let shape = Shape::new(vec![0, 4]).unwrap();
+        assert_eq!(
+            LayoutDescriptor::RowMajor
+                .element_offset_span(&shape)
+                .unwrap(),
+            Some((0, 0))
+        );
+        assert_eq!(shape.element_count(), Some(0));
     }
 }
