@@ -1,9 +1,20 @@
-//! Regression tests for the adversarial review of the dense layout pass.
+//! Which targets can be written through, and whether every address is representable.
 //!
-//! Each counterexample here is one that was **accepted and wrong** before the planning-time
-//! injectivity check existed. The oracle is deliberately independent: `reference_convert`
-//! recomputes the expected bytes from the stride definition in
-//! `docs/spec/layouts/strided.md § Element Address` using nothing from the crate, so a
+//! Three questions, all of them about addressing rather than about any one layout:
+//!
+//! - **Injectivity.** Can two logical indices reach the same stored element? A target that
+//!   aliases cannot hold the tensor's values, and in parallel the two writes can fall in
+//!   different work items, which is a data race. Aliasing is *not* a zero-stride
+//!   phenomenon — `[1, 1]` over shape `[2, 2]` is the counterexample that matters.
+//! - **Arithmetic.** Do the byte strides, the base, and the extent stay representable, and
+//!   is a descriptor that is merely unallocatable distinguished from one that overflows?
+//! - **Order.** Does a run produce the same bytes serially, with its work items in reverse,
+//!   and on a thread pool?
+//!
+//! Every case here was **accepted and wrong** before the planning-time injectivity check
+//! existed; they arrived from an adversarial review of that pass. The oracle is deliberately
+//! independent: `reference_convert` recomputes the expected bytes from the stride definition
+//! in `docs/spec/layouts/strided.md § Element Address` using nothing from the crate, so a
 //! defect in the production address helpers cannot hide behind a test that shares them.
 //!
 //! # Running these under Miri
@@ -357,7 +368,9 @@ fn every_accepted_plan_writes_each_output_byte_exactly_once() {
 /// Rows and columns for the equivalence sweep. Miri interprets every element copy, so it
 /// gets a tensor sized for an audit of the unsafe write path rather than for throughput;
 /// the multi-item cases are covered natively in `dense_layouts.rs`.
+#[cfg(feature = "rayon")]
 const ROWS: u64 = if cfg!(miri) { 6 } else { 200 };
+#[cfg(feature = "rayon")]
 const COLS: u64 = if cfg!(miri) { 9 } else { 300 };
 
 #[test]
