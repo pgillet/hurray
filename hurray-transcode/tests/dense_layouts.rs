@@ -401,7 +401,7 @@ fn an_already_broadcast_axis_needs_no_survey() {
 
 #[test]
 // A megabyte of output is what it takes to span several work items, which Miri cannot
-// interpret in reasonable time. `adversarial.rs` audits the same code path under Miri at a
+// interpret in reasonable time. `address_safety.rs` audits the same code path under Miri at a
 // size it can manage.
 #[cfg_attr(miri, ignore)]
 fn items_in_any_order_produce_the_serial_output() {
