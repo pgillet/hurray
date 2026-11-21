@@ -34,8 +34,9 @@ pub use descriptor::{
 pub use element_type::ElementType;
 pub use error::{Error, Result};
 pub use layout::{
-    byte_address_from_element_offset, BlockPagedLayout, BlockTableIndexType, CombineOp,
-    CompositeLayout, CompositionRule, CsfLayout, ElementAddress, KvRole, LayoutDescriptor,
+    byte_address_from_element_offset, strides_provably_distinct, BlockPagedLayout,
+    BlockTableIndexType, CombineOp, CompositeLayout, CompositionRule, CsfLayout, ElementAddress,
+    KvRole, LayoutDescriptor,
 };
 pub use quantization::{
     validate_axis, validate_buffer_placement, Mxfp, Nf4, PerBlockAffine, PerChannelAffine,

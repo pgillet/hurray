@@ -85,6 +85,7 @@ hurray/
 │       └── ADR-NNN-*.md
 ├── hurray-core/                # Core types, no I/O, no async
 ├── hurray-io/                  # Async I/O: streaming + file format (tokio)
+├── hurray-transcode/           # Representation conversion (layout, type, scheme, placement)
 ├── hurray-ffi/                 # C ABI layer for language bindings
 ├── hurray-python/              # Python bindings (PyO3)
 └── hurray-inspect/             # CLI hex viewer for Hurray descriptor files
@@ -128,8 +129,9 @@ Verified 2026-08-20. Correct this section when it stops being true.
 
 | Crate | Responsibility | Key dependencies |
 |-------|---------------|-----------------|
-| `hurray-core` | Format types, tensor descriptor, buffer handle, quantization descriptors. No I/O, no async. | `thiserror`, `serde` (feature-gated), `half`, `rayon` |
+| `hurray-core` | Format types, tensor descriptor, buffer handle, quantization descriptors. No I/O, no async, **no `unsafe`**. | `thiserror`, `serde` (feature-gated), `half` |
 | `hurray-io` | Async streaming and file format read/write. | `hurray-core`, `tokio`, `bytes` |
+| `hurray-transcode` | Representation conversion: layout, element type, quantization scheme, placement. The first crate that reads payload bytes as values. Sync; no `hurray-io` dependency. | `hurray-core`, `thiserror`, `rayon` (optional, off by default) |
 | `hurray-ffi` | C ABI: opaque handles, function table, buffer release callbacks, blocking stream I/O over a caller-supplied transport vtable. No panics across FFI, and no async runtime. | `hurray-core`, `hurray-io` (`default-features = false`) |
 | `hurray-python` | Python bindings with NumPy/PyTorch zero-copy interop via `__dlpack__`. | `hurray-ffi` or `hurray-core`, `pyo3` |
 
@@ -193,6 +195,14 @@ Layer 6 — File format                    (hurray-io: HRRYFILE container, foote
 Layer 7 — C FFI                          (hurray-ffi: opaque handles, function table, release callbacks)
 Layer 8 — Python bindings                (hurray-python: PyO3 + __dlpack__ zero-copy)
 ```
+
+`hurray-transcode` sits beside this stack rather than inside it: it depends on
+`hurray-core` alone (ADR-044 § 3), and its own passes run one conversion family at a time —
+dense layouts, then the remaining layouts and packing, then element casts, quantization,
+sparse, shards and composites, byte order and staging. **A pass that adds, gates or refuses
+a conversion updates `docs/impl/transcode-matrix.md` in the same pass** — that matrix is
+hand-maintained, and it is the published answer to "what does it convert today", which
+ADR-044 § 14's architectural audit deliberately is not.
 
 Each layer's pipeline:
 ```
