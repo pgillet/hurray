@@ -12,7 +12,7 @@ use std::ops::Range;
 use hurray_core::descriptor::TensorDescriptor;
 use hurray_core::{BufferHandle, DeviceTag, LayoutDescriptor, SyncMode};
 
-use crate::remap::{element_bytes, Remap};
+use crate::remap::{destination_geometry, element_bytes, source_geometry, Remap};
 use crate::{Error, Result};
 
 /// The buffers of one input tensor, in its descriptor's buffer-table order.
@@ -158,9 +158,13 @@ impl RunReport {
     /// assert_eq!(total.elements_written(), 0);
     /// ```
     pub fn combine(self, other: Self) -> Self {
+        // Saturating: a caller driving `run_range` in a loop can combine arbitrarily many
+        // reports, and a count that stops being exact is a better outcome than a panic in
+        // a debug build. A single run cannot reach the ceiling — its totals are bounded by
+        // the plan's byte extent.
         Self {
-            elements: self.elements + other.elements,
-            bytes: self.bytes + other.bytes,
+            elements: self.elements.saturating_add(other.elements),
+            bytes: self.bytes.saturating_add(other.bytes),
         }
     }
 }
@@ -490,23 +494,17 @@ pub fn plan(source: &TensorDescriptor, target: &Target) -> Result<Planned> {
     let src_strides = affine_strides(&source.layout, source, target)?;
     let dst_strides = affine_strides(&target.layout, source, target)?;
 
-    // A source descriptor whose buffer cannot hold the tensor it describes is caught here,
-    // from the layout's own span — before a run reads a byte past the end of it.
-    let (src_min, src_max) = source
-        .layout
-        .element_offset_span(shape)?
-        .expect("a layout with strides has a span");
-    let element_count = shape.element_count().unwrap_or(0);
-    if element_count > 0 {
-        let needed = checked_byte_extent(source.byte_offset, src_min, src_max, elem_bytes)?;
-        if needed > handle.byte_size() {
-            return Err(Error::SourceBufferTooSmall {
-                tensor: 0,
-                buffer: 0,
-                needed,
-                declared: handle.byte_size(),
-            });
-        }
+    // The source's byte geometry, validated: every address its layout reaches is proved
+    // representable and inside its own buffer here, before a run reads a byte. This is
+    // also where a descriptor whose buffer cannot hold the tensor it describes is caught.
+    let src_geometry = source_geometry(shape.dims(), &src_strides, source.byte_offset, elem_bytes)?;
+    if src_geometry.extent() > handle.byte_size() {
+        return Err(Error::SourceBufferTooSmall {
+            tensor: 0,
+            buffer: 0,
+            needed: src_geometry.extent(),
+            declared: handle.byte_size(),
+        });
     }
 
     // Two descriptions imply the same bytes exactly when they address every index
@@ -527,24 +525,12 @@ pub fn plan(source: &TensorDescriptor, target: &Target) -> Result<Planned> {
         }));
     }
 
-    let (dst_min, dst_max) = target
-        .layout
-        .element_offset_span(shape)?
-        .expect("a layout with strides has a span");
-    let (dst_byte_size, dst_byte_offset) = if element_count == 0 {
-        (0, 0)
-    } else {
-        let span_elements = (dst_max - dst_min + 1) as u64;
-        let size = span_elements
-            .checked_mul(elem_bytes)
-            .ok_or(hurray_core::Error::AddressOverflow)?;
-        // A negative stride reverses an axis, so element [0, …, 0] is not the lowest
-        // address the tensor reads: the output's base sits -min_offset elements in.
-        let offset = (-dst_min as u64)
-            .checked_mul(elem_bytes)
-            .ok_or(hurray_core::Error::AddressOverflow)?;
-        (size, offset)
-    };
+    // The destination's geometry, by the same checked arithmetic. It also chooses the
+    // output's `byte_offset`: a negative stride reverses an axis, so element [0, …, 0] is
+    // not the lowest address the tensor reads, and the base has to sit that far in.
+    let dst_geometry = destination_geometry(shape.dims(), &dst_strides, elem_bytes)?;
+    let dst_byte_size = dst_geometry.extent();
+    let dst_byte_offset = dst_geometry.byte_offset();
     // The alignment is carried from the source: this version converts the layout and
     // nothing else, and re-placing a buffer at a different alignment is its own
     // conversion (ADR-044 § 14).
@@ -559,15 +545,15 @@ pub fn plan(source: &TensorDescriptor, target: &Target) -> Result<Planned> {
         DeviceTag::Cpu,
         SyncMode::ProducerSynced,
     )?;
-    let output = output_descriptor(source, target, out_handle, dst_byte_offset)?;
     let remap = Remap::new(
         shape,
         src_strides,
         dst_strides,
         elem_bytes,
-        source.byte_offset,
-        dst_byte_offset,
+        src_geometry,
+        dst_geometry,
     )?;
+    let output = output_descriptor(source, target, out_handle, dst_byte_offset)?;
     let ready = ReadyPlan {
         inputs: vec![source.clone()],
         outputs: vec![output],
@@ -644,29 +630,6 @@ fn output_descriptor(
         output = output.with_composite_member(member);
     }
     Ok(output)
-}
-
-/// Bytes a layout addresses counting from its buffer's start, or an error if the
-/// arithmetic overflows.
-fn checked_byte_extent(byte_offset: u64, min: i64, max: i64, elem_bytes: u64) -> Result<u64> {
-    let span_elements = (max - min + 1) as u64;
-    let span_bytes = span_elements
-        .checked_mul(elem_bytes)
-        .ok_or(hurray_core::Error::AddressOverflow)?;
-    // byte_offset points at element [0, …, 0]; the lowest address read sits min elements
-    // below it, so the extent is measured from there.
-    let base = byte_offset as i64 + min * elem_bytes as i64;
-    if base < 0 {
-        return Err(Error::SourceBufferTooSmall {
-            tensor: 0,
-            buffer: 0,
-            needed: span_bytes,
-            declared: byte_offset,
-        });
-    }
-    (base as u64)
-        .checked_add(span_bytes)
-        .ok_or_else(|| hurray_core::Error::AddressOverflow.into())
 }
 
 impl ReadyPlan {

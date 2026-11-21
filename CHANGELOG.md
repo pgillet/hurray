@@ -50,10 +50,27 @@ workspace share one version and are released together.
   item exactly once in any order on any number of threads produces byte-identical output to
   one serial run.
 
+  A target whose strides would map two logical indices to one stored element is refused at
+  planning time. A zero stride is not the only way to reach that state — `[1, 1]` over shape
+  `[2, 2]` addresses elements `0, 1, 1, 2` — and writing through such a layout loses a value
+  serially and races in parallel, so a plan requires the target's strides to be *provably*
+  injective over the output cover. The broadcast collapse is the one aliasing target that is
+  supported, because its axis is excluded from the cover and the survey establishes that the
+  discarded indices carried the same value.
+
   Everything else in the crate's scope — tiled, Morton and Hilbert layouts, sparse, sub-byte
   packing, element casts, quantization, sharding, composites, byte order, device staging — is
   refused by name rather than mishandled, and [`docs/impl/transcode-matrix.md`](docs/impl/transcode-matrix.md)
   says which is which, with the reason for every permanent refusal.
+
+- **`strides_provably_distinct`** in `hurray-core`: whether a stride vector provably maps
+  every index of a shape to a distinct element. Aliasing strides are legal in this format and
+  sometimes the point — a zero stride *is* a broadcast — but a consumer that *writes* through
+  a layout needs to know, and the obvious test is wrong: `[1, 1]` over shape `[2, 2]` aliases
+  with no zero stride anywhere. The answer is a sufficient condition (strides strictly nested
+  by magnitude, which admits every dense layout and every padded variant), so `false` means
+  *not provably distinct* rather than *aliasing*; deciding it exactly is a bounded subset-sum
+  problem.
 
 - **`LayoutDescriptor::dense_element_strides` and `LayoutDescriptor::element_offset_span`**
   in `hurray-core`. The stride vector of a layout whose addressing is affine in the logical

@@ -7,10 +7,19 @@
 //! stride vector for each. So a conversion between any two of them is one loop over the
 //! output index space, reading at the source's strides and writing at the target's —
 //! there is no per-layout code here, and none should be added.
+//!
+//! # The arithmetic contract
+//!
+//! Every address this module computes is **proved representable at planning time**, so the
+//! run loop can use plain `int64` arithmetic without a per-element check. [`Geometry`] is
+//! where that proof is established: it computes the byte strides and the lowest and
+//! highest byte a layout addresses in checked `int128`, and refuses the conversion unless
+//! all of them fit in `int64` *and* inside the largest slice this host can address. The
+//! argument the loop then relies on is recorded on [`Remap::byte_address`].
 
 use std::ops::Range;
 
-use hurray_core::{ElementType, Shape};
+use hurray_core::{strides_provably_distinct, ElementType, Shape};
 
 use crate::dest::DestinationBytes;
 use crate::{Error, Result, RunReport};
@@ -23,6 +32,196 @@ use crate::{Error, Result, RunReport};
 /// detail of the partition, and a caller that wants different granularity wants
 /// `run_range` (ADR-044 § 6).
 const TARGET_ITEM_BYTES: u64 = 256 * 1024;
+
+/// The largest byte count that can be presented to a run as `&mut [u8]`.
+///
+/// Rust caps a slice at `isize::MAX` bytes, so a destination beyond this cannot be handed
+/// over at all, whatever the caller allocates it from — which makes it a planning-time
+/// refusal rather than a run-time surprise. It is also what keeps every address in
+/// [`Geometry`] convertible to `usize` without a narrowing check in the loop.
+const ADDRESSABLE_LIMIT: i128 = isize::MAX as i128;
+
+/// The validated byte geometry of one tensor: where its elements live, relative to the
+/// start of its buffer.
+///
+/// Constructing one is the proof obligation; using one is arithmetic that cannot fail.
+#[derive(Debug, Clone)]
+pub(crate) struct Geometry {
+    /// Byte address of logical element `[0, …, 0]`, from the start of the buffer. Equal to
+    /// the descriptor's `byte_offset` for a source, and chosen by the plan for a
+    /// destination — non-zero exactly when a stride is negative.
+    base: i64,
+    /// Per-axis strides in **bytes**: `stride[k] × elem_bytes`.
+    byte_strides: Vec<i64>,
+    /// One past the highest byte the layout addresses, from the start of the buffer. Zero
+    /// for an empty tensor, which addresses nothing.
+    extent: u64,
+    /// The lowest byte the layout addresses, from the start of the buffer. Never negative:
+    /// that is checked at construction.
+    lowest: u64,
+}
+
+impl Geometry {
+    /// The byte address of logical element `[0, …, 0]`, which is a descriptor's
+    /// `byte_offset`.
+    pub(crate) fn byte_offset(&self) -> u64 {
+        // Non-negative by construction (checked in `geometry`).
+        self.base as u64
+    }
+
+    /// One past the highest byte addressed, from the start of the buffer: the smallest
+    /// buffer that can hold this tensor.
+    pub(crate) fn extent(&self) -> u64 {
+        self.extent
+    }
+}
+
+/// The geometry of a tensor whose base address is already fixed — a source, whose
+/// `byte_offset` its descriptor declares.
+pub(crate) fn source_geometry(
+    dims: &[u64],
+    strides: &[i64],
+    byte_offset: u64,
+    elem_bytes: u64,
+) -> Result<Geometry> {
+    geometry(dims, strides, i128::from(byte_offset), elem_bytes)
+}
+
+/// The geometry of a tensor this plan is placing — a destination, whose base is derived
+/// rather than declared.
+///
+/// The base is the layout's own negative reach: a negative stride reverses an axis, so
+/// element `[0, …, 0]` is not the lowest address the tensor touches, and the plan must put
+/// it that far into the buffer. For non-negative strides the base is 0.
+pub(crate) fn destination_geometry(
+    dims: &[u64],
+    strides: &[i64],
+    elem_bytes: u64,
+) -> Result<Geometry> {
+    // Measured from a base of 0 first, purely to learn how far below it the layout reaches.
+    let reach = negative_reach(dims, strides, elem_bytes)?;
+    geometry(dims, strides, -reach, elem_bytes)
+}
+
+/// How far below its base a layout reaches, in bytes, as a non-positive `int128`.
+fn negative_reach(dims: &[u64], strides: &[i64], elem_bytes: u64) -> Result<i128> {
+    if dims.contains(&0) {
+        return Ok(0);
+    }
+    let elem_bytes = i128::from(elem_bytes);
+    let mut low: i128 = 0;
+    for (&stride, &dim) in strides.iter().zip(dims.iter()) {
+        let term = i128::from(stride)
+            .checked_mul(elem_bytes)
+            .and_then(|byte_stride| byte_stride.checked_mul(i128::from(dim - 1)))
+            .ok_or(hurray_core::Error::AddressOverflow)?;
+        if term < 0 {
+            low = low
+                .checked_add(term)
+                .ok_or(hurray_core::Error::AddressOverflow)?;
+        }
+    }
+    Ok(low)
+}
+
+/// Computes and validates a tensor's byte geometry.
+///
+/// All arithmetic is checked `int128`, and every value the run loop will use is narrowed
+/// only after it has been shown to fit. The three refusals this produces are the whole
+/// arithmetic surface: an overflow beyond `int128`, a value beyond `int64`, and an extent
+/// beyond what this host can address.
+fn geometry(dims: &[u64], strides: &[i64], base: i128, elem_bytes: u64) -> Result<Geometry> {
+    debug_assert_eq!(strides.len(), dims.len());
+    let eb = i128::from(elem_bytes);
+    let empty = dims.contains(&0);
+
+    let mut byte_strides = Vec::with_capacity(strides.len());
+    // Sum of the extreme negative terms and of the extreme positive terms. Because every
+    // negative term is at most 0 and every positive term at least 0, these two bound every
+    // *partial* sum as well, which is what makes the loop's running total safe.
+    let mut low_sum: i128 = 0;
+    let mut high_sum: i128 = 0;
+    for (&stride, &dim) in strides.iter().zip(dims.iter()) {
+        let byte_stride = i128::from(stride)
+            .checked_mul(eb)
+            .ok_or(hurray_core::Error::AddressOverflow)?;
+        byte_strides.push(fits_i64(byte_stride)?);
+        if empty {
+            continue;
+        }
+        // Every index along this axis is cast to `int64` in the address loop, so the
+        // largest of them has to fit. Only a dimension above 2^63 fails, and only when a
+        // zero stride would have made the cast harmless anyway — checking it outright is
+        // what lets `byte_address` state its proof without a case analysis.
+        let extent = i64::try_from(dim - 1).map_err(|_| Error::BeyondHostLimit {
+            what: "a dimension of the shape",
+            value: i128::from(dim),
+            limit: i128::from(i64::MAX),
+        })?;
+        let term = byte_stride
+            .checked_mul(i128::from(extent))
+            .ok_or(hurray_core::Error::AddressOverflow)?;
+        let slot = if term < 0 {
+            &mut low_sum
+        } else {
+            &mut high_sum
+        };
+        *slot = slot
+            .checked_add(term)
+            .ok_or(hurray_core::Error::AddressOverflow)?;
+    }
+
+    // An empty tensor addresses nothing, so it has no span and needs no buffer. The
+    // spec's (dim - 1) arithmetic has no meaning for it.
+    if empty {
+        let base = fits_i64(base)?;
+        if base < 0 {
+            return Err(hurray_core::Error::AddressOverflow.into());
+        }
+        return Ok(Geometry {
+            base,
+            byte_strides,
+            extent: 0,
+            lowest: base as u64,
+        });
+    }
+
+    let lowest = base
+        .checked_add(low_sum)
+        .ok_or(hurray_core::Error::AddressOverflow)?;
+    let highest_end = base
+        .checked_add(high_sum)
+        .and_then(|high| high.checked_add(eb))
+        .ok_or(hurray_core::Error::AddressOverflow)?;
+    if lowest < 0 {
+        // For a source this is an invalid descriptor: `strided.md § Element Address`
+        // requires `byte_offset` to put element [0, …, 0] far enough into the buffer that
+        // every element is addressable. For a destination it cannot happen, because the
+        // base is derived from the reach.
+        return Err(Error::LayoutReachesBelowBuffer {
+            byte_offset: u64::try_from(base).unwrap_or(u64::MAX),
+            below: lowest,
+        });
+    }
+    if highest_end > ADDRESSABLE_LIMIT {
+        return Err(Error::BeyondHostLimit {
+            what: "the byte extent of a tensor's layout",
+            value: highest_end,
+            limit: ADDRESSABLE_LIMIT,
+        });
+    }
+    // Both endpoints are now in [0, isize::MAX], so they fit int64 and usize alike.
+    Ok(Geometry {
+        base: fits_i64(base)?,
+        byte_strides,
+        extent: highest_end as u64,
+        lowest: lowest as u64,
+    })
+}
+
+fn fits_i64(value: i128) -> Result<i64> {
+    i64::try_from(value).map_err(|_| hurray_core::Error::AddressOverflow.into())
+}
 
 /// A planned element move between two affine-strided layouts of one tensor.
 #[derive(Debug, Clone)]
@@ -38,10 +237,11 @@ pub(crate) struct Remap {
     out_dims: Vec<u64>,
     src_strides: Vec<i64>,
     dst_strides: Vec<i64>,
-    /// Bytes per element. Sub-byte types are refused at plan time, so this is exact.
+    src: Geometry,
+    dst: Geometry,
+    /// Bytes per element. Sub-byte types are refused at plan time, so this is exact — and
+    /// the disjointness argument on [`Remap::byte_address`] depends on it being exact.
     elem_bytes: u64,
-    src_byte_offset: u64,
-    dst_byte_offset: u64,
     /// Elements in the output cover.
     total: u64,
     /// Elements one work item covers.
@@ -53,16 +253,15 @@ pub(crate) struct Remap {
 }
 
 impl Remap {
-    /// Builds the recipe. Every size and offset is computed with checked arithmetic here
-    /// so that the run loop can use plain arithmetic — the offsets it computes are
-    /// bounded by the spans validated at plan time.
+    /// Builds the recipe, refusing any conversion whose addresses cannot be computed
+    /// safely or whose destination cannot hold the tensor's values.
     pub(crate) fn new(
         shape: &Shape,
         src_strides: Vec<i64>,
         dst_strides: Vec<i64>,
         elem_bytes: u64,
-        src_byte_offset: u64,
-        dst_byte_offset: u64,
+        src: Geometry,
+        dst: Geometry,
     ) -> Result<Self> {
         let dims = shape.dims().to_vec();
         let out_dims: Vec<u64> = dims
@@ -70,6 +269,24 @@ impl Remap {
             .zip(dst_strides.iter())
             .map(|(&d, &s)| if s == 0 { 1 } else { d })
             .collect();
+
+        // The invariant everything else here rests on: distinct indices of the cover must
+        // address distinct output elements. Checked on the *cover* rather than on `dims`,
+        // because a broadcast axis is deliberately collapsed to one element before this
+        // point — that axis aliases by design, and the survey is what makes it sound.
+        //
+        // Without this check a target like `Strided([1, 1])` over shape `[2, 2]` is
+        // accepted: it has no zero stride, yet [0,1] and [1,0] address the same element.
+        // Serially that silently overwrites a value the conversion promised to preserve;
+        // in parallel the two writes can land in different work items, which is a data
+        // race through a raw pointer.
+        if !strides_provably_distinct(&dst_strides, &out_dims)? {
+            return Err(Error::OverlappingTarget {
+                strides: dst_strides,
+                dims: out_dims,
+            });
+        }
+
         // An empty tensor has an empty cover: `total` is 0 and no item is generated.
         let total = if dims.contains(&0) {
             0
@@ -80,7 +297,12 @@ impl Remap {
                 .ok_or(hurray_core::Error::AddressOverflow)?
         };
         let item_elements = (TARGET_ITEM_BYTES / elem_bytes.max(1)).max(1);
-        let item_count = total.div_ceil(item_elements) as usize;
+        let items = total.div_ceil(item_elements);
+        let item_count = usize::try_from(items).map_err(|_| Error::BeyondHostLimit {
+            what: "the work-item count",
+            value: i128::from(items),
+            limit: usize::MAX as i128,
+        })?;
         let contiguous_last = match (src_strides.last(), dst_strides.last()) {
             (Some(&s), Some(&d)) => s == 1 && d == 1,
             // A rank-0 tensor is a single element: there is no row to copy.
@@ -91,9 +313,9 @@ impl Remap {
             out_dims,
             src_strides,
             dst_strides,
+            src,
+            dst,
             elem_bytes,
-            src_byte_offset,
-            dst_byte_offset,
             total,
             item_elements,
             item_count,
@@ -152,16 +374,23 @@ impl Remap {
             } else {
                 1
             };
-            let src_at = self.byte_address(self.src_byte_offset, &self.src_strides, &idx);
-            let dst_at = self.byte_address(self.dst_byte_offset, &self.dst_strides, &idx);
+            let src_at = self.byte_address(&self.src, &idx);
+            let dst_at = self.byte_address(&self.dst, &idx);
             let len = n as usize * eb;
-            debug_assert!(src_at + len <= src.len(), "source address out of bounds");
+            debug_assert!(
+                src_at + len <= self.src.extent as usize && src_at + len <= src.len(),
+                "source address outside the geometry proved at plan time"
+            );
+            debug_assert!(
+                dst_at + len <= self.dst.extent as usize,
+                "destination address outside the geometry proved at plan time"
+            );
             dst.write_at(dst_at, &src[src_at..src_at + len]);
             self.advance(&mut idx, n);
             remaining -= n;
             elements += n;
         }
-        RunReport::new(elements, elements * self.elem_bytes)
+        RunReport::new(elements, elements.saturating_mul(self.elem_bytes))
     }
 
     /// Establishes that the data repeats along every collapsed axis, which is what makes
@@ -199,8 +428,8 @@ impl Remap {
                     }
                 })
                 .collect();
-            let a = self.byte_address(self.src_byte_offset, &self.src_strides, &idx);
-            let b = self.byte_address(self.src_byte_offset, &self.src_strides, &kept);
+            let a = self.byte_address(&self.src, &idx);
+            let b = self.byte_address(&self.src, &kept);
             if src[a..a + eb] != src[b..b + eb] {
                 return Err(Error::RepetitionNotHeld {
                     dim,
@@ -211,14 +440,43 @@ impl Remap {
         Ok(())
     }
 
+    /// The byte address of logical index `idx` in one of the two tensors.
+    ///
+    /// # Why plain `int64` arithmetic cannot overflow here
+    ///
+    /// Let `t_k = idx[k] × byte_strides[k]`. Since `0 ≤ idx[k] ≤ dims[k] - 1`, each `t_k`
+    /// lies between `0` and the extreme term `byte_strides[k] × (dims[k] - 1)` that
+    /// [`geometry`] already computed — on the same side of zero. [`geometry`] summed the
+    /// negative extremes into `lowest` and the positive extremes into `highest_end`, and
+    /// refused the conversion unless **both** fit in `[0, isize::MAX]`.
+    ///
+    /// Because every negative term is at most `0` and every positive term at least `0`,
+    /// dropping any subset of terms keeps the sum inside `[lowest, highest_end]`. Every
+    /// *partial* sum this function forms is such a subset, so the running total — and the
+    /// result — lie in `[lowest, highest_end] ⊆ [0, isize::MAX]`. No intermediate value
+    /// can leave `int64`, the result is non-negative, and the cast to `usize` is lossless
+    /// on both 32- and 64-bit hosts.
+    ///
+    /// The `idx[k] as i64` cast is lossless for the same reason: [`geometry`] refused the
+    /// conversion unless every `dims[k] - 1` fits in `int64`, and `idx[k]` never exceeds
+    /// it.
+    ///
+    /// The `debug_assert` is a check of that reasoning, not the reason it holds.
     #[inline]
-    fn byte_address(&self, byte_offset: u64, strides: &[i64], idx: &[u64]) -> usize {
-        let offset: i64 = idx
+    fn byte_address(&self, geometry: &Geometry, idx: &[u64]) -> usize {
+        let address = idx
             .iter()
-            .zip(strides.iter())
-            .map(|(&i, &s)| i as i64 * s)
-            .sum();
-        (byte_offset as i64 + offset * self.elem_bytes as i64) as usize
+            .zip(geometry.byte_strides.iter())
+            .fold(geometry.base, |acc, (&i, &byte_stride)| {
+                acc + i as i64 * byte_stride
+            });
+        debug_assert!(
+            address >= geometry.lowest as i64 && (address as u64) < geometry.extent,
+            "address {address} outside the proved range [{}, {})",
+            geometry.lowest,
+            geometry.extent
+        );
+        address as usize
     }
 
     #[inline]
@@ -259,6 +517,11 @@ fn decode_into(mut flat: u64, dims: &[u64], idx: &mut [u64]) {
 /// is a bit-field edit rather than a copy, and a negative stride can land a tensor's base
 /// part-way through a byte. Both are real conversions and both are their own pass; a
 /// refusal here is better than a silently wrong byte.
+///
+/// Whole-byte elements are also what makes the disjointness argument of § 6 hold: two
+/// distinct element offsets are `elem_bytes` apart or more, so their byte ranges cannot
+/// overlap. A packed type would break that, which is a second reason the refusal is not
+/// merely about convenience.
 pub(crate) fn element_bytes(
     ty: ElementType,
     ext: Option<&hurray_core::ExtensionTypeDescriptor>,
@@ -291,5 +554,5 @@ pub(crate) fn element_bytes(
              bit-field edit, not a copy",
         ));
     }
-    Ok(bits as u64 / 8)
+    Ok(u64::from(bits) / 8)
 }

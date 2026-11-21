@@ -74,8 +74,9 @@ impl AlignedDestination {
     ///
     /// - [`hurray_core::Error::AlignmentNotPowerOfTwo`] — `alignment` is not a power of two.
     /// - [`hurray_core::Error::AddressOverflow`] — `byte_size` does not form a valid host
-    ///   allocation layout. Both are reachable from a descriptor off the wire, so neither
-    ///   panics.
+    ///   allocation layout.
+    /// - [`Error::AllocationFailed`] — the host could not provide the memory. All three
+    ///   are reachable from a descriptor off the wire, so none of them panics or aborts.
     ///
     /// # Examples
     ///
@@ -112,9 +113,15 @@ impl AlignedDestination {
         let layout = Layout::from_size_align(len, alignment as usize).map_err(layout_error)?;
         // SAFETY: `layout` has non-zero size, checked immediately above.
         let ptr = unsafe { alloc::alloc_zeroed(layout) };
-        // Allocation failure aborts, as it does for `Vec`: there is no fallible path a
-        // caller could usefully take for a size it chose.
-        let ptr = NonNull::new(ptr).unwrap_or_else(|| alloc::handle_alloc_error(layout));
+        // An error rather than `handle_alloc_error`'s abort, which is where `Vec` and
+        // `hurray-io`'s internal equivalent land: the size and alignment here come from a
+        // *descriptor*, which may have come off a wire, and a plan can legitimately
+        // publish a destination far larger than any machine has. Aborting the process over
+        // a number a peer chose is a denial of service; returning the refusal is not.
+        let ptr = NonNull::new(ptr).ok_or(Error::AllocationFailed {
+            byte_size,
+            alignment,
+        })?;
         Ok(Self { ptr, layout, len })
     }
 

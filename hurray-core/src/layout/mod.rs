@@ -971,6 +971,113 @@ impl LayoutDescriptor {
     }
 }
 
+/// Returns `true` when a stride vector **provably** maps every index of `dims` to a
+/// distinct element offset.
+///
+/// A layout whose strides alias — two logical indices sharing one stored element — is
+/// legal in this format, and sometimes the whole point: a zero stride *is* a broadcast
+/// (`docs/spec/layouts/strided.md § Stride Semantics`). It is nonetheless a property a
+/// consumer needs to know about, because a tensor cannot be *written* through an aliasing
+/// layout without losing values, and a parallel writer cannot treat distinct indices as
+/// distinct destinations.
+///
+/// Zero strides are not the only way to alias, which is the trap this function exists to
+/// close: strides `[1, 1]` over shape `[2, 2]` send both `[0, 1]` and `[1, 0]` to offset
+/// `1`, with no zero stride anywhere.
+///
+/// # The test, and what `false` means
+///
+/// The answer is **conservative**: `true` is a proof of distinctness, while `false` means
+/// *not provably distinct* — either genuinely aliasing, or one of the exotic interleavings
+/// this test does not recognise (strides `[2, 3]` over shape `[3, 2]` is injective, and
+/// reported `false`). Deciding injectivity exactly is a bounded subset-sum problem; the
+/// sufficient condition below is the one that admits every layout the format's own
+/// § Contiguity definition calls dense, every permutation of it, and every padded variant.
+///
+/// Three reductions make it a two-line check:
+///
+/// - **Sign does not matter.** Replacing `i_k` by `d_k - 1 - i_k` on a negative-stride axis
+///   is a bijection of the index box onto itself and turns that axis's contribution into
+///   `const + i_k · |s_k|`, so the map is injective exactly when the all-positive version
+///   is.
+/// - **An axis of extent 1 contributes nothing**, and a zero stride on an axis of extent
+///   above 1 aliases by definition.
+/// - **Sorted by `|stride|` ascending, the strides must be strictly nested**: each axis's
+///   stride must exceed the total span of every smaller axis, so that no combination of the
+///   smaller axes can reach it.
+///
+/// # Errors
+///
+/// - [`Error::IndexRankMismatch`] — `strides.len() != dims.len()`.
+/// - [`Error::AddressOverflow`] — the span arithmetic overflows `uint64`.
+///
+/// # Examples
+///
+/// ```
+/// use hurray_core::layout::strides_provably_distinct;
+///
+/// // Row-major and column-major strides for a 3×4 tensor, and a padded variant.
+/// assert!(strides_provably_distinct(&[4, 1], &[3, 4]).unwrap());
+/// assert!(strides_provably_distinct(&[1, 3], &[3, 4]).unwrap());
+/// assert!(strides_provably_distinct(&[8, 1], &[3, 4]).unwrap());
+///
+/// // A reversed axis is still distinct: the sign does not matter.
+/// assert!(strides_provably_distinct(&[-4, 1], &[3, 4]).unwrap());
+///
+/// // Aliasing with no zero stride in sight: [0,1] and [1,0] both land on offset 1.
+/// assert!(!strides_provably_distinct(&[1, 1], &[2, 2]).unwrap());
+///
+/// // A broadcast axis aliases by definition — unless its extent is 1.
+/// assert!(!strides_provably_distinct(&[0, 1], &[3, 4]).unwrap());
+/// assert!(strides_provably_distinct(&[0, 1], &[1, 4]).unwrap());
+///
+/// // An empty tensor has no two indices to collide.
+/// assert!(strides_provably_distinct(&[1, 1], &[0, 4]).unwrap());
+/// ```
+pub fn strides_provably_distinct(strides: &[i64], dims: &[u64]) -> crate::Result<bool> {
+    if strides.len() != dims.len() {
+        return Err(Error::IndexRankMismatch {
+            index_rank: strides.len(),
+            shape_rank: dims.len(),
+        });
+    }
+    // An empty index space contains no pair of indices to collide.
+    if dims.contains(&0) {
+        return Ok(true);
+    }
+    // (|stride|, extent - 1) per axis that can move, which is where the sign reduction and
+    // the extent-1 reduction in the doc comment are applied.
+    let mut axes: Vec<(u64, u64)> = Vec::with_capacity(dims.len());
+    for (&stride, &dim) in strides.iter().zip(dims.iter()) {
+        if dim == 1 {
+            continue;
+        }
+        let magnitude = stride.unsigned_abs();
+        if magnitude == 0 {
+            return Ok(false);
+        }
+        axes.push((magnitude, dim - 1));
+    }
+    axes.sort_unstable();
+    let mut reach: u64 = 0;
+    for (magnitude, extent) in axes {
+        // Strictly nested: anything this axis can reach must lie beyond everything the
+        // smaller axes can reach together. Equality is a collision, not a near miss — two
+        // axes with the same stride put index (1, 0) and (0, 1) on one element.
+        if magnitude <= reach {
+            return Ok(false);
+        }
+        reach = reach
+            .checked_add(
+                magnitude
+                    .checked_mul(extent)
+                    .ok_or(Error::AddressOverflow)?,
+            )
+            .ok_or(Error::AddressOverflow)?;
+    }
+    Ok(true)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1464,5 +1571,134 @@ mod tests {
             Some((0, 0))
         );
         assert_eq!(shape.element_count(), Some(0));
+    }
+    // ── strides_provably_distinct ─────────────────────────────────────────────
+
+    /// Brute force over a small box: the exact answer, computed independently of the
+    /// function under test.
+    fn actually_distinct(strides: &[i64], dims: &[u64]) -> bool {
+        let total: u64 = dims.iter().product();
+        let mut seen = std::collections::HashSet::new();
+        for flat in 0..total {
+            let mut rest = flat;
+            let mut offset: i64 = 0;
+            for k in (0..dims.len()).rev() {
+                let idx = (rest % dims[k]) as i64;
+                rest /= dims[k];
+                offset += idx * strides[k];
+            }
+            if !seen.insert(offset) {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// The one direction that must never fail: a `true` answer is a *proof*. A false
+    /// positive here is the memory-safety bug the predicate exists to prevent, so this
+    /// sweeps every small stride vector rather than a chosen few.
+    #[test]
+    fn claimed_distinctness_is_always_real() {
+        let dim_sets: [&[u64]; 6] = [&[4], &[2, 2], &[2, 3], &[3, 2], &[2, 2, 2], &[1, 3, 2]];
+        for dims in dim_sets {
+            let rank = dims.len();
+            let candidates: Vec<i64> = (-4..=4).collect();
+            // Every stride vector in [-4, 4]^rank.
+            let mut index = vec![0usize; rank];
+            loop {
+                let strides: Vec<i64> = index.iter().map(|&i| candidates[i]).collect();
+                if strides_provably_distinct(&strides, dims).unwrap() {
+                    assert!(
+                        actually_distinct(&strides, dims),
+                        "claimed distinct but is not: strides {strides:?} dims {dims:?}"
+                    );
+                }
+                // Odometer over the candidate grid.
+                let mut k = rank;
+                loop {
+                    if k == 0 {
+                        break;
+                    }
+                    k -= 1;
+                    index[k] += 1;
+                    if index[k] < candidates.len() {
+                        break;
+                    }
+                    index[k] = 0;
+                    if k == 0 {
+                        break;
+                    }
+                }
+                if index.iter().all(|&i| i == 0) {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// The other direction is deliberately incomplete, and this records which cases the
+    /// conservative test gives up on, so a later pass can see the cost of tightening it.
+    #[test]
+    fn conservatism_is_confined_to_interleavings() {
+        // Injective, and reported false: axis 0 strides by 2 over 3 positions (0,2,4) and
+        // axis 1 by 3 over 2 (0,3) — the sums 0,2,4,3,5,7 happen not to collide.
+        assert!(actually_distinct(&[2, 3], &[3, 2]));
+        assert!(!strides_provably_distinct(&[2, 3], &[3, 2]).unwrap());
+    }
+
+    #[test]
+    fn the_review_counterexample_is_rejected() {
+        // The case that made a parallel run race: no zero stride, and [0,1] and [1,0]
+        // both address element 1.
+        assert!(!strides_provably_distinct(&[1, 1], &[2, 2]).unwrap());
+        assert!(!actually_distinct(&[1, 1], &[2, 2]));
+        // And at the scale where the collision crosses a work-item boundary.
+        assert!(!strides_provably_distinct(&[1, 1], &[2, 300_000]).unwrap());
+    }
+
+    #[test]
+    fn canonical_strides_of_every_rank_are_distinct() {
+        for dims in [vec![7u64], vec![3, 4], vec![2, 3, 4], vec![2, 2, 2, 2]] {
+            let shape = Shape::new(dims.clone()).unwrap();
+            for layout in [LayoutDescriptor::RowMajor, LayoutDescriptor::ColMajor] {
+                let strides = layout.dense_element_strides(&shape).unwrap().unwrap();
+                assert!(
+                    strides_provably_distinct(&strides, &dims).unwrap(),
+                    "{layout:?} over {dims:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_rank_zero_tensor_is_distinct() {
+        assert!(strides_provably_distinct(&[], &[]).unwrap());
+    }
+
+    #[test]
+    fn extent_one_axes_are_ignored_whatever_their_stride() {
+        // Three axes of extent 1 and one that moves: no two indices exist to collide.
+        assert!(strides_provably_distinct(&[0, 0, 0, 1], &[1, 1, 1, 5]).unwrap());
+        assert!(strides_provably_distinct(&[7, 7, 7, 1], &[1, 1, 1, 5]).unwrap());
+    }
+
+    #[test]
+    fn a_rank_mismatch_is_an_error_not_a_verdict() {
+        assert!(matches!(
+            strides_provably_distinct(&[1], &[2, 2]),
+            Err(Error::IndexRankMismatch {
+                index_rank: 1,
+                shape_rank: 2
+            })
+        ));
+    }
+
+    #[test]
+    fn a_span_that_overflows_is_an_error_not_a_verdict() {
+        // |stride| × (dim - 1) beyond uint64: no answer rather than a wrapped one.
+        assert!(matches!(
+            strides_provably_distinct(&[i64::MAX, 1], &[u64::MAX / 2, 2]),
+            Err(Error::AddressOverflow)
+        ));
     }
 }
