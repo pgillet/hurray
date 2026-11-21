@@ -400,6 +400,10 @@ fn an_already_broadcast_axis_needs_no_survey() {
 // ── § 6: the order-independence invariant ─────────────────────────────────────
 
 #[test]
+// A megabyte of output is what it takes to span several work items, which Miri cannot
+// interpret in reasonable time. `adversarial.rs` audits the same code path under Miri at a
+// size it can manage.
+#[cfg_attr(miri, ignore)]
 fn items_in_any_order_produce_the_serial_output() {
     // A tensor large enough to be partitioned into several work items.
     // 1 MiB of output: several work items at this crate's item granularity.
@@ -438,6 +442,7 @@ fn items_in_any_order_produce_the_serial_output() {
 
 #[test]
 #[cfg(feature = "rayon")]
+#[cfg_attr(miri, ignore)]
 fn parallel_output_is_byte_identical_to_serial() {
     let dims = vec![128u64, 512];
     let total = 128 * 512;

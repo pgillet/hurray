@@ -72,6 +72,8 @@ it yet.
 | repeated axis collapsed back to a zero stride | `survey-gated` | 0.3.0 | § 14b — the survey refuses data that does not repeat along the collapsed axis. |
 | a layout conversion of a sub-byte-typed tensor (`int4`, `bool`, the `float6` pair) | `deferred` | — | § 14 — moving one element is a bit-field edit, not a copy; it belongs with the packing row below. |
 | a layout conversion of an extension-typed (private) tensor | `deferred` | — | § 14g — movement and repacking are permitted; only casting is refused. |
+| a **target** whose strides map two indices to one element (`[1, 1]` over shape `[2, 2]`) | `refused` | — | Two logical values would share one stored element, so the destination cannot hold the tensor: the conversion would lose a value serially, and two work items could write one byte in parallel (§ 1, § 6). A zero stride is the one exception — that is the broadcast collapse above, where the axis is excluded from the output cover and the survey establishes that the discarded indices carried the same value. |
+| a target whose strides are injective but not *provably* so (`[2, 3]` over shape `[3, 2]`) | `deferred` | — | The planning check is a sufficient condition — strides strictly nested by magnitude — which admits every dense layout, every permutation of one, and every padded variant. Deciding injectivity exactly is a bounded subset-sum problem; recognising more interleavings is a later pass, not a correctness gap. |
 | dense → sparse (COO, CSR, CSC, CSF) | `deferred`, survey-gated | — | § 4, § 7(c) |
 | sparse → dense | `deferred` | — | § 14 |
 | sparse → sparse | `deferred` | — | § 14 |

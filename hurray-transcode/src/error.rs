@@ -17,8 +17,9 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// | Family | Raised at | Variants |
 /// |---|---|---|
-/// | unsupported conversion | plan | [`Error::UnsupportedConversion`], [`Error::UnresolvedShape`], [`Error::NonHostBuffer`] |
-/// | input mismatch | plan / survey / run | [`Error::InputTensorCount`], [`Error::InputBufferCount`], [`Error::InputBufferSize`], [`Error::SourceBufferTooSmall`] |
+/// | unsupported conversion | plan | [`Error::UnsupportedConversion`], [`Error::UnresolvedShape`], [`Error::NonHostBuffer`], [`Error::OverlappingTarget`] |
+/// | input mismatch | plan / survey / run | [`Error::InputTensorCount`], [`Error::InputBufferCount`], [`Error::InputBufferSize`], [`Error::SourceBufferTooSmall`], [`Error::LayoutReachesBelowBuffer`] |
+/// | not representable here | plan | [`Error::BeyondHostLimit`], [`Error::AllocationFailed`] |
 /// | unusable destination | run | [`Error::OutputTensorCount`], [`Error::DestinationCount`], [`Error::DestinationTooShort`], [`Error::DestinationMisaligned`] |
 /// | conversion refused by survey | survey | [`Error::RepetitionNotHeld`] |
 /// | anything `hurray-core` rejects | any | [`Error::Core`] |
@@ -183,6 +184,84 @@ pub enum Error {
         expected: u32,
         /// The largest power of two the destination's base address is aligned to.
         actual: usize,
+    },
+
+    /// The target's strides do not provably address every element of the tensor
+    /// distinctly, so the destination cannot hold its values.
+    ///
+    /// A layout whose strides alias is legal in the format and is sometimes the point — a
+    /// zero stride is a broadcast — but a tensor cannot be *written* through one without
+    /// losing values: strides `[1, 1]` over shape `[2, 2]` send `[0, 1]` and `[1, 0]` to
+    /// the same element, so one of the two is silently overwritten. Writing through one in
+    /// parallel is worse: the two writes can fall in different work items, which is a data
+    /// race.
+    ///
+    /// The test is conservative, so a few exotic interleavings that *are* injective are
+    /// refused here too — strides `[2, 3]` over shape `[3, 2]`, for instance. They are
+    /// unsupported rather than impossible; see `hurray_core::strides_provably_distinct`.
+    ///
+    /// The broadcast *collapse* this crate does support is not this error: its axes are
+    /// clamped out of the cover before the check, and the survey is what establishes that
+    /// the discarded indices carried the same value.
+    #[error(
+        "target layout does not provably address every element distinctly: strides \
+         {strides:?} over the output cover {dims:?} can map two indices to one element, \
+         so the destination cannot represent the tensor's values"
+    )]
+    OverlappingTarget {
+        /// The target's strides.
+        strides: Vec<i64>,
+        /// The index space they were checked against — the shape with broadcast axes
+        /// clamped to one element.
+        dims: Vec<u64>,
+    },
+
+    /// A layout addresses bytes before the start of its own buffer: its `byte_offset` is
+    /// smaller than the distance its negative strides reach below the base.
+    ///
+    /// `docs/spec/layouts/strided.md § Element Address` requires `byte_offset` to be set
+    /// so that every element is addressable within the buffer, so this is an invalid
+    /// source descriptor rather than an unsupported conversion.
+    #[error(
+        "layout reaches {below} bytes from the start of the buffer, below its own \
+         byte_offset of {byte_offset}: every element must be addressable within the buffer"
+    )]
+    LayoutReachesBelowBuffer {
+        /// The declared `byte_offset`.
+        byte_offset: u64,
+        /// The lowest byte the layout addresses, relative to the buffer's start. Negative.
+        below: i128,
+    },
+
+    /// The conversion is arithmetically well defined, but one of its quantities cannot be
+    /// represented on this host.
+    ///
+    /// This is the line between a descriptor whose arithmetic overflows — which is
+    /// [`Error::Core`] carrying `AddressOverflow` — and one that is perfectly consistent
+    /// but asks for more than the machine can address. A tensor whose byte extent exceeds
+    /// `isize::MAX` cannot be handed to a run as `&mut [u8]` at any allocation, and a work
+    /// item count beyond `usize::MAX` cannot be indexed.
+    #[error("{what} is {value}, beyond this host's limit of {limit}")]
+    BeyondHostLimit {
+        /// Which quantity exceeded the limit.
+        what: &'static str,
+        /// The value computed for it.
+        value: i128,
+        /// The largest value this host can represent for that quantity.
+        limit: i128,
+    },
+
+    /// An [`crate::AlignedDestination`] could not be allocated.
+    ///
+    /// Returned rather than aborting, because the size and alignment come from a
+    /// descriptor, which may have come off a wire: a process that aborts on a number a
+    /// peer chose is a denial of service.
+    #[error("could not allocate {byte_size} bytes at {alignment}-byte alignment")]
+    AllocationFailed {
+        /// Bytes requested.
+        byte_size: u64,
+        /// Alignment requested.
+        alignment: u32,
     },
 
     /// A survey refused the conversion: collapsing a broadcast axis requires that the
