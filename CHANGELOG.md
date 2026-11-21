@@ -63,14 +63,15 @@ workspace share one version and are released together.
   refused by name rather than mishandled, and [`docs/impl/transcode-matrix.md`](docs/impl/transcode-matrix.md)
   says which is which, with the reason for every permanent refusal.
 
-- **`strides_provably_distinct`** in `hurray-core`: whether a stride vector provably maps
-  every index of a shape to a distinct element. Aliasing strides are legal in this format and
-  sometimes the point — a zero stride *is* a broadcast — but a consumer that *writes* through
-  a layout needs to know, and the obvious test is wrong: `[1, 1]` over shape `[2, 2]` aliases
-  with no zero stride anywhere. The answer is a sufficient condition (strides strictly nested
-  by magnitude, which admits every dense layout and every padded variant), so `false` means
-  *not provably distinct* rather than *aliasing*; deciding it exactly is a bounded subset-sum
-  problem.
+- **`strides_provably_distinct`** and **`Distinctness`** in `hurray-core`: whether a stride
+  vector provably maps every index of a shape to a distinct element. Aliasing strides are
+  legal in this format and sometimes the point — a zero stride *is* a broadcast — but a
+  consumer that *writes* through a layout needs to know, and the obvious test is wrong:
+  `[1, 1]` over shape `[2, 2]` aliases with no zero stride anywhere. The answer is a
+  sufficient condition (strides strictly nested by magnitude, which admits every dense layout
+  and every padded variant), so the negative verdict is `Distinctness::NotProven` rather than
+  a `false` that reads as *aliases*: deciding it exactly is a bounded subset-sum problem, and
+  `[2, 3]` over shape `[3, 2]` is injective and still comes back `NotProven`.
 
 - **`LayoutDescriptor::dense_element_strides` and `LayoutDescriptor::element_offset_span`**
   in `hurray-core`. The stride vector of a layout whose addressing is affine in the logical
