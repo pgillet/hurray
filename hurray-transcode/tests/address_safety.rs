@@ -424,6 +424,65 @@ fn serial_reverse_and_parallel_agree_on_every_supported_layout() {
     }
 }
 
+// ── Every execution path, on both destinations ────────────────────────────────
+
+/// The engine has two execution paths — one copy per contiguous run, and one per element —
+/// and two destinations: the safe slice, and the raw pointer the thread pool writes
+/// through. Each combination is checked against the independent oracle here, so an
+/// optimization that adds a path cannot land with only one of them covered (see the
+/// maintenance notes in `remap.rs`).
+#[test]
+fn each_execution_path_matches_the_oracle_on_both_destinations() {
+    // (name, source strides, target strides): the first two take the bulk-copy path, the
+    // last two move single elements.
+    let cases: &[(&str, &[i64], &[i64])] = &[
+        ("bulk copy, padded rows", &[12, 1], &[16, 1]),
+        ("bulk copy, reversed rows", &[12, 1], &[-12, 1]),
+        ("per element, to column-major", &[12, 1], &[1, 8]),
+        ("per element, strided last axis", &[12, 1], &[48, 4]),
+    ];
+    let dims = [8u64, 12];
+    let count = 96usize;
+    let data: Vec<u8> = (0..count).map(|i| (i * 7 % 251) as u8).collect();
+
+    for (name, src_strides, dst_strides) in cases {
+        let source = descriptor(
+            ElementType::Uint8,
+            dims.to_vec(),
+            strided(src_strides.to_vec()),
+            count as u64,
+            0,
+        );
+        let r = ready(&source, &Target::layout(strided(dst_strides.to_vec())));
+        let (expected, base) = reference_convert(&dims, src_strides, dst_strides, 1, 0, &data);
+        assert_eq!(r.outputs()[0].byte_offset, base, "{name}");
+
+        // The safe destination.
+        assert_eq!(convert(&r, &data), expected, "{name}, serial");
+
+        // Item by item, which is the same path driven by the caller.
+        let mut stepped = AlignedDestination::for_destination(r.destinations(0)[0]).unwrap();
+        for item in 0..r.work_item_count() {
+            r.run_range(
+                &[&[&data]],
+                &mut [&mut [stepped.as_mut_slice()]],
+                item..item + 1,
+            )
+            .unwrap();
+        }
+        assert_eq!(stepped.as_slice(), &expected[..], "{name}, by item");
+
+        // The raw-pointer destination.
+        #[cfg(feature = "rayon")]
+        {
+            let mut parallel = AlignedDestination::for_destination(r.destinations(0)[0]).unwrap();
+            r.run_parallel(&[&[&data]], &mut [&mut [parallel.as_mut_slice()]])
+                .unwrap();
+            assert_eq!(parallel.as_slice(), &expected[..], "{name}, parallel");
+        }
+    }
+}
+
 // ── 3. Address arithmetic ─────────────────────────────────────────────────────
 
 #[test]

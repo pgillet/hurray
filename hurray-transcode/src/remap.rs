@@ -16,10 +16,35 @@
 //! highest byte a layout addresses in checked `int128`, and refuses the conversion unless
 //! all of them fit in `int64` *and* inside the largest slice this host can address. The
 //! argument the loop then relies on is recorded on [`Remap::byte_address`].
+//!
+//! # Maintenance: the proof is a standing obligation, not a one-time check
+//!
+//! The arithmetic above is sound only while every address the engine computes comes from
+//! the same validated [`Geometry`]. An optimization that adds a faster path — a wider bulk
+//! copy, a per-axis specialisation, a precomputed row table — inherits that obligation, and
+//! the cost of breaking it is an out-of-bounds write through the raw pointer in
+//! `parallel.rs`. Three rules keep it:
+//!
+//! 1. **Every address comes from [`Remap::byte_address`].** No open-coded
+//!    `base + index × stride`: the bound in its doc comment is stated for that function's
+//!    arithmetic, and a copy of the arithmetic elsewhere is not covered by it.
+//! 2. **Every bulk copy stays inside one run of the cover.** A copy of `n` elements is in
+//!    bounds because those `n` elements are consecutive cover indices along the last axis
+//!    *and* both layouts stride that axis by one — which is what `contiguous_last` means. A
+//!    path that copies across an axis boundary, or at a stride other than 1, needs its own
+//!    bound before it can be trusted.
+//! 3. **Every path is named in a test.** `path_selection_is_explicit` pins which stride
+//!    pairs choose which path, so deleting or bypassing one is a test failure rather than a
+//!    silent loss of coverage, and `address_safety.rs` runs each path against an independent
+//!    oracle on both destination implementations.
+//!
+//! There are two paths today — per element, and one copy per contiguous run — and two
+//! destinations, the safe slice and the shared raw pointer. A third of either is where to
+//! re-read this list.
 
 use std::ops::Range;
 
-use hurray_core::{strides_provably_distinct, ElementType, Shape};
+use hurray_core::{strides_provably_distinct, Distinctness, ElementType, Shape};
 
 use crate::dest::DestinationBytes;
 use crate::{Error, Result, RunReport};
@@ -280,7 +305,7 @@ impl Remap {
         // Serially that silently overwrites a value the conversion promised to preserve;
         // in parallel the two writes can land in different work items, which is a data
         // race through a raw pointer.
-        if !strides_provably_distinct(&dst_strides, &out_dims)? {
+        if strides_provably_distinct(&dst_strides, &out_dims)? != Distinctness::Distinct {
             return Err(Error::OverlappingTarget {
                 strides: dst_strides,
                 dims: out_dims,
@@ -555,4 +580,116 @@ pub(crate) fn element_bytes(
         ));
     }
     Ok(u64::from(bits) / 8)
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn remap(dims: Vec<u64>, src: Vec<i64>, dst: Vec<i64>, elem_bytes: u64) -> Remap {
+        let shape = Shape::new(dims.clone()).unwrap();
+        // A source with a negative stride needs its base placed above its own reach, which
+        // is what a real descriptor's `byte_offset` does.
+        let reach = negative_reach(&dims, &src, elem_bytes).unwrap();
+        let byte_offset = u64::try_from(-reach).unwrap();
+        let source = source_geometry(&dims, &src, byte_offset, elem_bytes).unwrap();
+        let destination = destination_geometry(&dims, &dst, elem_bytes).unwrap();
+        Remap::new(&shape, src, dst, elem_bytes, source, destination).unwrap()
+    }
+
+    /// The geometry contract, over the whole cover rather than over the addresses one run
+    /// happens to touch: every address the engine can compute for either tensor lies inside
+    /// the range that was proved at plan time, with room for a whole element.
+    fn assert_addresses_stay_inside_their_geometry(remap: &Remap) {
+        let mut idx = vec![0u64; remap.out_dims.len()];
+        let elem = remap.elem_bytes as usize;
+        for flat in 0..remap.total {
+            decode_into(flat, &remap.out_dims, &mut idx);
+            for (name, geometry) in [("source", &remap.src), ("destination", &remap.dst)] {
+                let at = remap.byte_address(geometry, &idx);
+                assert!(
+                    at >= geometry.lowest as usize,
+                    "{name} address {at} below the proved low bound {} at {idx:?}",
+                    geometry.lowest
+                );
+                assert!(
+                    at + elem <= geometry.extent as usize,
+                    "{name} address {at} + {elem} past the proved extent {} at {idx:?}",
+                    geometry.extent
+                );
+            }
+        }
+    }
+
+    /// Which stride pairs take which execution path. A new path, or a path that stops being
+    /// reachable, shows up here rather than as a quiet loss of coverage (rule 3 in this
+    /// module's maintenance notes).
+    #[test]
+    fn path_selection_is_explicit() {
+        // Bulk copy: both layouts advance the last axis by one element.
+        for (dims, src, dst) in [
+            (vec![3, 4], vec![4, 1], vec![8, 1]),  // padded rows
+            (vec![3, 4], vec![4, 1], vec![-4, 1]), // reversed rows
+            (vec![2, 3, 4], vec![12, 4, 1], vec![24, 4, 1]),
+        ] {
+            assert!(
+                remap(dims.clone(), src.clone(), dst.clone(), 1).contiguous_last,
+                "{dims:?}: {src:?} → {dst:?} should copy whole runs"
+            );
+        }
+        // Per element: the last axis is strided on at least one side.
+        for (dims, src, dst) in [
+            (vec![3, 4], vec![4, 1], vec![1, 3]),  // → column-major
+            (vec![3, 4], vec![1, 3], vec![4, 1]),  // column-major →
+            (vec![3, 4], vec![4, 1], vec![16, 4]), // strided last axis
+        ] {
+            assert!(
+                !remap(dims.clone(), src.clone(), dst.clone(), 1).contiguous_last,
+                "{dims:?}: {src:?} → {dst:?} should move single elements"
+            );
+        }
+        // A rank-0 tensor is one element and has no run to copy.
+        assert!(!remap(vec![], vec![], vec![], 4).contiguous_last);
+    }
+
+    /// The geometry bound holds on both paths, at several element widths, with reversed and
+    /// padded strides and a broadcast source.
+    #[test]
+    fn every_address_lies_inside_the_proved_geometry() {
+        let cases: &[(Vec<u64>, Vec<i64>, Vec<i64>)] = &[
+            (vec![3, 4], vec![4, 1], vec![1, 3]),
+            (vec![3, 4], vec![4, 1], vec![8, 1]),
+            (vec![3, 4], vec![-4, 1], vec![4, 1]),
+            (vec![3, 4], vec![4, 1], vec![-4, 1]),
+            (vec![3, 4], vec![0, 1], vec![4, 1]),
+            (vec![3, 4], vec![4, 1], vec![0, 1]),
+            (vec![2, 3, 4], vec![12, 4, 1], vec![1, 2, 6]),
+            (vec![5], vec![1], vec![-1]),
+        ];
+        for (dims, src, dst) in cases {
+            for elem_bytes in [1, 2, 4, 8, 16] {
+                let remap = remap(dims.clone(), src.clone(), dst.clone(), elem_bytes);
+                assert_addresses_stay_inside_their_geometry(&remap);
+            }
+        }
+    }
+
+    /// A destination's extent is exactly what its own addresses need: one element past the
+    /// highest, and no slack. An optimization that over-allocates would hide a bound error.
+    #[test]
+    fn a_destination_extent_is_tight() {
+        let remap = remap(vec![3, 4], vec![4, 1], vec![1, 3], 4);
+        let mut idx = vec![0u64; 2];
+        let mut highest = 0usize;
+        for flat in 0..remap.total {
+            decode_into(flat, &remap.out_dims, &mut idx);
+            highest = highest.max(remap.byte_address(&remap.dst, &idx));
+        }
+        assert_eq!(
+            highest + remap.elem_bytes as usize,
+            remap.dst.extent as usize
+        );
+    }
 }
