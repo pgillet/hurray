@@ -2,7 +2,17 @@
 
 ## Status
 
-Proposed (2026-11-22)
+Accepted (2026-11-22), proposed 2026-11-22
+
+> Accepted after three review passes, recorded in the revision notes below. No
+> architectural decision moved: the conservative predicate, the three-way verdict, the
+> error split, the `hurray-core` placement and the format-versus-transcoder boundary are as
+> first proposed. What the reviews changed was the strength of the claims used to justify
+> them — two arguments were withdrawn as overreaching (the ecosystem prediction, and
+> consistency of a verdict across extents), two statements were narrowed to what is
+> actually true (an aliasing destination cannot represent *arbitrary* values losslessly;
+> recognising a witness is constant time while materialising one is O(rank)), and the
+> verification obligations became binding.
 
 Arises from the pass that landed `hurray-transcode`'s dense layout family
 ([#272](https://github.com/pgillet/hurray/issues/272), **ADR-044**) and the adversarial
