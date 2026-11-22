@@ -139,3 +139,4 @@
     - [ADR-042: Python asyncio Surface](adr/ADR-042-python-asyncio-surface.md)
     - [ADR-043: One HurrayTensor Handle](adr/ADR-043-one-hurray-tensor-handle.md)
     - [ADR-044: hurray-transcode Crate](adr/ADR-044-hurray-transcode-crate.md)
+    - [ADR-045: Target Distinctness](adr/ADR-045-target-distinctness.md)
