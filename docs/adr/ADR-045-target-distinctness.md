@@ -14,6 +14,15 @@ weakens it.
 Requires an amendment to `docs/spec/layouts/strided.md` § Stride Semantics. Nothing here
 is a wire-format or C ABI change.
 
+**Revision 1 (2026-11-22), after review.** Four changes, all narrowing claims rather than
+changing the decision: § 1's cost argument no longer predicts what the ecosystem produces,
+and rests on the negotiation surface plus the absence of a consumer; § 2 states the
+commitment that licenses a closed enum, and pins the precedence of the arithmetic-free
+proofs over span overflow; § 4 bounds the spec amendment to the emitted descriptor's own
+value and keeps *representable* apart from *materialisable*; *Alternatives Considered* § 1
+no longer implies the only alternative to today's test is a general solver. § *Verification
+Obligations* was added and is binding on the implementation pass.
+
 ## Context
 
 A tensor cannot be *written* through a layout whose strides send two logical indices to
@@ -59,22 +68,29 @@ direction — and in the interval it ships silent value loss, which is the one f
 crate must not have. Given a test that will certainly be imperfect, the imperfection
 belongs on the side that can only ever be relaxed.
 
-Two facts make the cost of that choice close to zero.
+Two facts bound the cost of that choice.
 
 **The refused set is unreachable through the format's own negotiation surface.**
 `interchange.md` § Layout Entry Encoding makes a layout preference a single `layout_tag`
 byte, plus opaque metadata for the private range. A peer cannot ask for `Strided([2, 3])`
-— it cannot ask for a stride vector at all. An injective-but-unproven target is reachable
-only from a Rust caller who hand-builds one, and no framework produces such strides:
-NumPy, PyTorch and JAX all produce nested ones, and every padded, permuted and reversed
-variant of those is already admitted.
+— it cannot ask for a stride vector at all. So no negotiated transcode can land in the
+refused set, whatever a caller's buffers look like.
 
-**The alternatives are unsound or unbounded.** Accepting an unproven target and running
-serially still loses a value when it genuinely aliases, and by construction the crate
-cannot tell which case it holds — that is what the verdict says. Deciding injectivity
-exactly is a bounded subset-sum problem. Building the offset set and checking it for
-duplicates costs a second full pass and a bitset over the addressed extent, charged to
-every conversion, to serve a target nobody has asked for.
+**No supported negotiation path and no identified consumer of this crate requires such a
+target, so a more complete injectivity test is not justified at this time.** That is the
+whole of the claim, deliberately. Non-nested injective strides are *not* ecosystem
+exotica: `numpy.lib.stride_tricks.as_strided` will build one on request, and an
+interleaved view produced by a custom kernel can be perfectly injective without being
+strictly nested. The decision rests on there being no consumer today, not on such layouts
+being unrealistic — and § *Open Questions Deferred* names the trigger that would reopen
+it.
+
+**Accepting an unproven target instead is unsound.** Running it serially still loses a
+value when the target genuinely aliases, and by construction the crate cannot tell which
+case it holds — that is what the verdict says. Nor is the empirical test cheap: building
+the offset set and checking it for duplicates costs a second full pass and a bitset over
+the addressed extent, charged to every conversion. The space between that and today's
+condition is not empty, and *Alternatives Considered* § 1 records what lives there.
 
 **No normative list of targets a writer must accept.** ADR-044 § 16 decided that
 transcoding gets no conformance document and no coverage-matrix row, because the format
@@ -133,9 +149,32 @@ though it obviously aliases at both. One stride family must get one answer; § 5
 
 The change is a handful of lines inside the existing loop and costs nothing at run time.
 
-**`#[non_exhaustive]` comes off.** Proved-yes, proved-no, unknown is a complete trichotomy;
-there is no fourth verdict to make room for. The workspace has the precedent — `Planned`
-is deliberately exhaustive so a caller must handle every arm.
+**The two arithmetic-free proofs are established before any span arithmetic.** A zero
+magnitude and a duplicate magnitude are both decided by inspection, so they are settled in
+a pre-pass over the sorted axes, ahead of the loop that accumulates `reach`. The
+consequence is deliberate: a target that aliases is reported as `Aliases` even when its
+span arithmetic would overflow `uint64` and today raises `AddressOverflow`. Aliasing is the
+more specific and more permanent fact about such a target, and it is true independently of
+whether the span is representable. `AddressOverflow` still fires on the paths that genuinely
+need the span — the ones heading for `Distinct` or `NotProven`.
+
+**`#[non_exhaustive]` comes off, and the commitment that licenses it is explicit.**
+Proved-yes, proved-no, unknown is a complete trichotomy, but API exhaustiveness is a claim
+about future evolution rather than about mathematics, so the claim is made in full:
+
+> `Distinctness` is a **semantic verdict about the stride vector**, not an account of how
+> the verdict was reached. Proof strategy and proof diagnostics are deliberately outside
+> it. A later pass that widens the test does not add a variant — a target that moves from
+> `NotProven` to `Distinct` reports `Distinct`, and nothing about *which* argument proved
+> it belongs in the answer.
+
+So a variant pair like `DistinctByStructure` / `DistinctByEnumeration` is not a future
+possibility this enum is keeping room for; it is the proof strategy leaking into the
+verdict, and a caller branching on it would be coupling to our internals. If diagnostics
+are ever wanted — a witness pair, the axis that failed, the argument used — they arrive as
+a separate return type beside the verdict, not as variants of it. On those terms the enum
+is closed. The workspace has the precedent: `Planned` is deliberately exhaustive so that a
+caller must handle every arm.
 
 ### 3. The error splits in two: a permanent refusal and a limitation
 
@@ -181,9 +220,26 @@ layout form.
 The amendment (routed below) generalises aliasing, keeps the zero stride as its mandated
 special case, and states the consequence normatively: a producer MUST NOT emit an aliasing
 strided descriptor unless the logical values at the aliased indices are equal, and a
-consumer MUST treat aliased indices as carrying one value. A non-normative note observes
-that an implementation materialising a tensor *into* a caller-chosen strided layout
-therefore cannot honour an aliasing target in general, and SHOULD refuse it.
+consumer MUST treat aliased indices as carrying one value.
+
+Three scope points must be unambiguous in the wording, because the obligation is narrower
+than it first reads.
+
+- **It is evaluated on the tensor the descriptor describes, at the moment the descriptor
+  is emitted.** It is a statement about the represented value, not a guarantee about the
+  buffer's future. The format already covers the rest: `buffer-protocol.md` § Zero-Copy
+  Invariants (2) makes in-place mutation after handoff a protocol error outright, so an
+  aliasing descriptor needs no concurrency rule of its own, and the amendment must not
+  invent one.
+- **It binds a descriptor, not a buffer.** One buffer may carry several descriptors with
+  different strides; each is read on its own terms, and an aliasing descriptor says
+  nothing about what any other descriptor over the same bytes means.
+- **Representable is not materialisable.** The format permits an aliasing descriptor; it
+  places no obligation on a writer to materialise arbitrary values into one, and the
+  equal-values requirement is exactly what makes a conforming aliasing descriptor
+  describable. The non-normative note should say this plainly: an implementation
+  materialising a tensor *into* a caller-chosen strided layout cannot honour an aliasing
+  target in general, and SHOULD refuse it.
 
 **The spec must not state a decision procedure, and must not state this sufficient
 condition.** Mandating a procedure forces every implementation into subset-sum. Mandating
@@ -213,8 +269,14 @@ Every other candidate call site is correctly silent, and stays silent:
 
 ## Alternatives Considered
 
-1. **Decide injectivity exactly.** Bounded subset-sum. Rejected: unbounded cost for a
-   target with no consumer, in the hot path of every plan.
+1. **Decide injectivity exactly, in general.** Bounded subset-sum. Rejected: unbounded
+   cost in the hot path of every plan, for a target with no consumer. The choice is *not*
+   between today's condition and a general solver, and this ADR does not claim it is —
+   the middle ground holds number-theoretic tests for the rank-2 case, recognition of
+   specific named interleavings, and caching a proof per stride vector. Each is tractable
+   and each is rejected only *for now*, on the same ground: no consumer. They are the
+   first things to reach for when the trigger in § *Open Questions Deferred* fires, and
+   they are cheaper than the general solver this item rejects.
 
 2. **Check empirically — build the offset set, look for a duplicate.** A second full pass
    plus a bitset over the addressed extent, which for a sparsely addressing layout is
@@ -250,6 +312,10 @@ Every other candidate call site is correctly silent, and stays silent:
   matrix publishes and the API has so far withheld.
 - `hurray-core` grows no new public function, only a third variant and a sharper doc
   comment. The predicate's cost is unchanged.
+- One answer changes shape: a target with duplicate or zero magnitudes whose span
+  arithmetic overflows now returns `Ok(Aliases)` where it returned `Err(AddressOverflow)`.
+  Deliberate, per § 2 — the caller learns the permanent fact instead of an arithmetic
+  symptom — and sound, because the witness pair needs no span.
 - The spec amendment gives the refusal a defined format property to reference, instead of
   one inferred from omission. Other implementations get the obligation without inheriting
   our proof.
@@ -258,6 +324,49 @@ Every other candidate call site is correctly silent, and stays silent:
 - `strides_provably_distinct` becomes harder to misread and marginally harder to explain:
   a reader now has to hold three outcomes rather than two. The doc comment carries the
   witness constructions so the third is justified in place.
+
+## Verification Obligations
+
+These are boundary conditions on the predicate, not suspected defects. The implementation
+pass is not complete until each is covered by a named test, and a reviewer should read this
+list as the acceptance criteria for § 2.
+
+1. **Extent-one axes do not affect the verdict.** An axis of extent 1 cannot move, so it
+   can neither create nor prevent a collision. Two cases matter: a zero magnitude on an
+   extent-1 axis is `Distinct`, not `Aliases`; and an extent-1 axis sharing a magnitude
+   with a movable axis must **not** trigger the duplicate-magnitude proof. The predicate
+   handles both by dropping those axes before either proof runs, which is exactly what the
+   tests must pin.
+2. **Empty tensors are `Distinct`, vacuously.** Any zero extent means no two valid indices
+   exist, so there is no pair to collide. This answer must not be `NotProven`: a caller
+   writing an empty tensor through any strides is sound, and the plan's own cover is empty.
+3. **Negative strides, including `i64::MIN`.** The sign reduction must be exercised on
+   every exit, not only on the `Distinct` one, and `i64::MIN` is the case where
+   `stride.abs()` would panic — `unsigned_abs` is load-bearing and a test must hold it
+   there.
+4. **Accumulated `reach` overflow.** A shape and stride pair whose span exceeds `uint64`
+   must raise `AddressOverflow` on the paths that need the span, and must return `Aliases`
+   on the two pre-pass paths that do not (§ 2). Both directions get a test; the second is
+   the behaviour change recorded under *Consequences*.
+5. **Equal magnitudes on several movable axes.** `Aliases` at any extents, including the
+   extents where `magnitude == reach` does not fire — `[1, 1]` over shape `[3, 3]` is the
+   case that motivated the third proof, and it belongs in the suite as a regression on the
+   inconsistency itself.
+6. **The no-op alias path stays outside the write-target restriction.** When
+   `src_strides == dst_strides`, `plan()` returns `Ready` with an aliased buffer before
+   `Remap::new` is reached, so an *aliasing source* asked to convert to its own layout must
+   still plan successfully — nothing is written, and the descriptor is one the format
+   permits (§ 1). A test must pin that, because the natural implementation mistake is to
+   hoist the distinctness check to the top of `plan()`, which would break a legal case and
+   contradict § 5's placement audit.
+
+Beyond the boundaries, two sweeps carry the correctness of § 2 and both are required:
+`claimed_distinctness_is_always_real` must keep exhausting small index boxes against a
+brute-force reference, and it gains a mirror — **every `Aliases` verdict must be a real
+collision** — because `Aliases` is now a claim and not a shrug. The conservatism test
+should pin at least one case on each side of the `magnitude < reach` region (`[2, 3]` over
+`[3, 2]` injective, `[2, 3]` over `[4, 3]` aliasing) so the unknown region is documented as
+genuinely two-sided.
 
 ## Required Documentation Amendments
 
