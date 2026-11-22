@@ -14,6 +14,21 @@ weakens it.
 Requires an amendment to `docs/spec/layouts/strided.md` § Stride Semantics. Nothing here
 is a wire-format or C ABI change.
 
+**Revision 2 (2026-11-22), after review.** Five clarifications, no change to the
+decisions. The "one stride family must get one answer" argument is withdrawn — a verdict
+depends on the shape as much as on the strides, so differing verdicts at differing extents
+are legitimate; § 2 justifies the equal-magnitude proof as a free O(1) exit instead, and
+*Alternatives Considered* § 3 rejects bounded enumeration on added complexity, a
+shape-dependent performance threshold, and consumer absence. `AliasingTarget` no longer
+claims the destination cannot hold the tensor's values: it aliases distinct logical indices
+and cannot represent *arbitrary* values losslessly, and the refusal is this transcoder's,
+unconditionally. § 4 states that an aliasing descriptor is not intrinsically invalid —
+shared storage necessarily yields equal observed values — so the producer obligation is
+about fidelity to the source, and valid serialized aliasing stays distinct from an unsafe
+arbitrary-value target. The enum-stability commitment is stated as refinement without new
+variants. § *Verification Obligations* is now MUST-level and carries the invariant that no
+input may produce a false `Distinct`.
+
 **Revision 1 (2026-11-22), after review.** Four changes, all narrowing claims rather than
 changing the decision: § 1's cost argument no longer predicts what the ecosystem produces,
 and rests on the negotiation surface plus the absence of a consumer; § 2 states the
@@ -25,7 +40,8 @@ Obligations* was added and is binding on the implementation pass.
 
 ## Context
 
-A tensor cannot be *written* through a layout whose strides send two logical indices to
+A tensor cannot in general be *written* through a layout whose strides send two logical
+indices to
 one stored element. Serially the second write silently overwrites a value the conversion
 promised to preserve; in parallel the two writes can fall in different work items, which
 is a data race through a raw pointer. `Remap::new` therefore refuses such a target, and
@@ -61,6 +77,16 @@ Three things about that arrangement were left unsettled, and this ADR settles th
 The contract stands: `plan()` refuses any target the predicate does not prove distinct,
 and refuses it at plan time.
 
+The refusal is **unconditional, and deliberately coarser than the mathematics.** An
+aliasing destination is not incapable of holding *some* tensors: it represents faithfully
+exactly those whose values agree at the indices it aliases. What it cannot do is represent
+arbitrary values losslessly — and a plan is built from descriptors, before any value has
+been read, so "this caller's data happens to agree" is not something `plan()` is in a
+position to know. The crate has exactly one mechanism for establishing such agreement, the
+survey behind the broadcast collapse, and that case never reaches this check: its axes are
+clamped out of the output cover first. Everything else is refused, and the refusal is a
+property of this transcoder rather than of the format (§ 4).
+
 The argument that makes this right is not the sufficiency of the test but the **direction
 of its error**. Widening the predicate later turns an error into a success, which is
 additive and breaks no caller. Admitting first and tightening later is the breaking
@@ -68,7 +94,7 @@ direction — and in the interval it ships silent value loss, which is the one f
 crate must not have. Given a test that will certainly be imperfect, the imperfection
 belongs on the side that can only ever be relaxed.
 
-Two facts bound the cost of that choice.
+Two facts bound the cost of that choice, and a third rules out the obvious alternative.
 
 **The refused set is unreachable through the format's own negotiation surface.**
 `interchange.md` § Layout Entry Encoding makes a layout preference a single `layout_tag`
@@ -141,11 +167,15 @@ Only `magnitude < reach` is a genuine unknown, and it is **two-sided** — `[2, 
 shape `[3, 2]` is injective, `[2, 3]` over shape `[4, 3]` aliases (offset 6 twice). That
 region is where the subset-sum problem lives, and the test stops at its edge.
 
-The equal-magnitude exit is a correction to the shape the review proposed, not an extra:
-without it the canonical example answers differently at different extents — `[1, 1]` is
-`Aliases` at shape `[2, 2]` (where `magnitude == reach`) but `NotProven` at shape `[3, 3]`,
-though it obviously aliases at both. One stride family must get one answer; § 5 of
-*Alternatives Considered* rejects the same inconsistency in another form.
+The equal-magnitude exit is a correction to the shape the review proposed, not an extra.
+A verdict is a property of the stride vector **and** the shape, and different extents may
+legitimately earn different verdicts — so the argument for it is not consistency across
+extents, it is that the proof is available and free. Without it, `[1, 1]` reports `Aliases`
+at shape `[2, 2]`, where `magnitude == reach` fires, and falls back to `NotProven` at shape
+`[3, 3]`, where it does not; both answers are *correct*, but the second discards a
+collision the test can exhibit in O(1). An exit that converts an honest unknown into a
+proof at no cost is worth taking wherever it exists, and this is one of the two places it
+does.
 
 The change is a handful of lines inside the existing loop and costs nothing at run time.
 
@@ -162,11 +192,13 @@ need the span — the ones heading for `Distinct` or `NotProven`.
 Proved-yes, proved-no, unknown is a complete trichotomy, but API exhaustiveness is a claim
 about future evolution rather than about mathematics, so the claim is made in full:
 
-> `Distinctness` is a **semantic verdict about the stride vector**, not an account of how
-> the verdict was reached. Proof strategy and proof diagnostics are deliberately outside
-> it. A later pass that widens the test does not add a variant — a target that moves from
-> `NotProven` to `Distinct` reports `Distinct`, and nothing about *which* argument proved
-> it belongs in the answer.
+> `Distinct`, `Aliases` and `NotProven` are **semantic verdicts about a stride vector and
+> a shape**, not descriptions of proof algorithms. Proof strategy and proof diagnostics are
+> deliberately outside the enum. A later pass that improves the proof algorithm **refines
+> the classification without adding a variant**: targets migrate out of `NotProven` into
+> whichever of the two proved verdicts is true of them, every existing `Distinct` and
+> `Aliases` answer stands unchanged, and nothing about *which* argument proved a case
+> belongs in the answer.
 
 So a variant pair like `DistinctByStructure` / `DistinctByEnumeration` is not a future
 possibility this enum is keeping room for; it is the proof strategy leaking into the
@@ -182,7 +214,7 @@ caller must handle every arm.
 
 | Variant | Means | Family (ADR-044 § 13) |
 |---|---|---|
-| `AliasingTarget { strides, dims }` | The destination cannot hold the tensor's values. No version of this crate will accept it. | unsupported conversion |
+| `AliasingTarget { strides, dims }` | The destination aliases distinct logical indices and cannot represent arbitrary tensor values losslessly. This transcoder rejects it unconditionally. | unsupported conversion |
 | `TargetNotProvablyDistinct { strides, dims }` | This crate's test — magnitudes strictly nested — could not prove the target injective. It may well be. | unsupported conversion |
 
 Two reasons, and the first is a defect rather than a preference.
@@ -222,7 +254,18 @@ special case, and states the consequence normatively: a producer MUST NOT emit a
 strided descriptor unless the logical values at the aliased indices are equal, and a
 consumer MUST treat aliased indices as carrying one value.
 
-Three scope points must be unambiguous in the wording, because the obligation is narrower
+**What that obligation is about is faithfulness, not validity.** An aliasing descriptor is
+not intrinsically invalid, and cannot be: shared physical storage *necessarily* yields
+equal observed values, so a consumer reading one always sees agreement at the aliased
+indices, and the tensor it obtains is well defined. The only thing that can go wrong is
+the producer's claim — if the source tensor's values at those indices differ, the
+descriptor does not represent the tensor the producer says it is representing, and the
+disagreement is unrecoverable by the time a consumer sees it. The requirement is therefore
+on the producer's fidelity to its source, and the zero stride is the case where the format
+has always relied on it: a broadcast axis is emitted precisely because the values along it
+agree.
+
+Four scope points must be unambiguous in the wording, because the obligation is narrower
 than it first reads.
 
 - **It is evaluated on the tensor the descriptor describes, at the moment the descriptor
@@ -234,12 +277,18 @@ than it first reads.
 - **It binds a descriptor, not a buffer.** One buffer may carry several descriptors with
   different strides; each is read on its own terms, and an aliasing descriptor says
   nothing about what any other descriptor over the same bytes means.
-- **Representable is not materialisable.** The format permits an aliasing descriptor; it
-  places no obligation on a writer to materialise arbitrary values into one, and the
-  equal-values requirement is exactly what makes a conforming aliasing descriptor
-  describable. The non-normative note should say this plainly: an implementation
-  materialising a tensor *into* a caller-chosen strided layout cannot honour an aliasing
-  target in general, and SHOULD refuse it.
+- **A serialized aliasing layout is valid; an arbitrary-value transcode target is not
+  safe.** These are different objects and the wording must keep them apart. A descriptor
+  that *arrives* with aliasing strides is conforming, readable, and carries a well-defined
+  tensor — a reader MUST accept it. A caller-chosen aliasing layout used as the
+  *destination* of a materialisation is the unsafe case, because the values to be written
+  are arbitrary until they are known. The format permits the first and says nothing
+  compelling about the second.
+- **Representable is not materialisable.** Following from the above: the format places no
+  obligation on a writer to materialise arbitrary values into an aliasing layout. The
+  non-normative note should say so plainly — an implementation materialising a tensor into
+  a caller-chosen strided layout cannot honour an aliasing target in general, and SHOULD
+  refuse it — and that is a statement about writers, not a constraint on descriptors.
 
 **The spec must not state a decision procedure, and must not state this sufficient
 condition.** Mandating a procedure forces every implementation into subset-sum. Mandating
@@ -283,9 +332,15 @@ Every other candidate call site is correctly silent, and stays silent:
    enormous. Rejected for cost, and it answers a question no caller is asking.
 
 3. **Enumerate exactly when the index space is small.** Would make `[2, 3]` over `[3, 2]`
-   work. Rejected twice over: it patches the specific case instead of the general one, and
-   it makes one stride family answer differently at different extents — a less predictable
-   contract than a uniform refusal.
+   work. Rejected on three counts, none of them consistency across extents — a verdict
+   depends on the shape as much as on the strides, so differing answers at differing
+   extents are legitimate. First, it is a second algorithm with its own correctness burden
+   and its own tests, bolted beside a predicate that is currently two lines. Second, the
+   threshold is a performance cliff whose position is a guess: planning cost becomes a
+   function of `Π dims`, and a caller gets a precise verdict or a conservative one
+   depending on which side of an arbitrary constant its shape falls — a worse contract to
+   document than a uniform sufficient condition. Third, no consumer has asked for it
+   (§ 1), so the complexity buys nothing measurable today.
 
 4. **Keep one error variant carrying a `Distinctness` field.** The error would carry a
    verdict that can never be `Distinct`, an unrepresentable state the workspace avoids
@@ -327,9 +382,14 @@ Every other candidate call site is correctly silent, and stays silent:
 
 ## Verification Obligations
 
-These are boundary conditions on the predicate, not suspected defects. The implementation
-pass is not complete until each is covered by a named test, and a reviewer should read this
-list as the acceptance criteria for § 2.
+These are boundary conditions on the predicate, not suspected defects. Each one **MUST**
+be covered by a named test before the implementation pass is complete, and a reviewer
+should read this list as the acceptance criteria for § 2.
+
+One invariant stands above the list and over every case in it: **no input may produce a
+false `Distinct`.** `Distinct` is the only verdict a caller acts on destructively, so an
+arithmetic failure must surface as `AddressOverflow`, and an unrecognised interleaving as
+`NotProven` — never as a proof the predicate does not hold.
 
 1. **Extent-one axes do not affect the verdict.** An axis of extent 1 cannot move, so it
    can neither create nor prevent a collision. Two cases matter: a zero magnitude on an
@@ -340,18 +400,21 @@ list as the acceptance criteria for § 2.
 2. **Empty tensors are `Distinct`, vacuously.** Any zero extent means no two valid indices
    exist, so there is no pair to collide. This answer must not be `NotProven`: a caller
    writing an empty tensor through any strides is sound, and the plan's own cover is empty.
-3. **Negative strides, including `i64::MIN`.** The sign reduction must be exercised on
-   every exit, not only on the `Distinct` one, and `i64::MIN` is the case where
-   `stride.abs()` would panic — `unsigned_abs` is load-bearing and a test must hold it
-   there.
-4. **Accumulated `reach` overflow.** A shape and stride pair whose span exceeds `uint64`
-   must raise `AddressOverflow` on the paths that need the span, and must return `Aliases`
-   on the two pre-pass paths that do not (§ 2). Both directions get a test; the second is
-   the behaviour change recorded under *Consequences*.
+3. **Negative strides, and the minimum signed value.** The sign reduction must be
+   exercised on every exit, not only on the `Distinct` one. `i64::MIN` is the specific case
+   where `stride.abs()` would panic: `unsigned_abs` is load-bearing, and a test must hold
+   it there so a later refactor cannot quietly swap it back.
+4. **Large shapes, and `reach` overflow.** A shape and stride pair whose span exceeds
+   `uint64` must raise `AddressOverflow` on the paths that need the span, and must return
+   `Aliases` on the two pre-pass paths that do not (§ 2). Both directions get a test, and
+   both are instances of the invariant above: **overflow must never yield `Distinct`.** The
+   `Aliases` direction is also the behaviour change recorded under *Consequences*. Large
+   extents that do *not* overflow belong here too — a span near `uint64::MAX` must still
+   answer `Distinct` where it is nested, so the checked arithmetic is not over-eager.
 5. **Equal magnitudes on several movable axes.** `Aliases` at any extents, including the
-   extents where `magnitude == reach` does not fire — `[1, 1]` over shape `[3, 3]` is the
-   case that motivated the third proof, and it belongs in the suite as a regression on the
-   inconsistency itself.
+   extents where `magnitude == reach` does not fire. `[1, 1]` over shape `[3, 3]` is the
+   case the duplicate-magnitude proof exists to catch, and it belongs in the suite for that
+   reason — not because the pre-existing `NotProven` was wrong, which it was not (§ 2).
 6. **The no-op alias path stays outside the write-target restriction.** When
    `src_strides == dst_strides`, `plan()` returns `Ready` with an aliased buffer before
    `Remap::new` is reached, so an *aliasing source* asked to convert to its own layout must
@@ -376,7 +439,10 @@ In the implementation pass, per `CLAUDE.md`:
   errors, and the `deferred` row's reason gains the "unreachable through negotiation"
   clause, so `deferred` does not read as a scheduled promise.
 - `hurray-transcode/src/error.rs` — the family table in the enum doc comment lists both
-  variants.
+  variants, and neither variant's message or doc comment says an aliasing destination
+  "cannot hold the tensor's values". The claim § 3 licenses is the narrower one: the
+  destination aliases distinct logical indices, cannot represent arbitrary values
+  losslessly, and is rejected unconditionally by this transcoder.
 - `hurray-transcode/src/plan.rs` — `Target::layout`'s doc states the accepted set
   **positively** (every layout whose stride magnitudes are strictly nested: row-major,
   column-major, any permutation of either, any padded or reversed variant), and notes why
