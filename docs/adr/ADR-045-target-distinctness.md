@@ -14,10 +14,17 @@ weakens it.
 Requires an amendment to `docs/spec/layouts/strided.md` § Stride Semantics. Nothing here
 is a wire-format or C ABI change.
 
+**Revision 3 (2026-11-22), after review.** One mathematical precision fix in § 2:
+*recognising* an exit is constant time, *materialising* its witness is O(rank), and the
+`magnitude == reach` case is where the two part company — its colliding index places every
+smaller axis at its last position. The predicate only recognises; nothing in it builds a
+witness.
+
 **Revision 2 (2026-11-22), after review.** Five clarifications, no change to the
 decisions. The "one stride family must get one answer" argument is withdrawn — a verdict
 depends on the shape as much as on the strides, so differing verdicts at differing extents
-are legitimate; § 2 justifies the equal-magnitude proof as a free O(1) exit instead, and
+are legitimate; § 2 justifies the equal-magnitude proof as a free constant-time exit
+instead, and
 *Alternatives Considered* § 3 rejects bounded enumeration on added complexity, a
 shape-dependent performance threshold, and consumer absence. `AliasingTarget` no longer
 claims the destination cannot hold the tensor's values: it aliases distinct logical indices
@@ -146,7 +153,8 @@ pub enum Distinctness {
 
 This is worth doing because **the current negative exits are already proofs of aliasing**,
 and reporting them as "could not prove" understates what the test knows. Three exits, each
-with a witness constructible in O(1):
+**recognised** in constant time from quantities the scan already holds — so detection adds
+nothing to the existing cost:
 
 - **A zero magnitude on an axis of extent above 1.** Two indices differing only on that
   axis collide.
@@ -158,6 +166,15 @@ with a witness constructible in O(1):
   `i_a = 0` and every smaller axis at `d_j − 1`, land on the same offset and differ in
   axis `a`. (`reach == 0` means no smaller axis, which forces `magnitude == 0`, already
   caught by the first exit.)
+
+Recognising an exit and **materialising** its witness are different costs, and only the
+first is constant. A witness is a pair of rank-length index vectors, so writing one out is
+O(rank) whichever exit produced it — and the third exit is where the distinction shows:
+`magnitude == reach` is recognised by one comparison against an accumulator the loop
+already maintains, but the colliding index it certifies places *every* smaller axis at
+`d_j − 1`, so the coordinates span the axes rather than sitting on one. The predicate only
+ever recognises; nothing in it builds a witness, which is also why `Distinctness` stays
+`Copy` (*Alternatives Considered* § 5).
 
 The sign reduction carries each witness back to the original strides: `i_k ↦ d_k − 1 − i_k`
 is a bijection of the index box, and it shifts both members of the pair by the same
@@ -173,7 +190,7 @@ legitimately earn different verdicts — so the argument for it is not consisten
 extents, it is that the proof is available and free. Without it, `[1, 1]` reports `Aliases`
 at shape `[2, 2]`, where `magnitude == reach` fires, and falls back to `NotProven` at shape
 `[3, 3]`, where it does not; both answers are *correct*, but the second discards a
-collision the test can exhibit in O(1). An exit that converts an honest unknown into a
+collision the test can recognise with one comparison. An exit that converts an honest unknown into a
 proof at no cost is worth taking wherever it exists, and this is one of the two places it
 does.
 
