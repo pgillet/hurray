@@ -304,7 +304,7 @@ what it does when it cannot decide.
 | PyTorch [28] | Write target, at operator dispatch | Dense with unit minimum stride; aliasing only from a zero stride | Permitted |
 | Rust `ndarray` [29] | Write target, at construction | Strides sorted by magnitude and strictly nested | Refused |
 | oneDNN [30] | Memory descriptor creation | Each stride at least the previous times its extent | Refused |
-| MLIR `memref` [22] | The type itself | Stated as a property, with no test | Undefined behavior |
+| MLIR `memref` [22] | The type itself | Stated in prose; the verifier checks only rank | Undefined behavior |
 | TensorStore [31] | No notion of it | — | — |
 | DLPack [1] | Silent | — | — |
 | cuTENSOR [32], XLA [33] | Unrepresentable | Not applicable | Not applicable |
@@ -1112,7 +1112,7 @@ quantized, sparse, tiled, paged, sharded, and resident on accelerators.
     https://numba.readthedocs.io/en/stable/cuda/cuda_array_interface.html
 27. NumPy Project. *numpy.shares_memory* and
     *numpy.lib.stride_tricks.as_strided*, with the bounded Diophantine
-    overlap solver in `numpy/_core/src/multiarray/mem_overlap.c`.
+    overlap solver in `numpy/_core/src/common/mem_overlap.c`.
     https://numpy.org/doc/stable/reference/generated/numpy.shares_memory.html
 28. PyTorch Project. *Internal and partial memory overlap checks*,
     `aten/src/ATen/MemoryOverlap.{h,cpp}` and
@@ -1126,10 +1126,11 @@ quantized, sparse, tiled, paged, sharded, and resident on accelerators.
     https://github.com/uxlfoundation/oneDNN
 31. Google. *TensorStore: strided layouts and index transforms*.
     https://google.github.io/tensorstore/
-32. NVIDIA. *cuTENSOR: tensor descriptor creation*.
+32. NVIDIA. *cuTENSOR: tensor descriptor creation*, documentation and
+    the stride contract in the shipped `cutensor.h` (2.8.1).
     https://docs.nvidia.com/cuda/cutensor/latest/api/cutensor.html
-33. OpenXLA Project. *Tiled layout*.
-    https://openxla.org/xla/tiled_layout
+33. OpenXLA Project. *Tiled layout*, and the `Layout` class in
+    `xla/layout.h`. https://openxla.org/xla/tiled_layout
 34. LLVM Project. *[mlir][IR] Allow zero strides in
     StridedLayoutAttr*, pull request 116463, merged 2024-11-21.
     https://github.com/llvm/llvm-project/pull/116463
