@@ -24,6 +24,16 @@ weakens it.
 Requires an amendment to `docs/spec/layouts/strided.md` § Stride Semantics. Nothing here
 is a wire-format or C ABI change.
 
+**Revision 4 (2026-11-23).** A § *Prior Art* section was added, surveying eight libraries
+at source where possible. It changed no decision. It supplies three things the ADR was
+missing: a precedent for § 4's sentence (MLIR states the property; its UB remedy is the
+part to avoid), the argument that predicate strength is what licenses refusing the unknown
+(PyTorch cannot, because its proof is density-only), and the evidence that exactness is
+practical (NumPy ships a bounded solver), which moves the weight of § 1 onto consumer
+absence. It also retracts an originality claim never made in this document but made around
+it: the honest three-valued naming is PyTorch's prior art, not ours. One new finding is
+routed below, on DLPack export.
+
 **Revision 3 (2026-11-22), after review.** One mathematical precision fix in § 2:
 *recognising* an exit is constant time, *materialising* its witness is O(rank), and the
 `magnitude == reach` case is where the two part company — its colliding index places every
@@ -133,7 +143,17 @@ value when the target genuinely aliases, and by construction the crate cannot te
 case it holds — that is what the verdict says. Nor is the empirical test cheap: building
 the offset set and checking it for duplicates costs a second full pass and a bitset over
 the addressed extent, charged to every conversion. The space between that and today's
-condition is not empty, and *Alternatives Considered* § 1 records what lives there.
+condition is not empty, and *Alternatives Considered* § 1 records what lives there — as
+does § *Prior Art*, which notes that NumPy has shipped a bounded exact solver since 1.13,
+so nothing here should be read as claiming exactness is impractical.
+
+**And the strictness is affordable because the predicate is strong.** This is the argument
+§ *Prior Art* supplies and it is the better defence of the refusal: PyTorch cannot refuse
+its own unknown verdict, because its proof of distinctness requires true density, which
+puts ordinary strided slices and every reversed view into the unknown. The strictly-nested
+test with the sign reduction proves those distinct, so our unknown region holds only
+interleavings nobody has asked for — and refusing a region that small costs a caller
+nothing it can observe.
 
 **No normative list of targets a writer must accept.** ADR-044 § 16 decided that
 transcoding gets no conformance document and no coverage-matrix row, because the format
@@ -317,6 +337,15 @@ than it first reads.
   a caller-chosen strided layout cannot honour an aliasing target in general, and SHOULD
   refuse it — and that is a statement about writers, not a constraint on descriptors.
 
+**There is a precedent for the sentence, and a counter-example for the remedy.** MLIR's
+`memref` states exactly this property at the type level — "the layout must avoid internal
+aliasing, i.e., two distinct tuples of in-bounds indices must be pointing to different
+elements in memory" — which is evidence the property is the right thing for a format to
+say. Its remedy, undefined behaviour, is the part not to copy: MLIR had to re-admit zero
+strides in 2024 to support broadcast, and now carries both that UB clause and a
+constructible aliasing layout. § *Prior Art* has the detail. A producer obligation plus a
+writer refusal is what keeps the two requirements compatible.
+
 **The spec must not state a decision procedure, and must not state this sufficient
 condition.** Mandating a procedure forces every implementation into subset-sum. Mandating
 our condition bakes one implementation's conservatism into the format, and would make both
@@ -334,6 +363,12 @@ is explicit that index-to-address arithmetic stays in `hurray-core` and that re-
 in `hurray-transcode` is the failure to prevent. "It exists for `hurray-transcode`" is not
 an argument against the placement: so does `dense_element_strides`.
 
+The placement is also where this ADR differs from the two libraries that enforce the same
+rule at descriptor creation, oneDNN and MLIR, and § *Prior Art* argues the difference is
+forced: they are the only producer of the descriptors they read, while an interchange format
+must accept conforming descriptors it would never emit. That is the reason the first row of
+the table below says what it says.
+
 Every other candidate call site is correctly silent, and stays silent:
 
 | Candidate | Calls it? |
@@ -342,6 +377,151 @@ Every other candidate call site is correctly silent, and stays silent:
 | `hurray-io` writers | **No, structurally.** The crate contains no stride arithmetic at all; ADR-041's cores move whole buffers and never address an element. There is no write-through-a-layout path to guard. |
 | `hurray-ffi` | **No caller today.** Exposing the predicate would be a new ABI function serving nobody; it folds into ADR-044's open question on the C/Python transcode surface. |
 | `hurray-python` authoring and DLPack | **No.** Importing from `np.broadcast_to` legitimately yields zero strides, and on export DLPack hands out a pointer and strides under DLPack's own contract — NumPy's `as_strided` carries the identical hazard and documents it rather than preventing it. |
+
+## Prior Art: How Eight Libraries Handle Stride Aliasing
+
+This section was written after the decision, not before it, and it changed none of it. It
+is here because the decision's cost and placement arguments turn on what other systems do,
+and those arguments were first made from memory — which is how two of the claims this ADR
+had to withdraw got in. What follows is what was checked, how, and what it implies.
+
+**Provenance.** NumPy was run (2.5.2); `ndarray` 0.16.1, PyTorch (`aten/src/ATen/MemoryOverlap.{h,cpp}`,
+`c10/core/Contiguity.h`), oneDNN (`src/common/memory_desc.cpp`) and TensorStore
+(`tensorstore/strided_layout.h`) were read at source; MLIR, cuTENSOR, XLA and DLPack come
+from their published documentation and one merged LLVM pull request. Where a conclusion is
+an inference rather than a quote, it says so.
+
+| Library | Where the rule lives | Proves distinct | Proves aliasing | On "don't know" | Broadcast |
+|---|---|---|---|---|---|
+| **Hurray** | write target, at plan time | magnitudes strictly nested; padding and negatives admitted | zero stride, duplicate magnitude, `magnitude == reach` | **refuse** | legal descriptor; collapsed axis + survey |
+| PyTorch | write target, at op dispatch | dense, minimum stride 1 | zero stride only | permit | zero stride, writes refused |
+| `ndarray` (Rust) | write target, at construction | magnitudes strictly nested | — (one bool for both) | refuse | read-only views only |
+| oneDNN | **descriptor creation** | each stride ≥ previous × extent | — (rejected as invalid) | refuse | explicit zero-stride exception |
+| MLIR `memref` | **the type itself** (UB otherwise) | — (stated as a property, no test) | — | UB | zero strides re-admitted, 2024 |
+| NumPy | nowhere, for destinations | exact Diophantine solver | the same solver | `TooHardError` | `writeable=False` |
+| TensorStore | no notion of it | — | — | — | zero byte strides |
+| DLPack | silent | — | — | — | not addressed |
+| XLA / JAX, cuTENSOR | unrepresentable | n/a | n/a | n/a | tiling / mode omission |
+
+### The same algorithm, four times
+
+Four of the eight implement **our exact sufficient condition** — sort the axes by stride
+magnitude, skip the axes of extent 1, require each stride to clear the span of all smaller
+axes — and they did so independently.
+
+`ndarray::dimension::dim_stride_overlap` is the closest: increasing `|stride|`, extent-1
+axes skipped, empty shape means no overlap, and `s <= sum_prev_offsets` is the rejection.
+It is consulted only when the check mode is not `ReadOnly`, and it fails with
+`ShapeError::Unsupported`. Same condition, same read/write asymmetry, same error family.
+Its one flaw is the one § 2 spent a paragraph avoiding: the function returns a `bool` named
+"overlap", so it reports overlap for `[2, 3]` over `[3, 2]`, which is injective.
+
+oneDNN's `memory_desc_strides_check` is the same walk with the broadcast exception written
+into it — `if ((strides[d] == 0) || (md.padded_dims[d] == 1)) continue;`, under the comment
+"Make an exception for `strides[d] == 0` as it has broadcast semantics" — rejecting
+`strides[d] < min_stride` and then advancing `min_stride = strides[d] * blocks_ratio`. That
+is marginally stricter than ours: it demands stride × extent where we demand
+stride × (extent − 1) + 1, so it refuses a few layouts we prove distinct.
+
+PyTorch's proof is the outlier, and the difference is load-bearing. `has_internal_overlap`
+returns `No` only when `is_non_overlapping_and_dense_or_false()` holds, and
+`_compute_non_overlapping_and_dense` requires **equality** against a running
+`require_stride` that starts at 1. Padded layouts therefore fail it, and so does every
+negative stride, since `require_stride` is positive. Both are cases our sign reduction and
+strict inequality prove distinct.
+
+### Where the rule lives follows from what the thing is
+
+oneDNN and MLIR both put the obligation at **descriptor validity**: oneDNN returns
+`status::invalid_arguments` at memory-descriptor creation, so an aliasing descriptor cannot
+be constructed and `reorder` — its transcoder — needs no target check at all; MLIR states
+it as a property of the `memref` type, and violating it is undefined behaviour.
+
+That is the option § 5 rejected for `hurray-core`, and the contrast explains why rather
+than weakening it. oneDNN only ever reads descriptors it created, so refusing at
+construction costs it nothing. An interchange format must be able to **read** a conforming
+descriptor that someone else produced — including the aliasing ones its own writer would
+refuse to target — so the obligation cannot live at construction without making the
+reference implementation reject conforming input. Same algorithm, different layer, and the
+layer is determined by whether you are the only producer.
+
+MLIR also supplies the cautionary tale for the UB remedy. Its `StridedLayoutAttr` originally
+banned zero strides; LLVM PR #116463, merged 2024-11-21, removed the ban because a zero
+stride is how broadcast reaches a multi-dimensional DMA through `memref.copy`. The argument
+for removal is one this ADR knows well: the ban "didn't fully solve the problem anyway —
+internal aliasing can still occur when the stride is less than the shape". That is an
+independent discovery of the `[1, 1]`-over-`[2, 2]` trap, used to show that a
+verifier-level ban cannot be the mechanism. MLIR now holds both "internal aliasing is
+undefined behaviour" and "zero strides are constructible", which cannot both be clean. Our
+split — the descriptor is legal, the *write* is refused — is what resolves that tension,
+and § 4 is deliberately a producer obligation rather than a UB clause for this reason.
+
+cuTENSOR takes the third route and removes the representation: "Each stride must be larger
+than zero; to be precise, a stride of zero can be achieved by omitting this mode entirely."
+Broadcast is expressed structurally, by the absence of a mode, which is our broadcast
+collapse moved from the plan into the descriptor. XLA goes furthest — a `Layout` is a
+`minor_to_major` permutation plus tiling, with no stride vector anywhere — which is the
+same structural argument § 1 makes about our negotiation surface, obtained by not having
+the feature.
+
+### Predicate strength is what licenses the policy
+
+PyTorch refuses only a proof: `assert_no_internal_overlap` is
+`TORCH_CHECK(has_internal_overlap(t) != MemOverlap::Yes, ...)`, so `TooHard` is permitted,
+and `[1, 1]` over `[2, 2]` is `TooHard`. The consequence is the NumPy failure mode reached
+by another route: a silently lost value.
+
+It could not easily choose otherwise. With a density-only proof, an ordinary strided slice
+and every reversed view land in `TooHard`, so refusing the unknown would refuse a large
+part of normal use. **Our stricter policy is affordable precisely because our predicate is
+stronger** — the strictly-nested test with the sign reduction leaves a much smaller unknown
+region, containing only interleavings nobody has asked for (§ 1). That is the defence of
+the refusal, and it is stronger than the cost argument this ADR originally rested on.
+
+What PyTorch does have, and what this ADR should not claim as original, is the honest
+three-valued naming. `MemoryOverlap.h` documents it in the enum itself: "No: Absolutely no
+memory overlap / Yes: Absolutely yes memory overlap / TooHard: There might be memory
+overlap, but it was too expensive to compute." That is `Distinct` / `Aliases` /
+`NotProven`, with the same reasoning, predating us. The trichotomy is shared prior art; the
+refusal on the unknown verdict is the part that is ours.
+
+### NumPy: the exact answer exists, and is spent elsewhere
+
+NumPy's `mem_overlap.c` solves bounded Diophantine systems, exposed as
+`np.shares_memory(..., max_work=...)` — documented to raise `TooHardError` past the work
+limit — and as a self-overlap detector reachable from the test module. Called directly, it
+answers `True` for `[1, 1]` over `[2, 2]`, `False` for a padded row-major slice, and
+**`False` for `[2, 3]` over `[3, 2]`**: it decides exactly the case this ADR classifies
+`NotProven`.
+
+So exactness is not impractical, and *Alternatives Considered* § 1 must not be read as
+claiming it is — a bounded exact solver has been in production since NumPy 1.13. Two things
+keep the decision where it is. The solver's verdict depends on a work budget, which is the
+shape-dependent threshold § 3 rejects, and NumPy's answer to that is to expose `max_work`
+as a caller parameter — a knob on `plan()` of exactly the kind this project forbids. And
+the targets it would unlock cannot be requested through negotiation at all. The rejection
+rests on consumer absence, as revision 2 put it, and not on cost.
+
+What NumPy does **not** do is guard a destination. `np.broadcast_to` returns
+`writeable=False`, which handles the zero-stride case by flag rather than by analysis;
+`as_strided` hands back a writeable `[1, 1]` view, and writing into one through `copyto`,
+through a ufunc `out=`, or by assignment raises nothing and loses a value. Verified: writing
+`[[10, 11], [12, 13]]` into such a view over a four-element buffer leaves the buffer
+`[10, 12, 13, 3]`.
+
+### TensorStore and DLPack say nothing
+
+`tensorstore/strided_layout.h` carries no aliasing or overlap concept; the nearest thing is
+`IsBroadcastScalar`, "checks if `layout` contains at most a single distinct element", beside
+a `BroadcastStridedLayout` that *produces* zero byte strides. A code search for "injective"
+across the repository returns nothing, and the write documentation describes which positions
+are modified without addressing two input positions landing on one. (Checked: the layout
+header and the public write documentation, not every internal copy path.)
+
+DLPack documents `strides` as "in number of elements, not bytes" and, from v1.2, forbids
+`NULL`; it says nothing about injectivity, zero strides, or two index tuples addressing one
+element. This is the protocol Hurray exports tensors through, which makes the silence ours
+to answer rather than merely to note — see *Findings Routed Elsewhere*.
 
 ## Alternatives Considered
 
@@ -352,7 +532,10 @@ Every other candidate call site is correctly silent, and stays silent:
    specific named interleavings, and caching a proof per stride vector. Each is tractable
    and each is rejected only *for now*, on the same ground: no consumer. They are the
    first things to reach for when the trigger in § *Open Questions Deferred* fires, and
-   they are cheaper than the general solver this item rejects.
+   they are cheaper than the general solver this item rejects. NumPy's `mem_overlap.c` is
+   the existence proof that a bounded exact solver is practical (§ *Prior Art*); what it
+   does not remove is the consumer-absence argument, or the work-budget knob that exactness
+   with a cap requires.
 
 2. **Check empirically — build the offset set, look for a duplicate.** A second full pass
    plus a bitset over the addressed extent, which for a sparsely addressing layout is
@@ -500,6 +683,19 @@ Size.** For shape `[3, 4]` with strides `[-4, 1]`, § Buffer Size's own formula 
 `max_offset = 3`, `min_offset = -8`, `range_elements = 12`; the Example says "the full
 range from offset -8 to 0 (9 elements)". `hurray-core`'s `element_offset_span` doc-test
 already asserts `(-8, 3)`. Surfaced during PR #279 and still present.
+
+**→ [issue #281](https://github.com/pgillet/hurray/issues/281), MEDIUM — `hurray-python`
+exports an aliasing tensor as freely writeable.**
+`strides_for_layout` passes a `Strided` layout's strides through to DLPack verbatim,
+including zero strides and aliasing ones, and the capsule is built with `flags: 0` under a
+comment stating that v1.0 defines no flags beyond the version. That comment is wrong: v1.0
+defines the read-only bit, and NumPy uses it — a `broadcast_to` array exported through
+DLPack arrives with `writeable=False`, while an aliasing array exported by us arrives
+writeable, and writing into it loses a value. The fix is NumPy's: set the read-only flag
+when the layout is not provably distinct. Note what that implies for § *Open Questions
+Deferred* — it would be the first caller of the predicate outside `hurray-transcode`, which
+is the trigger named there. It does not contradict § 5, whose audit row concerns *import*,
+where zero strides must keep working.
 
 ## Open Questions Deferred
 
