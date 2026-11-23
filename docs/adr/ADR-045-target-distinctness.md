@@ -385,11 +385,17 @@ is here because the decision's cost and placement arguments turn on what other s
 and those arguments were first made from memory — which is how two of the claims this ADR
 had to withdraw got in. What follows is what was checked, how, and what it implies.
 
-**Provenance.** NumPy was run (2.5.2); `ndarray` 0.16.1, PyTorch (`aten/src/ATen/MemoryOverlap.{h,cpp}`,
-`c10/core/Contiguity.h`), oneDNN (`src/common/memory_desc.cpp`) and TensorStore
-(`tensorstore/strided_layout.h`) were read at source; MLIR, cuTENSOR, XLA and DLPack come
-from their published documentation and one merged LLVM pull request. Where a conclusion is
-an inference rather than a quote, it says so.
+**Provenance.** Every claim below was taken from source, and NumPy was additionally run
+(2.5.2). The files: `ndarray` 0.16.1 `src/dimension/mod.rs`; PyTorch
+`aten/src/ATen/MemoryOverlap.{h,cpp}` and `c10/core/Contiguity.h`; oneDNN
+`src/common/memory_desc.cpp`; TensorStore `tensorstore/strided_layout.h`; NumPy
+`numpy/_core/src/common/mem_overlap.c` and `numpy/_core/src/multiarray/nditer_constr.c`;
+MLIR `mlir/include/mlir/IR/BuiltinTypes.td` and `mlir/lib/IR/BuiltinAttributes.cpp`, plus
+merged LLVM pull request 116463; XLA `xla/layout.h`; DLPack `include/dlpack/dlpack.h`;
+cuTENSOR `cutensor.h` from the 2.8.1 Linux wheel — proprietary, so the shipped header is
+the only source there, and it was extracted by ranged reads of the wheel's zip directory
+rather than by downloading 307 MB. Nothing here rests on an inference about code that was
+not read.
 
 | Library | Where the rule lives | Proves distinct | Proves aliasing | On "don't know" | Broadcast |
 |---|---|---|---|---|---|
@@ -397,7 +403,7 @@ an inference rather than a quote, it says so.
 | PyTorch | write target, at op dispatch | dense, minimum stride 1 | zero stride only | permit | zero stride, writes refused |
 | `ndarray` (Rust) | write target, at construction | magnitudes strictly nested | — (one bool for both) | refuse | read-only views only |
 | oneDNN | **descriptor creation** | each stride ≥ previous × extent | — (rejected as invalid) | refuse | explicit zero-stride exception |
-| MLIR `memref` | **the type itself** (UB otherwise) | — (stated as a property, no test) | — | UB | zero strides re-admitted, 2024 |
+| MLIR `memref` | **the type itself** (UB otherwise) | — (stated as prose; the verifier checks only rank) | — | UB | zero strides re-admitted, 2024 |
 | NumPy | nowhere, for destinations | exact Diophantine solver | the same solver | `TooHardError` | `writeable=False` |
 | TensorStore | no notion of it | — | — | — | zero byte strides |
 | DLPack | silent | — | — | — | not addressed |
@@ -432,10 +438,15 @@ strict inequality prove distinct.
 
 ### Where the rule lives follows from what the thing is
 
-oneDNN and MLIR both put the obligation at **descriptor validity**: oneDNN returns
-`status::invalid_arguments` at memory-descriptor creation, so an aliasing descriptor cannot
-be constructed and `reorder` — its transcoder — needs no target check at all; MLIR states
-it as a property of the `memref` type, and violating it is undefined behaviour.
+oneDNN and MLIR both put the obligation at **descriptor validity**, but only one of them
+enforces it. oneDNN returns `status::invalid_arguments` at memory-descriptor creation, so
+an aliasing descriptor cannot be constructed and `reorder` — its transcoder — needs no
+target check at all. MLIR states it as a property of the `memref` type, in
+`BuiltinTypes.td`: "The layout must avoid internal aliasing, i.e., two distinct tuples of
+_in-bounds_ indices must be pointing to different elements in memory." Nothing checks it —
+`StridedLayoutAttr::verify` is `return success();` and `verifyLayout` compares only the
+rank against the shape — so the clause is prose plus undefined behaviour, which is what
+makes it a precedent for the sentence and not for the mechanism.
 
 That is the option § 5 rejected for `hurray-core`, and the contrast explains why rather
 than weakening it. oneDNN only ever reads descriptors it created, so refusing at
@@ -456,12 +467,18 @@ undefined behaviour" and "zero strides are constructible", which cannot both be 
 split — the descriptor is legal, the *write* is refused — is what resolves that tension,
 and § 4 is deliberately a producer obligation rather than a UB clause for this reason.
 
-cuTENSOR takes the third route and removes the representation: "Each stride must be larger
-than zero; to be precise, a stride of zero can be achieved by omitting this mode entirely."
+cuTENSOR takes the third route and removes the representation. Its header is explicit, and
+it spells out the substitute:
+
+> Each stride must be larger than zero; to be precise, a stride of zero can be achieved by
+> omitting this mode entirely; for instance instead of writing `C[a,b] = A[b,a]` with
+> `strideA(a) = 0`, you can write `C[a,b] = A[b]` directly; cuTENSOR will then
+> automatically infer that the a-mode in A should be broadcasted.
+
 Broadcast is expressed structurally, by the absence of a mode, which is our broadcast
-collapse moved from the plan into the descriptor. XLA goes furthest — a `Layout` is a
-`minor_to_major` permutation plus tiling, with no stride vector anywhere — which is the
-same structural argument § 1 makes about our negotiation surface, obtained by not having
+collapse moved from the plan into the descriptor. XLA goes furthest: `xla/layout.h` has no
+stride concept at all — a `Layout` is a `minor_to_major` permutation plus tiles — which is
+the same structural argument § 1 makes about our negotiation surface, obtained by not having
 the feature.
 
 ### Predicate strength is what licenses the policy
@@ -487,7 +504,9 @@ refusal on the unknown verdict is the part that is ours.
 
 ### NumPy: the exact answer exists, and is spent elsewhere
 
-NumPy's `mem_overlap.c` solves bounded Diophantine systems, exposed as
+NumPy's `mem_overlap.c` solves bounded Diophantine systems — and it reduces the problem
+the same way § 2 does, mapping `x0'[i] = x0[i]` where `a[i] > 0` and `ub[i] - x0[i]`
+otherwise, so that only stride magnitudes matter. It is exposed as
 `np.shares_memory(..., max_work=...)` — documented to raise `TooHardError` past the work
 limit — and as a self-overlap detector reachable from the test module. Called directly, it
 answers `True` for `[1, 1]` over `[2, 2]`, `False` for a padded row-major slice, and
@@ -501,6 +520,11 @@ shape-dependent threshold § 3 rejects, and NumPy's answer to that is to expose 
 as a caller parameter — a knob on `plan()` of exactly the kind this project forbids. And
 the targets it would unlock cannot be requested through negotiation at all. The rejection
 rests on consumer absence, as revision 2 put it, and not on cost.
+
+The solver *is* reachable from the iterator — `nditer_constr.c` calls
+`solve_may_have_internal_overlap(op[iop], 1)` with a work budget of 1 — but only inside the
+two-operand logic, to decide that a pair of bit-identical `ASSUME_ELEMENTWISE` operands can
+be skipped. No path consults it to refuse a destination that aliases itself.
 
 What NumPy does **not** do is guard a destination. `np.broadcast_to` returns
 `writeable=False`, which handles the zero-stride case by flag rather than by analysis;
