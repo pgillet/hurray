@@ -974,20 +974,36 @@ impl LayoutDescriptor {
 /// The answer [`strides_provably_distinct`] gives, as a verdict rather than a `bool`.
 ///
 /// A `bool` invites exactly one misreading, and it is the one that matters: `false` does
-/// **not** mean the strides alias. It means the test could not prove they do not — either
-/// because they genuinely alias, or because they are one of the interleavings the test does
-/// not recognise. A caller that reports "this layout aliases" on a negative answer is
-/// making a claim the function never made, so the negative answer is named for what it is.
+/// **not** mean the strides alias. It means either that they do alias, or that the test
+/// could not tell — and the two have different remedies. An aliasing layout is refusable
+/// forever; an unrecognised one may be admitted by a stronger proof later. Naming them
+/// apart is what stops a caller from reporting "this layout aliases" on an answer that
+/// never made the claim.
+///
+/// # The enum is closed
+///
+/// These are **semantic verdicts about a stride vector and a shape**, not descriptions of
+/// proof algorithms, and on those terms the trichotomy is complete. A later pass that
+/// strengthens the proof refines the classification without adding a variant: stride
+/// vectors migrate out of [`Distinctness::NotProven`] into whichever of the two proved
+/// verdicts is true of them, and every existing `Distinct` and `Aliases` answer stands
+/// unchanged. *Which* argument proved a case is deliberately not part of the answer — a
+/// `DistinctByStructure` / `DistinctByEnumeration` pair would be proof strategy leaking
+/// into the verdict, and a caller branching on it would be coupling to internals. If
+/// diagnostics are ever wanted — a witness pair, the axis that failed — they arrive as a
+/// separate return value beside the verdict, not as variants of it (ADR-045 § 2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-// non_exhaustive because a later pass may well distinguish "aliases" from "not proven" —
-// the two have different remedies, and only the second is a limitation of the test.
-#[non_exhaustive]
 pub enum Distinctness {
     /// Proved: no two distinct indices of the shape address the same element.
     Distinct,
-    /// Not proved. Writing a tensor through this layout may lose a value, and a parallel
-    /// writer may address one element from two work items.
+    /// Proved: two distinct indices of the shape address one element, so a witness pair
+    /// exists. Writing a tensor through this layout loses a value, and a parallel writer
+    /// can address one element from two work items.
+    Aliases,
+    /// Not proved either way. The strides may well be injective — the test did not
+    /// recognise the interleaving — so this is a limitation of the proof rather than a
+    /// property of the layout.
     NotProven,
 }
 
@@ -1005,32 +1021,52 @@ pub enum Distinctness {
 /// close: strides `[1, 1]` over shape `[2, 2]` send both `[0, 1]` and `[1, 0]` to offset
 /// `1`, with no zero stride anywhere.
 ///
-/// # The test, and what [`Distinctness::NotProven`] means
+/// # The three exits, and what [`Distinctness::NotProven`] means
 ///
-/// The answer is **conservative**: [`Distinctness::Distinct`] is a proof, while
-/// [`Distinctness::NotProven`] means exactly that — either the strides genuinely alias, or
-/// they are one of the exotic interleavings this test does not recognise (strides `[2, 3]`
-/// over shape `[3, 2]` is injective and comes back `NotProven`). Deciding injectivity
-/// exactly is a bounded subset-sum problem; the sufficient condition below is the one that
-/// admits every layout the format's own § Contiguity definition calls dense, every
-/// permutation of it, and every padded variant.
+/// Two of the three answers are proofs. [`Distinctness::NotProven`] means exactly what it
+/// says — the strides may be injective, and the test did not recognise the interleaving
+/// (strides `[2, 3]` over shape `[3, 2]` is injective and comes back `NotProven`).
+/// Deciding injectivity exactly is a bounded subset-sum problem; what follows is the
+/// sufficient condition that admits every layout the format's own § Contiguity definition
+/// calls dense, every permutation of it, and every padded variant.
 ///
-/// Three reductions make it a two-line check:
+/// Two reductions come first:
 ///
 /// - **Sign does not matter.** Replacing `i_k` by `d_k - 1 - i_k` on a negative-stride axis
 ///   is a bijection of the index box onto itself and turns that axis's contribution into
 ///   `const + i_k · |s_k|`, so the map is injective exactly when the all-positive version
-///   is.
-/// - **An axis of extent 1 contributes nothing**, and a zero stride on an axis of extent
-///   above 1 aliases by definition.
-/// - **Sorted by `|stride|` ascending, the strides must be strictly nested**: each axis's
-///   stride must exceed the total span of every smaller axis, so that no combination of the
-///   smaller axes can reach it.
+///   is. The same bijection carries a witness pair back to the original strides, shifting
+///   both members by one constant.
+/// - **An axis of extent 1 contributes nothing**, so it is dropped before either proof
+///   runs: it can neither create a collision nor prevent one.
+///
+/// What remains, with the axes sorted by `|stride|` ascending, is decided by three exits:
+///
+/// - **A zero magnitude** (on an axis of extent above 1, the only kind left) — two indices
+///   differing only on that axis collide. [`Distinctness::Aliases`].
+/// - **Two axes of equal magnitude** — `i_a = 1, i_b = 0` and `i_a = 0, i_b = 1` collide, at
+///   any extents. [`Distinctness::Aliases`].
+/// - **Otherwise the magnitudes must be strictly nested**: each axis's stride must exceed
+///   `reach`, the total span `Σ |s_j| · (d_j - 1)` of the axes of smaller magnitude. Above
+///   it, the axis is out of their combined range. *Equal* to it is a collision rather than
+///   a near miss, because `reach` is attained — put every smaller axis at its last index —
+///   so [`Distinctness::Aliases`]. Below it is the genuine unknown, and it is two-sided:
+///   `[2, 3]` over shape `[3, 2]` is injective, `[2, 3]` over shape `[4, 3]` aliases.
+///
+/// Each exit is **recognised** in constant time from quantities the scan already holds, so
+/// proving aliasing costs nothing over merely failing to prove distinctness. Materialising
+/// a witness would be O(rank) — the `magnitude == reach` collision places every smaller
+/// axis at `d_j - 1` — and this function never builds one, which is why the verdict stays
+/// `Copy`.
 ///
 /// # Errors
 ///
 /// - [`Error::IndexRankMismatch`] — `strides.len() != dims.len()`.
-/// - [`Error::AddressOverflow`] — the span arithmetic overflows `uint64`.
+/// - [`Error::AddressOverflow`] — the span arithmetic overflows `uint64`. Note that the
+///   two arithmetic-free proofs above run *before* any span is accumulated, so a stride
+///   vector that aliases is reported as [`Distinctness::Aliases`] even when its span is not
+///   representable. Aliasing is the more specific fact, and it holds either way; overflow
+///   is raised on the paths that genuinely need the span.
 ///
 /// # Examples
 ///
@@ -1047,10 +1083,13 @@ pub enum Distinctness {
 /// assert_eq!(distinct(&[-4, 1], &[3, 4]), Distinctness::Distinct);
 ///
 /// // Aliasing with no zero stride in sight: [0,1] and [1,0] both land on offset 1.
-/// assert_eq!(distinct(&[1, 1], &[2, 2]), Distinctness::NotProven);
+/// assert_eq!(distinct(&[1, 1], &[2, 2]), Distinctness::Aliases);
+/// // Still proved at extents where the nesting test alone would not fire, because two
+/// // axes of equal magnitude collide whatever the extents are.
+/// assert_eq!(distinct(&[1, 1], &[3, 3]), Distinctness::Aliases);
 ///
-/// // A broadcast axis aliases by definition — unless its extent is 1.
-/// assert_eq!(distinct(&[0, 1], &[3, 4]), Distinctness::NotProven);
+/// // A broadcast axis aliases by definition — unless its extent is 1, where it cannot move.
+/// assert_eq!(distinct(&[0, 1], &[3, 4]), Distinctness::Aliases);
 /// assert_eq!(distinct(&[0, 1], &[1, 4]), Distinctness::Distinct);
 ///
 /// // An empty tensor has no two indices to collide.
@@ -1071,25 +1110,47 @@ pub fn strides_provably_distinct(strides: &[i64], dims: &[u64]) -> crate::Result
         return Ok(Distinctness::Distinct);
     }
     // (|stride|, extent - 1) per axis that can move, which is where the sign reduction and
-    // the extent-1 reduction in the doc comment are applied.
+    // the extent-1 reduction in the doc comment are applied. Dropping extent-1 axes here,
+    // before the proofs below, is load-bearing twice over: such an axis must not trip the
+    // duplicate-magnitude proof, and a zero stride on one is not a broadcast.
     let mut axes: Vec<(u64, u64)> = Vec::with_capacity(dims.len());
     for (&stride, &dim) in strides.iter().zip(dims.iter()) {
         if dim == 1 {
             continue;
         }
-        let magnitude = stride.unsigned_abs();
-        if magnitude == 0 {
-            return Ok(Distinctness::NotProven);
-        }
-        axes.push((magnitude, dim - 1));
+        // unsigned_abs, not abs: i64::MIN has no positive counterpart and abs() panics.
+        axes.push((stride.unsigned_abs(), dim - 1));
     }
     axes.sort_unstable();
+
+    // The two proofs that need no arithmetic, established before `reach` accumulates so
+    // that a stride vector which aliases is reported as such even when its span overflows.
+    // Aliasing is the more permanent fact about it and is true whether or not the span is
+    // representable (ADR-045 § 2).
+    //
+    // Sorted ascending, so a zero magnitude can only be the first element, and equal
+    // magnitudes can only be adjacent.
+    if axes.first().is_some_and(|&(magnitude, _)| magnitude == 0) {
+        // Two indices differing only on that axis address one element.
+        return Ok(Distinctness::Aliases);
+    }
+    if axes.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        // (1, 0) and (0, 1) on those two axes address one element, at any extents.
+        return Ok(Distinctness::Aliases);
+    }
+
     let mut reach: u64 = 0;
     for (magnitude, extent) in axes {
         // Strictly nested: anything this axis can reach must lie beyond everything the
-        // smaller axes can reach together. Equality is a collision, not a near miss — two
-        // axes with the same stride put index (1, 0) and (0, 1) on one element.
-        if magnitude <= reach {
+        // smaller axes can reach together.
+        if magnitude == reach {
+            // `reach` is attained, not merely bounded — set every smaller axis to its last
+            // index — so this axis at index 1 collides with that point. (`reach == 0` would
+            // need `magnitude == 0`, already excluded above.)
+            return Ok(Distinctness::Aliases);
+        }
+        if magnitude < reach {
+            // Subset-sum territory: the test stops at the edge of what it can decide.
             return Ok(Distinctness::NotProven);
         }
         reach = reach
@@ -1619,25 +1680,17 @@ mod tests {
         true
     }
 
-    /// The one direction that must never fail: a `true` answer is a *proof*. A false
-    /// positive here is the memory-safety bug the predicate exists to prevent, so this
-    /// sweeps every small stride vector rather than a chosen few.
-    #[test]
-    fn claimed_distinctness_is_always_real() {
+    /// Every stride vector in `[-4, 4]^rank` over a handful of small shapes, fed to a
+    /// closure. Both sweeps below need the same enumeration and neither may sample.
+    fn for_every_small_stride_vector(mut check: impl FnMut(&[i64], &[u64])) {
         let dim_sets: [&[u64]; 6] = [&[4], &[2, 2], &[2, 3], &[3, 2], &[2, 2, 2], &[1, 3, 2]];
         for dims in dim_sets {
             let rank = dims.len();
             let candidates: Vec<i64> = (-4..=4).collect();
-            // Every stride vector in [-4, 4]^rank.
             let mut index = vec![0usize; rank];
             loop {
                 let strides: Vec<i64> = index.iter().map(|&i| candidates[i]).collect();
-                if strides_provably_distinct(&strides, dims).unwrap() == Distinctness::Distinct {
-                    assert!(
-                        actually_distinct(&strides, dims),
-                        "claimed distinct but is not: strides {strides:?} dims {dims:?}"
-                    );
-                }
+                check(&strides, dims);
                 // Odometer over the candidate grid.
                 let mut k = rank;
                 loop {
@@ -1661,33 +1714,94 @@ mod tests {
         }
     }
 
-    /// The other direction is deliberately incomplete, and this records which cases the
-    /// conservative test gives up on, so a later pass can see the cost of tightening it.
+    /// The one direction that must never fail: `Distinct` is a *proof*. A false positive
+    /// here is the memory-safety bug the predicate exists to prevent, so this sweeps every
+    /// small stride vector rather than a chosen few.
     #[test]
-    fn conservatism_is_confined_to_interleavings() {
-        // Injective, and reported false: axis 0 strides by 2 over 3 positions (0,2,4) and
-        // axis 1 by 3 over 2 (0,3) — the sums 0,2,4,3,5,7 happen not to collide.
+    fn claimed_distinctness_is_always_real() {
+        for_every_small_stride_vector(|strides, dims| {
+            if strides_provably_distinct(strides, dims).unwrap() == Distinctness::Distinct {
+                assert!(
+                    actually_distinct(strides, dims),
+                    "claimed distinct but is not: strides {strides:?} dims {dims:?}"
+                );
+            }
+        });
+    }
+
+    /// The mirror of the sweep above, and it exists because `Aliases` is now a claim and
+    /// not a shrug: every one of those verdicts must be a real collision.
+    #[test]
+    fn claimed_aliasing_is_always_real() {
+        for_every_small_stride_vector(|strides, dims| {
+            if strides_provably_distinct(strides, dims).unwrap() == Distinctness::Aliases {
+                assert!(
+                    !actually_distinct(strides, dims),
+                    "claimed aliasing but is injective: strides {strides:?} dims {dims:?}"
+                );
+            }
+        });
+    }
+
+    /// The unknown region is genuinely two-sided, which is what makes it an unknown rather
+    /// than an unreported proof: `NotProven` covers injective and aliasing cases alike.
+    #[test]
+    fn the_unproven_region_holds_both_answers() {
+        // Injective: axis 0 strides by 2 over 3 positions (0,2,4) and axis 1 by 3 over 2
+        // (0,3) — the sums 0,2,4,3,5,7 happen not to collide.
         assert!(actually_distinct(&[2, 3], &[3, 2]));
         assert_eq!(
             strides_provably_distinct(&[2, 3], &[3, 2]).unwrap(),
             Distinctness::NotProven,
             "an injective interleaving the conservative test gives up on"
         );
+        // The same stride vector one extent larger, and now it aliases: (3,0) and (0,2)
+        // both address offset 6. Still `NotProven`, because the test does not reach it.
+        assert!(!actually_distinct(&[2, 3], &[4, 3]));
+        assert_eq!(
+            strides_provably_distinct(&[2, 3], &[4, 3]).unwrap(),
+            Distinctness::NotProven,
+            "an aliasing interleaving the conservative test also gives up on"
+        );
     }
 
     #[test]
-    fn the_review_counterexample_is_rejected() {
+    fn the_review_counterexample_is_proved_to_alias() {
         // The case that made a parallel run race: no zero stride, and [0,1] and [1,0]
         // both address element 1.
         assert_eq!(
             strides_provably_distinct(&[1, 1], &[2, 2]).unwrap(),
-            Distinctness::NotProven
+            Distinctness::Aliases
         );
         assert!(!actually_distinct(&[1, 1], &[2, 2]));
         // And at the scale where the collision crosses a work-item boundary.
         assert_eq!(
             strides_provably_distinct(&[1, 1], &[2, 300_000]).unwrap(),
-            Distinctness::NotProven
+            Distinctness::Aliases
+        );
+    }
+
+    /// Obligation 5: equal magnitudes on two movable axes collide at *any* extents. At
+    /// `[2, 2]` the nesting test would catch it anyway; at `[3, 3]` it would not, and
+    /// without the duplicate-magnitude proof this would fall back to `NotProven`.
+    #[test]
+    fn equal_magnitudes_on_movable_axes_alias_at_every_extent() {
+        for dims in [[2u64, 2], [3, 3], [5, 9], [300_000, 2]] {
+            assert_eq!(
+                strides_provably_distinct(&[1, 1], &dims).unwrap(),
+                Distinctness::Aliases,
+                "equal magnitudes over {dims:?}"
+            );
+        }
+        // Signs do not rescue it: the reduction is on magnitude.
+        assert_eq!(
+            strides_provably_distinct(&[-4, 4], &[3, 3]).unwrap(),
+            Distinctness::Aliases
+        );
+        // Three axes where only two of them share a magnitude.
+        assert_eq!(
+            strides_provably_distinct(&[12, 3, 3], &[2, 2, 2]).unwrap(),
+            Distinctness::Aliases
         );
     }
 
@@ -1714,6 +1828,10 @@ mod tests {
         );
     }
 
+    /// Obligation 1: an axis of extent 1 cannot move, so it can neither create a collision
+    /// nor prevent one. Both halves matter, and the second is the subtle one — an extent-1
+    /// axis sharing a magnitude with a movable axis must not trip the duplicate-magnitude
+    /// proof.
     #[test]
     fn extent_one_axes_are_ignored_whatever_their_stride() {
         // Three axes of extent 1 and one that moves: no two indices exist to collide.
@@ -1723,6 +1841,68 @@ mod tests {
                 Distinctness::Distinct
             );
         }
+        // A zero magnitude on an extent-1 axis is not a broadcast: nothing repeats.
+        assert_eq!(
+            strides_provably_distinct(&[0, 1], &[1, 4]).unwrap(),
+            Distinctness::Distinct
+        );
+        // An extent-1 axis sharing a magnitude with a movable one: still `Distinct`.
+        assert_eq!(
+            strides_provably_distinct(&[1, 1], &[1, 5]).unwrap(),
+            Distinctness::Distinct
+        );
+        // And two extent-1 axes sharing a magnitude with each other.
+        assert_eq!(
+            strides_provably_distinct(&[3, 3, 1], &[1, 1, 6]).unwrap(),
+            Distinctness::Distinct
+        );
+    }
+
+    /// Obligation 2: any zero extent means no two valid indices exist, so there is no pair
+    /// to collide. This must be `Distinct` and not `NotProven` — writing an empty tensor
+    /// through any strides at all is sound.
+    #[test]
+    fn an_empty_tensor_is_distinct_vacuously() {
+        for strides in [[1i64, 1], [0, 0], [i64::MIN, i64::MAX]] {
+            for dims in [[0u64, 4], [4, 0], [0, 0]] {
+                assert_eq!(
+                    strides_provably_distinct(&strides, &dims).unwrap(),
+                    Distinctness::Distinct,
+                    "strides {strides:?} over empty {dims:?}"
+                );
+            }
+        }
+    }
+
+    /// Obligation 3: the sign reduction is exercised on every exit, and `i64::MIN` is held
+    /// in place because `stride.abs()` panics there — `unsigned_abs` is load-bearing and a
+    /// later refactor must not quietly swap it back.
+    #[test]
+    fn negative_strides_reduce_on_every_exit_including_i64_min() {
+        // Distinct.
+        assert_eq!(
+            strides_provably_distinct(&[-4, 1], &[3, 4]).unwrap(),
+            Distinctness::Distinct
+        );
+        assert_eq!(
+            strides_provably_distinct(&[i64::MIN, 1], &[2, 4]).unwrap(),
+            Distinctness::Distinct
+        );
+        // Aliases, by duplicate magnitude — the two differ in sign only.
+        assert_eq!(
+            strides_provably_distinct(&[i64::MIN, i64::MIN], &[2, 2]).unwrap(),
+            Distinctness::Aliases
+        );
+        // Aliases, by zero magnitude beside a negative stride.
+        assert_eq!(
+            strides_provably_distinct(&[0, -2], &[3, 4]).unwrap(),
+            Distinctness::Aliases
+        );
+        // NotProven, with the interleaving expressed negatively.
+        assert_eq!(
+            strides_provably_distinct(&[-2, -3], &[3, 2]).unwrap(),
+            Distinctness::NotProven
+        );
     }
 
     #[test]
@@ -1736,6 +1916,8 @@ mod tests {
         ));
     }
 
+    /// Obligation 4, the error direction: on a path that genuinely needs the span, an
+    /// overflow is an error and never a verdict — least of all `Distinct`.
     #[test]
     fn a_span_that_overflows_is_an_error_not_a_verdict() {
         // |stride| × (dim - 1) beyond uint64: no answer rather than a wrapped one.
@@ -1743,5 +1925,45 @@ mod tests {
             strides_provably_distinct(&[i64::MAX, 1], &[u64::MAX / 2, 2]),
             Err(Error::AddressOverflow)
         ));
+        // And the accumulation, rather than the product, as the thing that overflows:
+        // 2 + i64::MAX × 2 is one past uint64, while each factor and the product fit.
+        assert!(matches!(
+            strides_provably_distinct(&[1, i64::MAX], &[3, 3]),
+            Err(Error::AddressOverflow)
+        ));
+    }
+
+    /// Obligation 4, the verdict direction: the two arithmetic-free proofs run before any
+    /// span is accumulated, so a stride vector that aliases answers `Aliases` even where
+    /// the span is not representable. This is the deliberate behaviour change of ADR-045
+    /// § 2 — these cases raised `AddressOverflow` before.
+    #[test]
+    fn an_aliasing_target_whose_span_overflows_still_answers_aliases() {
+        // Duplicate magnitude, with a span far beyond uint64.
+        assert_eq!(
+            strides_provably_distinct(&[i64::MIN, i64::MIN], &[3, 3]).unwrap(),
+            Distinctness::Aliases
+        );
+        // Zero magnitude, beside an axis whose own span overflows.
+        assert_eq!(
+            strides_provably_distinct(&[0, i64::MAX], &[2, u64::MAX]).unwrap(),
+            Distinctness::Aliases
+        );
+    }
+
+    /// Obligation 4, the near miss: a span close to `uint64::MAX` that does *not* overflow
+    /// must still answer `Distinct`, so the checked arithmetic is not over-eager.
+    #[test]
+    fn a_span_near_the_limit_still_answers_distinct() {
+        // 1 × (2^32 - 1) + 2^32 × (2^32 - 1) = 2^64 - 1 exactly: the largest span that fits.
+        let edge = 1u64 << 32;
+        assert_eq!(
+            strides_provably_distinct(
+                &[i64::try_from(edge).unwrap(), 1],
+                &[edge, edge]
+            )
+            .unwrap(),
+            Distinctness::Distinct
+        );
     }
 }

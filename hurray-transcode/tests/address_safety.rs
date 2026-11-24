@@ -3,9 +3,12 @@
 //! Three questions, all of them about addressing rather than about any one layout:
 //!
 //! - **Injectivity.** Can two logical indices reach the same stored element? A target that
-//!   aliases cannot hold the tensor's values, and in parallel the two writes can fall in
-//!   different work items, which is a data race. Aliasing is *not* a zero-stride
-//!   phenomenon — `[1, 1]` over shape `[2, 2]` is the counterexample that matters.
+//!   aliases cannot represent arbitrary values — one of the two is overwritten — and in
+//!   parallel the two writes can fall in different work items, which is a data race.
+//!   Aliasing is *not* a zero-stride phenomenon: `[1, 1]` over shape `[2, 2]` is the
+//!   counterexample that matters. The refusal comes in two forms, and they are kept apart
+//!   here as they are in the API — `AliasingTarget` is proved and permanent,
+//!   `TargetNotProvablyDistinct` is this crate's test giving up.
 //! - **Arithmetic.** Do the byte strides, the base, and the extent stay representable, and
 //!   is a descriptor that is merely unallocatable distinguished from one that overflows?
 //! - **Order.** Does a run produce the same bytes serially, with its work items in reverse,
@@ -195,11 +198,11 @@ fn the_review_counterexample_is_refused_at_plan_time() {
 
     let err = plan(&source, &Target::layout(strided(vec![1, 1]))).unwrap_err();
     match err {
-        Error::OverlappingTarget { strides, dims } => {
+        Error::AliasingTarget { strides, dims } => {
             assert_eq!(strides, vec![1, 1]);
             assert_eq!(dims, vec![2, 2]);
         }
-        other => panic!("expected OverlappingTarget, got {other}"),
+        other => panic!("expected AliasingTarget, got {other}"),
     }
 }
 
@@ -245,9 +248,13 @@ fn overlapping_targets_are_refused_across_a_family_of_shapes() {
         );
         let outcome = plan(&source, &Target::layout(strided(strides.to_vec())));
         if aliases {
+            // Every aliasing row above is within the predicate's reach — two equal
+            // magnitudes, or a magnitude equal to the reach of the smaller axes — so the
+            // proved error is the one to assert. An aliasing target outside that reach is
+            // `TargetNotProvablyDistinct` instead; see the test below.
             assert!(
-                matches!(outcome, Err(Error::OverlappingTarget { .. })),
-                "{dims:?} / {strides:?} aliases and must be refused"
+                matches!(outcome, Err(Error::AliasingTarget { .. })),
+                "{dims:?} / {strides:?} aliases and must be refused: {outcome:?}"
             );
         } else {
             // A layout that does not alias must still be accepted — the check must not
@@ -273,7 +280,7 @@ fn an_overlap_that_survives_the_broadcast_clamp_is_refused() {
     );
     let err = plan(&source, &Target::layout(strided(vec![0, 1, 1]))).unwrap_err();
     assert!(
-        matches!(err, Error::OverlappingTarget { ref dims, .. } if dims == &vec![1, 2, 2]),
+        matches!(err, Error::AliasingTarget { ref dims, .. } if dims == &vec![1, 2, 2]),
         "{err}"
     );
 }
@@ -307,6 +314,60 @@ fn a_non_injective_source_is_materialised_rather_than_refused() {
     assert_eq!(convert(&r, &data), vec![10, 20, 20, 30]);
 }
 
+#[test]
+fn an_injective_but_unproved_target_is_a_limitation_not_a_refusal() {
+    // Strides [2, 3] over shape [3, 2] address offsets 0, 3, 2, 5, 4, 7: injective, and
+    // outside what the nested-magnitude proof can see. The two refusals must not be
+    // conflated — this target is unsupported, not impossible, and a caller writing layout
+    // fallback policy needs to tell "never retry" from "retry on a newer version".
+    assert!(
+        !actually_aliases(&[3, 2], &[2, 3]),
+        "premise: this target does not alias"
+    );
+    let source = descriptor(
+        ElementType::Uint8,
+        vec![3, 2],
+        LayoutDescriptor::RowMajor,
+        8,
+        0,
+    );
+    let err = plan(&source, &Target::layout(strided(vec![2, 3]))).unwrap_err();
+    match err {
+        Error::TargetNotProvablyDistinct { strides, dims } => {
+            assert_eq!(strides, vec![2, 3]);
+            assert_eq!(dims, vec![3, 2]);
+        }
+        other => panic!("expected TargetNotProvablyDistinct, got {other}"),
+    }
+}
+
+#[test]
+fn an_aliasing_source_asked_for_its_own_layout_still_plans() {
+    // The write-target restriction must not reach the no-op path. When the stride vectors
+    // are equal the plan aliases the input buffer and writes nothing, so there is no
+    // destination to lose a value in — and the descriptor is one the format permits. The
+    // natural implementation mistake is to hoist the distinctness check to the top of
+    // `plan()`, which would refuse this legal case; this test is what catches that.
+    for layout_strides in [vec![1i64, 1], vec![0, 1], vec![0, 0]] {
+        let source = descriptor(
+            ElementType::Uint8,
+            vec![2, 2],
+            strided(layout_strides.clone()),
+            8,
+            0,
+        );
+        let planned = plan(&source, &Target::layout(strided(layout_strides.clone())))
+            .unwrap_or_else(|e| panic!("{layout_strides:?} must still plan: {e}"));
+        let ready = match planned {
+            Planned::Ready(r) => r,
+            Planned::NeedsSurvey(_) => panic!("{layout_strides:?}: a no-op needs no survey"),
+        };
+        // Aliased, so nothing is written: no destination, and no work.
+        assert!(ready.destinations(0).is_empty(), "{layout_strides:?}");
+        assert_eq!(ready.work_item_count(), 0, "{layout_strides:?}");
+    }
+}
+
 // ── 1. The parallel case: no two work items may write one byte ────────────────
 
 #[test]
@@ -325,7 +386,7 @@ fn the_parallel_counterexample_cannot_be_planned() {
     assert!(actually_aliases(&[2, 4], &[1, 1]), "same family, small");
     assert!(matches!(
         plan(&source, &Target::layout(strided(vec![1, 1]))),
-        Err(Error::OverlappingTarget { .. })
+        Err(Error::AliasingTarget { .. })
     ));
 }
 

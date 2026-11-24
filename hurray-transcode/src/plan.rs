@@ -40,6 +40,22 @@ pub struct Target {
 impl Target {
     /// A target that changes the memory layout and nothing else.
     ///
+    /// # Which layouts are accepted as a destination
+    ///
+    /// Every layout whose stride magnitudes are **strictly nested** — row-major,
+    /// column-major, any axis permutation of either, and any padded or reversed variant of
+    /// those. That is the set a conversion can write into while provably addressing each
+    /// element once, and it is the whole accepted set: a target outside it is refused at
+    /// plan time with [`Error::AliasingTarget`] or [`Error::TargetNotProvablyDistinct`]
+    /// (ADR-045 § 1). A zero stride in the *target* is the one deliberate exclusion — that
+    /// is a broadcast collapse, which is reached through the survey rather than by writing
+    /// the repeats.
+    ///
+    /// The check cannot move here, to construction, and the reason is not convenience:
+    /// distinctness is a property of the strides **and** the shape — `[1, 1]` aliases at
+    /// shape `[2, 2]` and is merely unproved at `[3, 3]` — and a `Target` carries no shape.
+    /// So the earliest point at which the question is even well-posed is `plan()`.
+    ///
     /// # Examples
     ///
     /// ```

@@ -17,7 +17,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 ///
 /// | Family | Raised at | Variants |
 /// |---|---|---|
-/// | unsupported conversion | plan | [`Error::UnsupportedConversion`], [`Error::UnresolvedShape`], [`Error::NonHostBuffer`], [`Error::OverlappingTarget`] |
+/// | unsupported conversion | plan | [`Error::UnsupportedConversion`], [`Error::UnresolvedShape`], [`Error::NonHostBuffer`], [`Error::AliasingTarget`], [`Error::TargetNotProvablyDistinct`] |
 /// | input mismatch | plan / survey / run | [`Error::InputTensorCount`], [`Error::InputBufferCount`], [`Error::InputBufferSize`], [`Error::SourceBufferTooSmall`], [`Error::LayoutReachesBelowBuffer`] |
 /// | not representable here | plan | [`Error::BeyondHostLimit`], [`Error::AllocationFailed`] |
 /// | unusable destination | run | [`Error::OutputTensorCount`], [`Error::DestinationCount`], [`Error::DestinationTooShort`], [`Error::DestinationMisaligned`] |
@@ -186,29 +186,56 @@ pub enum Error {
         actual: usize,
     },
 
-    /// The target's strides do not provably address every element of the tensor
-    /// distinctly, so the destination cannot hold its values.
+    /// The target's strides **alias**: two distinct logical indices address one stored
+    /// element. This transcoder refuses such a target unconditionally.
     ///
     /// A layout whose strides alias is legal in the format and is sometimes the point — a
-    /// zero stride is a broadcast — but a tensor cannot be *written* through one without
-    /// losing values: strides `[1, 1]` over shape `[2, 2]` send `[0, 1]` and `[1, 0]` to
-    /// the same element, so one of the two is silently overwritten. Writing through one in
-    /// parallel is worse: the two writes can fall in different work items, which is a data
-    /// race.
+    /// zero stride is a broadcast. What it cannot serve as is the *write* destination for
+    /// an arbitrary tensor: strides `[1, 1]` over shape `[2, 2]` send `[0, 1]` and `[1, 0]`
+    /// to the same element, so whichever is written second wins and the other value is
+    /// gone. In parallel it is worse — the two writes can fall in different work items,
+    /// which is a data race.
     ///
-    /// The test is conservative, so a few exotic interleavings that *are* injective are
-    /// refused here too — strides `[2, 3]` over shape `[3, 2]`, for instance. They are
-    /// unsupported rather than impossible; see `hurray_core::strides_provably_distinct`.
+    /// Such a destination does hold, faithfully, exactly those tensors whose values already
+    /// agree at the aliased indices. But a plan is built from descriptors and never sees
+    /// values, so the refusal cannot be conditional on the data: it is unconditional, and
+    /// it is *this transcoder's* refusal rather than a judgement the format makes
+    /// (ADR-045 § 1).
     ///
     /// The broadcast *collapse* this crate does support is not this error: its axes are
     /// clamped out of the cover before the check, and the survey is what establishes that
     /// the discarded indices carried the same value.
     #[error(
-        "target layout does not provably address every element distinctly: strides \
-         {strides:?} over the output cover {dims:?} can map two indices to one element, \
-         so the destination cannot represent the tensor's values"
+        "target layout aliases: strides {strides:?} over the output cover {dims:?} map two \
+         distinct indices to one element, so writing a tensor through it would lose a value"
     )]
-    OverlappingTarget {
+    AliasingTarget {
+        /// The target's strides.
+        strides: Vec<i64>,
+        /// The index space they were checked against — the shape with broadcast axes
+        /// clamped to one element.
+        dims: Vec<u64>,
+    },
+
+    /// The target's strides could not be *proved* to address every element distinctly.
+    /// They may well do so; this crate's test did not establish it.
+    ///
+    /// That test is a sufficient condition — stride magnitudes strictly nested — so a few
+    /// exotic interleavings that are genuinely injective are refused here as well: strides
+    /// `[2, 3]` over shape `[3, 2]` addresses offsets `0, 3, 2, 5, 4, 7` and collides
+    /// nowhere, yet comes back unproved. This crate will not write through a target it
+    /// cannot prove distinct, because that proof is what the parallel path's disjointness
+    /// argument rests on.
+    ///
+    /// Unlike [`Error::AliasingTarget`], this is a limitation and not a verdict: a stronger
+    /// proof would admit these targets with no change to the format or to this API. See
+    /// `hurray_core::strides_provably_distinct`.
+    #[error(
+        "target layout is not provably distinct: strides {strides:?} over the output cover \
+         {dims:?} were not proved to address every element distinctly, so this crate \
+         declines to write through them"
+    )]
+    TargetNotProvablyDistinct {
         /// The target's strides.
         strides: Vec<i64>,
         /// The index space they were checked against — the shape with broadcast axes
