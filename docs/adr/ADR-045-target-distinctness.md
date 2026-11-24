@@ -24,15 +24,13 @@ weakens it.
 Requires an amendment to `docs/spec/layouts/strided.md` § Stride Semantics. Nothing here
 is a wire-format or C ABI change.
 
-**Revision 4 (2026-11-23).** A § *Prior Art* section was added, surveying eight libraries
-at source where possible. It changed no decision. It supplies three things the ADR was
-missing: a precedent for § 4's sentence (MLIR states the property; its UB remedy is the
-part to avoid), the argument that predicate strength is what licenses refusing the unknown
+**Revision 4 (2026-11-23).** A § *Prior Art* section was added, surveying nine libraries,
+each read at source. It changed no decision. It supplies three things the ADR was missing:
+a precedent for § 4's sentence (MLIR states the property; its UB remedy is the part to
+avoid), the argument that predicate strength is what licenses refusing the unknown
 (PyTorch cannot, because its proof is density-only), and the evidence that exactness is
 practical (NumPy ships a bounded solver), which moves the weight of § 1 onto consumer
-absence. It also retracts an originality claim never made in this document but made around
-it: the honest three-valued naming is PyTorch's prior art, not ours. One new finding is
-routed below, on DLPack export.
+absence. One new finding is routed below, on DLPack export.
 
 **Revision 3 (2026-11-22), after review.** One mathematical precision fix in § 2:
 *recognising* an exit is constant time, *materialising* its witness is O(rank), and the
