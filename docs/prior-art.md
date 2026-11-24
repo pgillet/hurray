@@ -276,64 +276,6 @@ several named tensors grouped in one model, sparse values and their
 index tensors, a quantized tensor and its scale tensors, and
 heterogeneous regions stored in different formats.
 
-### 2.8 Strides that address one element twice
-
-Nothing in the stride model requires distinct indexes to reach distinct
-elements. A zero stride is the familiar case and usually the intent: all
-indexes along that dimension name one stored element, which is a
-broadcast. The less familiar case has no zero stride at all. For a
-tensor of shape `[2,2]` with strides `[1,1]`, the four indexes produce
-offsets 0, 1, 1, and 2, so `[0,1]` and `[1,0]` are the same element.
-
-Reading such a tensor is well defined. Shared storage necessarily
-returns equal values at the aliased indexes, so a consumer sees a tensor
-constrained to agree there. Writing one is not. A producer that
-materializes an arbitrary tensor into an aliasing layout must discard a
-value, and a parallel writer may address one element from two work
-items. For an interchange format the two cases are therefore different
-obligations: a reader must accept the descriptor, while a writer asked
-to target that layout cannot honor it in general.
-
-Libraries that expose strides to their users have all met this problem.
-What differs is the layer the rule lives in, how much it proves, and
-what it does when it cannot decide.
-
-| System | Where the rule lives | What it proves | When undecided |
-|:----------|:------------|:--------------|:----------|
-| NumPy [27] | Not checked for destinations | Exact solver, used for overlap between two arrays | Raises a too-hard error |
-| PyTorch [28] | Write target, at operator dispatch | Dense with unit minimum stride; aliasing only from a zero stride | Permitted |
-| Rust `ndarray` [29] | Write target, at construction | Strides sorted by magnitude and strictly nested | Refused |
-| oneDNN [30] | Memory descriptor creation | Each stride at least the previous times its extent | Refused |
-| MLIR `memref` [22] | The type itself | Stated in prose; the verifier checks only rank | Undefined behavior |
-| TensorStore [31] | No notion of it | — | — |
-| DLPack [1] | Silent | — | — |
-| cuTENSOR [32], XLA [33] | Unrepresentable | Not applicable | Not applicable |
-
-Three observations follow. First, one sufficient condition recurs
-independently: sort the dimensions by stride magnitude, ignore those of
-extent one, and require each stride to clear the span of all smaller
-dimensions. NumPy aside, every system that decides the question at all
-uses some form of it, because deciding injectivity exactly is a bounded
-subset-sum problem while this test is two lines and admits every dense
-layout, every permutation of one, and every padded variant.
-
-Second, the layer follows from whether the system is the only producer
-of the descriptors it reads. oneDNN rejects an aliasing descriptor when
-it is created, so its reorder primitive never needs a target check; MLIR
-makes it a property of the type. Neither can be an interchange format's
-answer, because such a format must read conforming descriptors written
-by others, including ones its own writer would refuse to produce. That
-pushes the obligation onto the write path and leaves the descriptor
-legal, which is the position Hurray takes.
-
-Third, the broadcast case resists a blanket ban. MLIR originally
-forbade zero strides in its strided layout attribute and removed the
-restriction in 2024 [34], because a zero stride is how a broadcast
-reaches a multi-dimensional DMA; the change notes that the ban did not
-solve the problem anyway, since aliasing can arise with no zero stride
-present. cuTENSOR keeps the ban and expresses broadcast structurally
-instead, by omitting the dimension from the descriptor.
-
 ---
 
 ## 3. What an Interchange Format Needs to Do
@@ -1110,27 +1052,3 @@ quantized, sparse, tiled, paged, sharded, and resident on accelerators.
     https://data-apis.org/array-api/latest/design_topics/data_interchange.html
 26. Numba Project. *CUDA Array Interface (version 3)*.
     https://numba.readthedocs.io/en/stable/cuda/cuda_array_interface.html
-27. NumPy Project. *numpy.shares_memory* and
-    *numpy.lib.stride_tricks.as_strided*, with the bounded Diophantine
-    overlap solver in `numpy/_core/src/common/mem_overlap.c`.
-    https://numpy.org/doc/stable/reference/generated/numpy.shares_memory.html
-28. PyTorch Project. *Internal and partial memory overlap checks*,
-    `aten/src/ATen/MemoryOverlap.{h,cpp}` and
-    `c10/core/Contiguity.h`.
-    https://github.com/pytorch/pytorch/blob/main/aten/src/ATen/MemoryOverlap.cpp
-29. `ndarray` Project. *Rust n-dimensional array library*, stride
-    overlap check in `src/dimension/mod.rs`.
-    https://docs.rs/ndarray/
-30. oneDNN Project. *Memory descriptor stride validation*,
-    `src/common/memory_desc.cpp`. UXL Foundation.
-    https://github.com/uxlfoundation/oneDNN
-31. Google. *TensorStore: strided layouts and index transforms*.
-    https://google.github.io/tensorstore/
-32. NVIDIA. *cuTENSOR: tensor descriptor creation*, documentation and
-    the stride contract in the shipped `cutensor.h` (2.8.1).
-    https://docs.nvidia.com/cuda/cutensor/latest/api/cutensor.html
-33. OpenXLA Project. *Tiled layout*, and the `Layout` class in
-    `xla/layout.h`. https://openxla.org/xla/tiled_layout
-34. LLVM Project. *[mlir][IR] Allow zero strides in
-    StridedLayoutAttr*, pull request 116463, merged 2024-11-21.
-    https://github.com/llvm/llvm-project/pull/116463
