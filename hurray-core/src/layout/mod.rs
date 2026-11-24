@@ -1958,11 +1958,7 @@ mod tests {
         // 1 × (2^32 - 1) + 2^32 × (2^32 - 1) = 2^64 - 1 exactly: the largest span that fits.
         let edge = 1u64 << 32;
         assert_eq!(
-            strides_provably_distinct(
-                &[i64::try_from(edge).unwrap(), 1],
-                &[edge, edge]
-            )
-            .unwrap(),
+            strides_provably_distinct(&[i64::try_from(edge).unwrap(), 1], &[edge, edge]).unwrap(),
             Distinctness::Distinct
         );
     }
