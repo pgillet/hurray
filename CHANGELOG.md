@@ -50,13 +50,18 @@ workspace share one version and are released together.
   item exactly once in any order on any number of threads produces byte-identical output to
   one serial run.
 
-  A target whose strides would map two logical indices to one stored element is refused at
-  planning time. A zero stride is not the only way to reach that state — `[1, 1]` over shape
-  `[2, 2]` addresses elements `0, 1, 1, 2` — and writing through such a layout loses a value
-  serially and races in parallel, so a plan requires the target's strides to be *provably*
-  injective over the output cover. The broadcast collapse is the one aliasing target that is
-  supported, because its axis is excluded from the cover and the survey establishes that the
-  discarded indices carried the same value.
+  A target is admitted only on a *proof* that its strides address every element of the output
+  cover distinctly. A zero stride is not the only way to lose that property — `[1, 1]` over
+  shape `[2, 2]` addresses elements `0, 1, 1, 2` — and writing through such a layout loses a
+  value serially and races in parallel. The two refusals are separate errors because they
+  have different remedies: `Error::AliasingTarget` is proved and permanent (the destination
+  can represent faithfully only those tensors whose values already agree at the aliased
+  indices, and a plan sees descriptors rather than values, so the refusal is unconditional),
+  while `Error::TargetNotProvablyDistinct` is the test giving up on a target that may well be
+  injective, which a stronger proof would admit with no change to the format or the API
+  (ADR-045 § 1, § 3). The broadcast collapse is the one aliasing target that is supported,
+  because its axis is excluded from the cover and the survey establishes that the discarded
+  indices carried the same value.
 
   Everything else in the crate's scope — tiled, Morton and Hilbert layouts, sparse, sub-byte
   packing, element casts, quantization, sharding, composites, byte order, device staging — is
@@ -68,10 +73,22 @@ workspace share one version and are released together.
   legal in this format and sometimes the point — a zero stride *is* a broadcast — but a
   consumer that *writes* through a layout needs to know, and the obvious test is wrong:
   `[1, 1]` over shape `[2, 2]` aliases with no zero stride anywhere. The answer is a
-  sufficient condition (strides strictly nested by magnitude, which admits every dense layout
-  and every padded variant), so the negative verdict is `Distinctness::NotProven` rather than
-  a `false` that reads as *aliases*: deciding it exactly is a bounded subset-sum problem, and
-  `[2, 3]` over shape `[3, 2]` is injective and still comes back `NotProven`.
+  verdict rather than a `bool`, because `false` conflates two answers with different
+  remedies: `Distinctness::Aliases` is a *proof* that two indices collide and is refusable
+  forever, while `Distinctness::NotProven` means the test did not decide — deciding
+  injectivity exactly is a bounded subset-sum problem, and `[2, 3]` over shape `[3, 2]` is
+  injective and still comes back `NotProven`. Two of the three verdicts are therefore proofs,
+  each recognised in constant time from quantities the scan already holds: a zero magnitude
+  on a movable axis, two movable axes of equal magnitude, and a magnitude equal to the reach
+  of the smaller axes. `Distinct` is the sufficient condition — strides strictly nested by
+  magnitude, which admits every dense layout, every permutation of one and every padded
+  variant. The enum is deliberately **exhaustive**: these are semantic verdicts about a
+  stride vector and a shape, so a stronger proof later refines the classification without
+  adding a variant, and which argument proved a case is not part of the answer (ADR-045 § 2).
+
+  The two arithmetic-free proofs run before any span is accumulated, so a stride vector that
+  aliases answers `Aliases` even where its span overflows `uint64` and `AddressOverflow`
+  would otherwise be raised. Aliasing is the more specific fact and holds either way.
 
 - **`LayoutDescriptor::dense_element_strides` and `LayoutDescriptor::element_offset_span`**
   in `hurray-core`. The stride vector of a layout whose addressing is affine in the logical

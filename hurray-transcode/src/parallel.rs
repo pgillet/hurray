@@ -13,13 +13,16 @@
 //! 1. **Items partition the output cover's flat index range.** `run_items` converts an
 //!    item range into `start..end` over `0..total` and walks exactly those positions, so
 //!    distinct items cover disjoint sets of cover indices.
-//! 2. **Distinct cover indices address distinct elements.** The plan refuses any target
-//!    whose strides are not *provably* injective over the cover
-//!    (`hurray_core::strides_provably_distinct`, called in `Remap::new`), which is the
-//!    check that makes this step hold for arbitrary strides — including `[1, 1]`, which has
-//!    no zero stride and still aliases. A broadcast axis is clamped out of the cover
-//!    before the check, so the one aliasing target this crate supports is the one whose
-//!    repeats are never written twice.
+//! 2. **Distinct cover indices address distinct elements.** `Remap::new` admits a target
+//!    only on `Distinctness::Distinct` from `hurray_core::strides_provably_distinct` — the
+//!    *proof*, specifically, and not merely the absence of a proof of aliasing. The
+//!    distinction is load-bearing now that the verdict has three values: `NotProven` is
+//!    refused alongside `Aliases` precisely because this step needs a positive answer, and
+//!    an injective-but-unproved target would make the safety of the `unsafe` below rest on
+//!    a property nothing established. This is what makes the step hold for arbitrary
+//!    strides — including `[1, 1]`, which has no zero stride and still aliases. A broadcast
+//!    axis is clamped out of the cover before the check, so the one aliasing target this
+//!    crate supports is the one whose repeats are never written twice.
 //! 3. **Distinct elements occupy disjoint byte ranges.** Addressing is affine in whole
 //!    elements and every element is exactly `elem_bytes` long, so two distinct element
 //!    offsets are at least `elem_bytes` apart. `element_bytes` refuses sub-byte types,

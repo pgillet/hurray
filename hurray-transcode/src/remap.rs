@@ -279,7 +279,7 @@ pub(crate) struct Remap {
 
 impl Remap {
     /// Builds the recipe, refusing any conversion whose addresses cannot be computed
-    /// safely or whose destination cannot hold the tensor's values.
+    /// safely, or whose destination is not *proved* to address every element distinctly.
     pub(crate) fn new(
         shape: &Shape,
         src_strides: Vec<i64>,
@@ -305,11 +305,24 @@ impl Remap {
         // Serially that silently overwrites a value the conversion promised to preserve;
         // in parallel the two writes can land in different work items, which is a data
         // race through a raw pointer.
-        if strides_provably_distinct(&dst_strides, &out_dims)? != Distinctness::Distinct {
-            return Err(Error::OverlappingTarget {
-                strides: dst_strides,
-                dims: out_dims,
-            });
+        // The two refusals are kept apart because they have different remedies: an
+        // aliasing target is refused forever, an unproved one only until the proof is
+        // stronger. `Distinctness` is exhaustive, so a new verdict would break this match
+        // rather than fall silently into the accepting arm.
+        match strides_provably_distinct(&dst_strides, &out_dims)? {
+            Distinctness::Distinct => {}
+            Distinctness::Aliases => {
+                return Err(Error::AliasingTarget {
+                    strides: dst_strides,
+                    dims: out_dims,
+                })
+            }
+            Distinctness::NotProven => {
+                return Err(Error::TargetNotProvablyDistinct {
+                    strides: dst_strides,
+                    dims: out_dims,
+                })
+            }
         }
 
         // An empty tensor has an empty cover: `total` is 0 and no item is generated.

@@ -276,7 +276,8 @@ today:
 | A tiled, Morton, Hilbert, sparse, block-paged or composite layout | Unsupported: in the crate's scope, not implemented yet |
 | A sub-byte element type (`int4`, `bool`, `float6_*`) | Unsupported: moving one element is a bit-field edit, which is the packing conversion |
 | A quantized source | Unsupported: the scheme's metadata buffers belong to the quantization conversions |
-| A target whose strides map two logical indices to one element, such as `[1, 1]` over shape `[2, 2]` | Refused: the destination cannot hold the tensor's values (see below) |
+| A target whose strides map two logical indices to one element, such as `[1, 1]` over shape `[2, 2]` | Refused as `AliasingTarget`: writing the tensor through it would lose a value (see below) |
+| A target that is injective but not *provably* so, such as `[2, 3]` over shape `[3, 2]` | Refused as `TargetNotProvablyDistinct`: a limitation of the test, not a property of the layout (see below) |
 | A tensor whose shape still carries the dynamic-dimension sentinel | Refused: a plan is sizes, and resolving the sentinel moves no byte |
 | A device-resident buffer | Refused: device support is movement-only, and staging is a separate API |
 | A reshape, a transpose as annotation, a version bump | Not expressible: a target names a representation, never a shape |
@@ -288,15 +289,26 @@ wrong.** A zero stride is not the only way for a layout to send two indices to o
 strides `[1, 1]` over shape `[2, 2]` address elements `0, 1, 1, 2`, so `[0, 1]` and `[1, 0]`
 share one. Written through, that layout loses a value — and in a parallel run the two writes
 can land in different work items, which is a data race rather than merely a wrong answer. So
-a plan refuses any target whose strides are not *provably* injective over the output cover,
-which is what makes § 6's "work items partition the output" true rather than hoped for.
+a plan admits a target only on a *proof* that its strides address every element of the
+output cover distinctly, which is what makes § 6's "work items partition the output" true
+rather than hoped for.
 
-The test is a sufficient condition: sorted by magnitude, each stride must exceed the total
-span of all smaller ones. That admits every dense layout, every permutation of one, and
-every padded variant, and gives up on exotic interleavings that happen to be injective —
-`[2, 3]` over shape `[3, 2]` is refused although nothing collides. Those are unsupported,
-not impossible. Reading an aliasing layout is unaffected: a broadcast source is exactly
-that, and materialising it duplicates the value, which is what the layout means.
+That proof is a sufficient condition, not a decision procedure: sorted by magnitude, each
+stride must exceed the total span of all smaller ones. It admits every dense layout, every
+permutation of one, and every padded variant. **The two refusals are separate errors**,
+because they have different remedies:
+
+- `AliasingTarget` is proved and permanent. The destination genuinely sends two indices to
+  one element, so it can represent faithfully only those tensors whose values already agree
+  there — and a plan sees descriptors, never values, so the refusal cannot be conditional on
+  the data. Retrying it against a later version will not help.
+- `TargetNotProvablyDistinct` is this crate's test giving up. `[2, 3]` over shape `[3, 2]`
+  addresses `0, 3, 2, 5, 4, 7` and collides nowhere, yet comes back unproved. Such a target
+  is unsupported rather than impossible, and a stronger proof would admit it with no change
+  to the format or to the API.
+
+Reading an aliasing layout is unaffected: a broadcast source is exactly that, and
+materialising it duplicates the value, which is what the layout means.
 
 A run that returns an error leaves every produced
 destination **unspecified but initialised** — the caller handed over `&mut [u8]`, so there
