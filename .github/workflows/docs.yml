@@ -12,6 +12,13 @@ name: Documentation site
 # tagged version anyway — the tag trigger could deliver nothing `main` does not. Publishing
 # a release's docs is a dispatch on `main`; see RELEASING.md step 5.
 #
+# Two jobs, not one: `actions/deploy-pages` resolves the artifact through the Actions API,
+# and in a single job it can query before the upload it just made is visible — the deploy
+# then fails with "No artifacts named github-pages were found" on a run whose upload
+# succeeded. Splitting on `needs:` puts a job boundary between the two, which is also what
+# GitHub's own Pages workflow does, and it makes a failed deploy re-runnable without
+# rebuilding every version of the site.
+#
 # See ADR-028 and docs/website/README.md.
 
 on:
@@ -37,11 +44,8 @@ env:
   PDOC_VERSION: "16.0.0"
 
 jobs:
-  build-deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -87,6 +91,13 @@ jobs:
         with:
           path: website/public
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
       - name: Deploy
         id: deploy
         uses: actions/deploy-pages@v4
