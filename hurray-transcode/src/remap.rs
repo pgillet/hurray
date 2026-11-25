@@ -289,10 +289,15 @@ impl Remap {
         dst: Geometry,
     ) -> Result<Self> {
         let dims = shape.dims().to_vec();
+        // The output cover: a broadcast axis is collapsed to one element, because the
+        // conversion writes each repeat once. `d.min(1)` rather than `1`, so that an axis
+        // which is *both* broadcast and empty stays empty — clamping a zero extent up to
+        // one would invent an index space for a tensor that has none, and the distinctness
+        // check below would then rule on indices that cannot exist.
         let out_dims: Vec<u64> = dims
             .iter()
             .zip(dst_strides.iter())
-            .map(|(&d, &s)| if s == 0 { 1 } else { d })
+            .map(|(&d, &s)| if s == 0 { d.min(1) } else { d })
             .collect();
 
         // The invariant everything else here rests on: distinct indices of the cover must

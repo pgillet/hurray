@@ -1040,7 +1040,13 @@ pub enum Distinctness {
 /// - **An axis of extent 1 contributes nothing**, so it is dropped before either proof
 ///   runs: it can neither create a collision nor prevent one.
 ///
-/// What remains, with the axes sorted by `|stride|` ascending, is decided by three exits:
+/// What remains, with the axes sorted by `|stride|` ascending, is decided by three exits.
+/// The index pairs named below are coordinates in the **sign-normalized** space — the one
+/// the first reduction produced — so for a negative stride the witness in the caller's own
+/// index space is its image under `i_k ↦ d_k - 1 - i_k`. With strides `[1, -1]` over shape
+/// `[2, 2]`, for instance, the colliding pair is `(0, 0)` and `(1, 1)`, not the `(1, 0)` and
+/// `(0, 1)` the second exit names. The collision is equally real either way, because the
+/// reduction is a bijection that shifts both members by one constant:
 ///
 /// - **A zero magnitude** (on an axis of extent above 1, the only kind left) — two indices
 ///   differing only on that axis collide. [`Distinctness::Aliases`].
@@ -1135,7 +1141,9 @@ pub fn strides_provably_distinct(strides: &[i64], dims: &[u64]) -> crate::Result
         return Ok(Distinctness::Aliases);
     }
     if axes.windows(2).any(|pair| pair[0].0 == pair[1].0) {
-        // (1, 0) and (0, 1) on those two axes address one element, at any extents.
+        // (1, 0) and (0, 1) on those two axes address one element, at any extents — in
+        // the sign-normalized space, so a negative stride's witness is that pair's image
+        // under the reduction rather than the pair itself.
         return Ok(Distinctness::Aliases);
     }
 

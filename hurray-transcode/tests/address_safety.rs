@@ -368,6 +368,44 @@ fn an_aliasing_source_asked_for_its_own_layout_still_plans() {
     }
 }
 
+#[test]
+fn an_empty_axis_that_is_also_broadcast_does_not_become_a_cover() {
+    // The cover collapses a broadcast axis to one element. If it collapsed an *empty* axis
+    // to one element too, a tensor with no elements would acquire an index space it does
+    // not have — and strides [0, 1, 1] over the invented cover [1, 3, 3] prove aliasing on
+    // a pair of indices that cannot exist. Shape [0, 3, 3] has nothing to write and nothing
+    // to lose, so it must plan.
+    //
+    // Only the axis that is both empty and broadcast triggers this: an empty axis with a
+    // non-zero stride is never clamped, which is why the other rows below already passed.
+    let cases: &[(&[u64], &[i64])] = &[
+        (&[0, 3, 3], &[0, 1, 1]),
+        (&[0, 3, 3], &[0, 0, 1]),
+        (&[3, 0, 3], &[1, 0, 1]),
+        (&[0, 2, 2], &[1, 1, 1]),
+        (&[0, 3], &[1, 1]),
+        (&[3, 0], &[0, 1]),
+    ];
+    for (dims, strides) in cases {
+        let source = descriptor(
+            ElementType::Uint8,
+            dims.to_vec(),
+            LayoutDescriptor::RowMajor,
+            64,
+            0,
+        );
+        let planned = plan(&source, &Target::layout(strided(strides.to_vec())))
+            .unwrap_or_else(|e| panic!("empty {dims:?} -> {strides:?} must plan: {e}"));
+        // Nothing to write, so the plan carries no work whichever branch produced it.
+        match planned {
+            Planned::Ready(r) => assert_eq!(r.work_item_count(), 0, "{dims:?} / {strides:?}"),
+            Planned::NeedsSurvey(_) => {
+                panic!("{dims:?} / {strides:?}: an empty tensor repeats vacuously")
+            }
+        }
+    }
+}
+
 // ── 1. The parallel case: no two work items may write one byte ────────────────
 
 #[test]
