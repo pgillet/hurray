@@ -1012,10 +1012,11 @@ pub enum Distinctness {
 ///
 /// A layout whose strides alias — two logical indices sharing one stored element — is
 /// legal in this format, and sometimes the whole point: a zero stride *is* a broadcast
-/// (`docs/spec/layouts/strided.md § Stride Semantics`). It is nonetheless a property a
-/// consumer needs to know about, because a tensor cannot be *written* through an aliasing
-/// layout without losing values, and a parallel writer cannot treat distinct indices as
-/// distinct destinations.
+/// (`docs/spec/layouts/strided.md § Aliasing`, which defines the property this function
+/// decides and requires a consumer to accept such a descriptor). It is nonetheless a
+/// property a consumer needs to know about, because a tensor cannot be *written* through
+/// an aliasing layout without losing values, and a parallel writer cannot treat distinct
+/// indices as distinct destinations.
 ///
 /// Zero strides are not the only way to alias, which is the trap this function exists to
 /// close: strides `[1, 1]` over shape `[2, 2]` send both `[0, 1]` and `[1, 0]` to offset

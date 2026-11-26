@@ -101,6 +101,29 @@ workspace share one version and are released together.
 
 ### Changed
 
+- **`strided.md` defines aliasing for every stride vector, not only the zero one**
+  (ADR-045 § 4). The spec named the broadcast — a zero stride — and said nothing about a
+  non-zero stride vector that maps two indices to one element, so `Strided([1, 1])` over
+  shape `[2, 2]` was legal by omission: a consumer read four logical elements out of three
+  stored ones and obtained a tensor silently constrained to `t[0,1] == t[1,0]`, with nothing
+  in the format acknowledging the constraint. § Stride Semantics now has an *Aliasing*
+  subsection that defines injectivity, keeps the zero stride as its mandated case, and
+  states the consequence: a producer MUST NOT emit an aliasing descriptor unless the values
+  it describes agree across each aliased index set, and a consumer MUST accept one and read
+  the set as a single value. That obligation is about fidelity, not validity — shared
+  storage necessarily yields equal observed values, so only the producer's claim can be
+  wrong — and it says nothing about *writing*: a writer materialising arbitrary values
+  SHOULD refuse an aliasing destination, which is the refusal `hurray-transcode` makes. The
+  spec deliberately defines no test for injectivity, so no implementation's conservatism
+  becomes a conformance rule.
+
+  § Contiguity no longer reads as if density were the writability test. Density now means
+  injective *and* gapless, is stated over the extents that can actually move, and a note
+  separates it from injectivity in both directions: padded strides `[8, 1]` over shape
+  `[3, 4]` are injective and not dense, while `[1, 1]` over `[2, 2]` is gapless and aliases.
+  § Example's element count is corrected to the 12 its own § Buffer Size formula gives
+  (it claimed 9).
+
 - **`hurray-core` no longer depends on `rayon`** (ADR-044 § 6, finding 4). The dependency
   was unconditional and appeared nowhere in `hurray-core/src`; it now belongs to
   `hurray-transcode`, optional and off by default. No API change.
