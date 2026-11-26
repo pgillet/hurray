@@ -2,11 +2,8 @@
 title = "Hurray"
 +++
 
-Hurray is a **language-agnostic, zero-copy tensor format** for multi-dimensional data,
-built for the memory-layout diversity, quantization schemes, and access patterns of modern
-AI/ML inference pipelines and scientific arrays.
-
-It defines two binary formats that share **one tensor descriptor encoding**:
+Hurray defines two binary formats that share **one tensor descriptor encoding**, built for
+the memory-layout diversity, quantization schemes, and access patterns of modern inference:
 
 - **Streaming format** — runtime interchange: in-process pointer passing, IPC, and
   cross-machine streaming. Self-delimiting, no seek required. *Think Apache Arrow, but for
