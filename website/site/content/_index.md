@@ -1,9 +1,11 @@
 +++
 title = "Hurray"
+# The hero subtitle. Longer than `config.description`, which stays short because it is also
+# the `<meta name="description">` on every page and search engines truncate near 160 chars.
+description = "A zero-copy, streamable, language-agnostic tensor interchange format, built for the memory-layout diversity, quantization schemes, and access patterns of modern AI/ML inference pipelines and scientific arrays."
 +++
 
-Hurray defines two binary formats that share **one tensor descriptor encoding**, built for
-the memory-layout diversity, quantization schemes, and access patterns of modern inference:
+Hurray defines two binary formats that share **one tensor descriptor encoding**:
 
 - **Streaming format** — runtime interchange: in-process pointer passing, IPC, and
   cross-machine streaming. Self-delimiting, no seek required. *Think Apache Arrow, but for
