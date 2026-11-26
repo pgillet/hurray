@@ -190,7 +190,8 @@ pub enum Error {
     /// element. This transcoder refuses such a target unconditionally.
     ///
     /// A layout whose strides alias is legal in the format and is sometimes the point — a
-    /// zero stride is a broadcast. What it cannot serve as is the *write* destination for
+    /// zero stride is a broadcast, and `docs/spec/layouts/strided.md § Aliasing` requires a
+    /// consumer to accept one. What it cannot serve as is the *write* destination for
     /// an arbitrary tensor: strides `[1, 1]` over shape `[2, 2]` send `[0, 1]` and `[1, 0]`
     /// to the same element, so whichever is written second wins and the other value is
     /// gone. In parallel it is worse — the two writes can fall in different work items,
