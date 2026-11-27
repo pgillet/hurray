@@ -110,19 +110,27 @@ workspace share one version and are released together.
   subsection that defines injectivity, keeps the zero stride as its mandated case, and
   states the consequence: a producer MUST NOT emit an aliasing descriptor unless the values
   it describes agree across each aliased index set, and a consumer MUST accept one and read
-  the set as a single value. That obligation is about fidelity, not validity — shared
-  storage necessarily yields equal observed values, so only the producer's claim can be
-  wrong — and it says nothing about *writing*: a writer materialising arbitrary values
-  SHOULD refuse an aliasing destination, which is the refusal `hurray-transcode` makes. The
-  spec deliberately defines no test for injectivity, so no implementation's conservatism
-  becomes a conformance rule.
+  the set as a single value. Agreement is **identical element encodings**, not numerical
+  equality, which is the reading `element-types.md`'s exact-bit-pattern requirement already
+  implies: a NaN broadcast is conforming when the payloads match, and `+0.0` does not stand
+  for `-0.0`. That obligation is about fidelity, not validity — shared storage necessarily
+  yields equal observed values, so only the producer's claim can be wrong, and a consumer
+  MUST NOT reject an otherwise valid descriptor because its strides alias — and it says
+  nothing about *writing*: a writer materialising arbitrary values SHOULD refuse an aliasing
+  destination, which is the refusal `hurray-transcode` makes. The spec deliberately defines
+  no test for injectivity, so no implementation's conservatism becomes a conformance rule.
 
-  § Contiguity no longer reads as if density were the writability test. Density now means
-  injective *and* gapless, is stated over the extents that can actually move, and a note
-  separates it from injectivity in both directions: padded strides `[8, 1]` over shape
-  `[3, 4]` are injective and not dense, while `[1, 1]` over `[2, 2]` is gapless and aliases.
-  § Example's element count is corrected to the 12 its own § Buffer Size formula gives
-  (it claimed 9).
+  **§ Contiguity's density criterion was wrong**, not merely conflated with injectivity.
+  "The stride magnitudes are a permutation of the row-major strides" fails on layouts that
+  are dense and passes on layouts that are not: over shape `[2, 3]`, strides `[1, 2]` are
+  dense and are not a permutation of `[3, 1]`, while `[1, 3]` is such a permutation and
+  leaves offsets `2` and `5` unoccupied. The criterion is now the mixed-radix one — sort the
+  dimensions of extent above 1 by absolute stride, and require each magnitude to equal the
+  product of the extents before it — which is exact, and a zero extent is dense vacuously.
+  A note records that density implies injectivity but not the reverse, so "not dense" no
+  longer reads as "not writable": padded strides `[8, 1]` over shape `[3, 4]` are injective
+  and not dense. § Example's element count is corrected to the 12 its own § Buffer Size
+  formula gives (it claimed 9).
 
 - **`hurray-core` no longer depends on `rayon`** (ADR-044 § 6, finding 4). The dependency
   was unconditional and appeared nowhere in `hurray-core/src`; it now belongs to
