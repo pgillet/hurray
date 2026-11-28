@@ -249,9 +249,9 @@ fn overlapping_targets_are_refused_across_a_family_of_shapes() {
         let outcome = plan(&source, &Target::layout(strided(strides.to_vec())));
         if aliases {
             // Every aliasing row above is within the predicate's reach — two equal
-            // magnitudes, or a magnitude equal to the reach of the smaller axes — so the
-            // proved error is the one to assert. An aliasing target outside that reach is
-            // `TargetNotProvablyDistinct` instead; see the test below.
+            // magnitudes, or the exact test for two movable axes — so the proved error is
+            // the one to assert. An aliasing target outside that reach needs three movable
+            // axes and comes back `TargetNotProvablyDistinct` instead; see the test below.
             assert!(
                 matches!(outcome, Err(Error::AliasingTarget { .. })),
                 "{dims:?} / {strides:?} aliases and must be refused: {outcome:?}"
@@ -316,26 +316,28 @@ fn a_non_injective_source_is_materialised_rather_than_refused() {
 
 #[test]
 fn an_injective_but_unproved_target_is_a_limitation_not_a_refusal() {
-    // Strides [2, 3] over shape [3, 2] address offsets 0, 3, 2, 5, 4, 7: injective, and
-    // outside what the nested-magnitude proof can see. The two refusals must not be
-    // conflated — this target is unsupported, not impossible, and a caller writing layout
-    // fallback policy needs to tell "never retry" from "retry on a newer version".
+    // Strides [2, 3, 4] over shape [2, 2, 2] address offsets 0, 4, 3, 7, 2, 6, 5, 9:
+    // injective, and outside what the nested-magnitude proof can see. It takes three
+    // movable axes to get there — two are decided exactly — so this target is rank 3. The
+    // two refusals must not be conflated: this one is unsupported, not impossible, and a
+    // caller writing layout fallback policy needs to tell "never retry" from "retry on a
+    // newer version".
     assert!(
-        !actually_aliases(&[3, 2], &[2, 3]),
+        !actually_aliases(&[2, 2, 2], &[2, 3, 4]),
         "premise: this target does not alias"
     );
     let source = descriptor(
         ElementType::Uint8,
-        vec![3, 2],
+        vec![2, 2, 2],
         LayoutDescriptor::RowMajor,
         8,
         0,
     );
-    let err = plan(&source, &Target::layout(strided(vec![2, 3]))).unwrap_err();
+    let err = plan(&source, &Target::layout(strided(vec![2, 3, 4]))).unwrap_err();
     match err {
         Error::TargetNotProvablyDistinct { strides, dims } => {
-            assert_eq!(strides, vec![2, 3]);
-            assert_eq!(dims, vec![3, 2]);
+            assert_eq!(strides, vec![2, 3, 4]);
+            assert_eq!(dims, vec![2, 2, 2]);
         }
         other => panic!("expected TargetNotProvablyDistinct, got {other}"),
     }
@@ -441,6 +443,9 @@ fn every_accepted_plan_writes_each_output_byte_exactly_once() {
         (&[3, 4], &[8, 1]),
         (&[2, 3, 4], &[1, 2, 6]),
         (&[3, 4], &[0, 1]),
+        // Interleaved rather than nested, and admitted since the exact two-axis test.
+        (&[3, 2], &[2, 3]),
+        (&[8, 12], &[8, 13]),
     ];
     for (dims, dst_strides) in cases {
         let mut writes: HashMap<i128, usize> = HashMap::new();
@@ -539,6 +544,7 @@ fn each_execution_path_matches_the_oracle_on_both_destinations() {
         ("bulk copy, reversed rows", &[12, 1], &[-12, 1]),
         ("per element, to column-major", &[12, 1], &[1, 8]),
         ("per element, strided last axis", &[12, 1], &[48, 4]),
+        ("per element, interleaved axes", &[12, 1], &[8, 13]),
     ];
     let dims = [8u64, 12];
     let count = 96usize;
@@ -580,6 +586,38 @@ fn each_execution_path_matches_the_oracle_on_both_destinations() {
             assert_eq!(parallel.as_slice(), &expected[..], "{name}, parallel");
         }
     }
+}
+
+/// The other side of the test above: with only **two** movable axes there is no unproved
+/// region left, so an interleaved target is planned and converted rather than refused.
+/// This one was `TargetNotProvablyDistinct` until the exact two-axis test landed, which
+/// means the unsafe write path reaches stride vectors it never saw before — hence the
+/// oracle comparison rather than a bare `is_ok`.
+#[test]
+fn an_interleaved_two_axis_target_is_planned_and_converted() {
+    // Strides [2, 3] over shape [3, 2] address 0, 3, 2, 5, 4, 7 — injective, not nested,
+    // and leaving offsets 1 and 6 untouched inside a span of 8.
+    let dims = [3u64, 2];
+    let src_strides = [2i64, 1];
+    let dst_strides = [2i64, 3];
+    assert!(
+        !actually_aliases(&dims, &dst_strides),
+        "premise: this target does not alias"
+    );
+    let data: Vec<u8> = vec![10, 20, 30, 40, 50, 60];
+    let source = descriptor(
+        ElementType::Uint8,
+        dims.to_vec(),
+        LayoutDescriptor::RowMajor,
+        data.len() as u64,
+        0,
+    );
+    let r = ready(&source, &Target::layout(strided(dst_strides.to_vec())));
+    let (expected, base) = reference_convert(&dims, &src_strides, &dst_strides, 1, 0, &data);
+    assert_eq!(r.outputs()[0].byte_offset, base);
+    assert_eq!(convert(&r, &data), expected);
+    // Spelled out, so the gaps are visible: element [1,0] lands at offset 2, not 1.
+    assert_eq!(convert(&r, &data), vec![10, 0, 30, 20, 50, 40, 0, 60]);
 }
 
 // ── 3. Address arithmetic ─────────────────────────────────────────────────────
