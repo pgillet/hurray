@@ -277,7 +277,7 @@ today:
 | A sub-byte element type (`int4`, `bool`, `float6_*`) | Unsupported: moving one element is a bit-field edit, which is the packing conversion |
 | A quantized source | Unsupported: the scheme's metadata buffers belong to the quantization conversions |
 | A target whose strides map two logical indices to one element, such as `[1, 1]` over shape `[2, 2]` | Refused as `AliasingTarget`: writing the tensor through it would lose a value (see below) |
-| A target that is injective but not *provably* so, such as `[2, 3]` over shape `[3, 2]` | Refused as `TargetNotProvablyDistinct`: a limitation of the test, not a property of the layout (see below) |
+| A target that is injective but not *provably* so, such as `[2, 3, 4]` over shape `[2, 2, 2]` | Refused as `TargetNotProvablyDistinct`: a limitation of the test, not a property of the layout (see below) |
 | A tensor whose shape still carries the dynamic-dimension sentinel | Refused: a plan is sizes, and resolving the sentinel moves no byte |
 | A device-resident buffer | Refused: device support is movement-only, and staging is a separate API |
 | A reshape, a transpose as annotation, a version bump | Not expressible: a target names a representation, never a shape |
@@ -293,19 +293,24 @@ a plan admits a target only on a *proof* that its strides address every element 
 output cover distinctly, which is what makes § 6's "work items partition the output" true
 rather than hoped for.
 
-That proof is a sufficient condition, not a decision procedure: sorted by magnitude, each
-stride must exceed the total span of all smaller ones. It admits every dense layout, every
-permutation of one, and every padded variant. **The two refusals are separate errors**,
-because they have different remedies:
+That proof is exact where at most two axes can move: a collision is then a solution of
+`|s_a| · x = |s_b| · y` inside the index box, whose minimal solution is written down with a
+`gcd`, so an interleaved target like `[2, 3]` over shape `[3, 2]` is admitted and `[2, 3]`
+over shape `[4, 3]` is refused as aliasing. Beyond two movable axes it falls back to a
+sufficient condition — sorted by magnitude, each stride must exceed the total span of all
+smaller ones — which admits every dense layout, every permutation of one, and every padded
+variant. **The two refusals are separate errors**, because they have different remedies:
 
 - `AliasingTarget` is proved and permanent. The destination genuinely sends two indices to
   one element, so it can represent faithfully only those tensors whose values already agree
   there — and a plan sees descriptors, never values, so the refusal cannot be conditional on
   the data. Retrying it against a later version will not help.
-- `TargetNotProvablyDistinct` is this crate's test giving up. `[2, 3]` over shape `[3, 2]`
-  addresses `0, 3, 2, 5, 4, 7` and collides nowhere, yet comes back unproved. Such a target
-  is unsupported rather than impossible, and a stronger proof would admit it with no change
-  to the format or to the API.
+- `TargetNotProvablyDistinct` is this crate's test giving up, which now takes three or more
+  movable axes. `[2, 3, 4]` over shape `[2, 2, 2]` addresses `0, 4, 3, 7, 2, 6, 5, 9` and
+  collides nowhere, yet comes back unproved. Such a target is unsupported rather than
+  impossible, and a stronger proof would admit it with no change to the format or to the
+  API — which is exactly what happened to the two-axis case this paragraph used to be
+  written on.
 
 Reading an aliasing layout is unaffected: a broadcast source is exactly that, and
 materialising it duplicates the value, which is what the layout means.

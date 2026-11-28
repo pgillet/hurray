@@ -44,10 +44,12 @@ impl Target {
     ///
     /// Every layout whose stride magnitudes are **strictly nested** — row-major,
     /// column-major, any axis permutation of either, and any padded or reversed variant of
-    /// those. That is the set a conversion can write into while provably addressing each
-    /// element once, and it is the whole accepted set: a target outside it is refused at
-    /// plan time with [`Error::AliasingTarget`] or [`Error::TargetNotProvablyDistinct`]
-    /// (ADR-045 § 1). A zero stride in the *target* is the one deliberate exclusion — that
+    /// those — and, where at most **two axes can move** at the shape being planned, every
+    /// injective stride vector, interleaved or not: that case is decided exactly rather
+    /// than approximated. That is the set a conversion can write into while provably
+    /// addressing each element once, and it is the whole accepted set: a target outside it
+    /// is refused at plan time with [`Error::AliasingTarget`] or
+    /// [`Error::TargetNotProvablyDistinct`] (ADR-045 § 1). A zero stride in the *target* is the one deliberate exclusion — that
     /// is a broadcast collapse, which is reached through the survey rather than by writing
     /// the repeats.
     ///

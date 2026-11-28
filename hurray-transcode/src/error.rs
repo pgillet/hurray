@@ -221,12 +221,14 @@ pub enum Error {
     /// The target's strides could not be *proved* to address every element distinctly.
     /// They may well do so; this crate's test did not establish it.
     ///
-    /// That test is a sufficient condition — stride magnitudes strictly nested — so a few
-    /// exotic interleavings that are genuinely injective are refused here as well: strides
-    /// `[2, 3]` over shape `[3, 2]` addresses offsets `0, 3, 2, 5, 4, 7` and collides
-    /// nowhere, yet comes back unproved. This crate will not write through a target it
-    /// cannot prove distinct, because that proof is what the parallel path's disjointness
-    /// argument rests on.
+    /// That test is a sufficient condition once three or more axes can move — stride
+    /// magnitudes strictly nested — so a few exotic interleavings that are genuinely
+    /// injective are refused here as well: strides `[2, 3, 4]` over shape `[2, 2, 2]`
+    /// address offsets `0, 4, 3, 7, 2, 6, 5, 9` and collide nowhere, yet come back
+    /// unproved. Two movable axes leave no such gap — that case is decided exactly — so
+    /// reaching this error takes a target with three. This crate will not write through a
+    /// target it cannot prove distinct, because that proof is what the parallel path's
+    /// disjointness argument rests on.
     ///
     /// Unlike [`Error::AliasingTarget`], this is a limitation and not a verdict: a stronger
     /// proof would admit these targets with no change to the format or to this API. See

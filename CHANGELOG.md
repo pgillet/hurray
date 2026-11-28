@@ -75,20 +75,26 @@ workspace share one version and are released together.
   `[1, 1]` over shape `[2, 2]` aliases with no zero stride anywhere. The answer is a
   verdict rather than a `bool`, because `false` conflates two answers with different
   remedies: `Distinctness::Aliases` is a *proof* that two indices collide and is refusable
-  forever, while `Distinctness::NotProven` means the test did not decide — deciding
-  injectivity exactly is a bounded subset-sum problem, and `[2, 3]` over shape `[3, 2]` is
-  injective and still comes back `NotProven`. Two of the three verdicts are therefore proofs,
-  each recognised in constant time from quantities the scan already holds: a zero magnitude
-  on a movable axis, two movable axes of equal magnitude, and a magnitude equal to the reach
-  of the smaller axes. `Distinct` is the sufficient condition — strides strictly nested by
-  magnitude, which admits every dense layout, every permutation of one and every padded
-  variant. The enum is deliberately **exhaustive**: these are semantic verdicts about a
-  stride vector and a shape, so a stronger proof later refines the classification without
-  adding a variant, and which argument proved a case is not part of the answer (ADR-045 § 2).
+  forever, while `Distinctness::NotProven` means the test did not decide — `[2, 3, 4]` over
+  shape `[2, 2, 2]` is injective and still comes back `NotProven`. Three proofs are
+  recognised from quantities the scan already holds: a zero magnitude on a movable axis, two
+  movable axes of equal magnitude, and a magnitude equal to the reach of the smaller axes.
+  Where **at most two axes can move** — at any rank, since axes of extent 1 are dropped
+  first — the answer is **exact**: a collision is a solution of `|s_a| · x = |s_b| · y`
+  inside the index box, and `gcd` writes down the minimal one, so `NotProven` is unreachable
+  there ([#284](https://github.com/pgillet/hurray/issues/284)). Beyond that, `Distinct` is
+  the sufficient condition — strides strictly nested by magnitude, which admits every dense
+  layout, every permutation of one and every padded variant — and `NotProven` is the bounded
+  subset-sum region the test stops at. The enum is deliberately **exhaustive**: these are
+  semantic verdicts about a stride vector and a shape, so a stronger proof later refines the
+  classification without adding a variant, and which argument proved a case is not part of
+  the answer (ADR-045 § 2).
 
-  The two arithmetic-free proofs run before any span is accumulated, so a stride vector that
-  aliases answers `Aliases` even where its span overflows `uint64` and `AddressOverflow`
-  would otherwise be raised. Aliasing is the more specific fact and holds either way.
+  Only the strictly-nested condition accumulates a span, so `AddressOverflow` is unreachable
+  with fewer than three movable axes: a stride vector that aliases answers `Aliases`, and one
+  proved injective on two axes answers `Distinct`, even where the span overflows `uint64`.
+  Both answers are true whether or not the span is representable, and a caller that must also
+  address the tensor does its own checked arithmetic.
 
 - **`LayoutDescriptor::dense_element_strides` and `LayoutDescriptor::element_offset_span`**
   in `hurray-core`. The stride vector of a layout whose addressing is affine in the logical

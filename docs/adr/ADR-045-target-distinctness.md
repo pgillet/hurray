@@ -24,6 +24,23 @@ weakens it.
 Requires an amendment to `docs/spec/layouts/strided.md` § Stride Semantics. Nothing here
 is a wire-format or C ABI change.
 
+**Revision 5 (2026-11-28).** The refinement § 2 anticipated has happened, and this note
+records it rather than rewriting the reasoning below. Where at most **two axes have extent
+above 1**, injectivity is now decided **exactly**
+([#284](https://github.com/pgillet/hurray/issues/284)): a collision is a solution of
+`|s_a| · x = |s_b| · y` inside the index box, and with `g = gcd(|s_a|, |s_b|)` its minimal
+witness is `x = |s_b| / g`, `y = |s_a| / g` — it either fits in the box or it does not.
+Because axes of extent 1 are dropped before any proof runs, this applies at any rank whose
+*movable* axes number two. Consequently the two-sided unknown region § 2 pins on `[2, 3]`
+over `[3, 2]` and over `[4, 3]` is now proved on both sides, and the examples and the
+prior-art row below describe the predicate as it stood at the decision. Nothing
+architectural moved: no variant and no error was added, `NotProven` narrowed to three or
+more movable axes exactly as the closure commitment licenses, and `hurray-transcode`
+widened the set of targets it accepts with no change of its own. One consequence worth
+naming — the exact test computes no span, so a two-axis vector whose span overflows
+`uint64` now answers `Distinct` where it raised `AddressOverflow`, which is the same trade
+§ 2 already made for the two arithmetic-free aliasing proofs.
+
 **Revision 4 (2026-11-23).** A § *Prior Art* section was added, surveying nine libraries,
 each read at source. It changed no decision. It supplies three things the ADR was missing:
 a precedent for § 4's sentence (MLIR states the property; its UB remedy is the part to
